@@ -256,15 +256,8 @@ public partial class MainWindow : Window
 
         var close = new Button
         {
-            Content = "\u00d7",
-            FontSize = 12,
-            Width = 16,
-            Height = 16,
-            Padding = new Thickness(0),
-            Margin = new Thickness(6, 0, 0, 0),
-            Background = Brushes.Transparent,
-            BorderThickness = new Thickness(0),
-            Cursor = Cursors.Hand,
+            Style = (Style)Application.Current.FindResource("TabCloseButton"),
+            VerticalAlignment = VerticalAlignment.Center,
             ToolTip = "Close tab (Ctrl+W)"
         };
         close.Click += (_, _) => CloseTab(FindTab(view));
