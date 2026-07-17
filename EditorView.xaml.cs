@@ -75,6 +75,7 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
         ApplyAutosaveInterval(AppSettings.Current.AutosaveSeconds);
         ApplyWordWrap(AppSettings.Current.WordWrap);
         ApplyTreeVisible(AppSettings.Current.ShowTree);
+        ApplyPreviewFit(AppSettings.Current.PreviewFitToWidth);
 
         Loaded += (_, _) => RaiseAll();
     }
@@ -455,23 +456,32 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
     /// <summary>Smallest the tree pane may be dragged; also the persistent-hide floor.</summary>
     private const double TreeMinWidth = 80;
 
+    private bool _draggingSplitter;
+
     /// <summary>
-    /// Resize the tree pane by dragging the divider. The bare GridSplitter didn't move the fixed
-    /// tree column in this layout, so we set <c>TreeColumn.Width</c> ourselves. Rather than
-    /// accumulate <see cref="System.Windows.Controls.Primitives.DragDeltaEventArgs.HorizontalChange"/>
-    /// deltas (whose meaning gets muddled once the Thumb repositions mid-drag), we derive the tree
-    /// width directly from the live cursor position relative to the control's right edge. The Thumb
-    /// captures the mouse for the duration of the drag, so <c>Mouse.GetPosition(this)</c> tracks the
-    /// cursor even when it moves off the 6px divider.
+    /// Resize the tree pane by dragging the divider. We capture the mouse on the divider and drive
+    /// <c>TreeColumn.Width</c> from the cursor's X relative to this control — a stable ancestor whose
+    /// width doesn't change during the drag. (A GridSplitter won't move the fixed tree column in this
+    /// layout, and a Thumb stops firing once it repositions under the cursor: "a few pixels then it
+    /// stops". Explicit capture avoids both problems.)
     /// </summary>
-    private void Splitter_DragDelta(object sender, System.Windows.Controls.Primitives.DragDeltaEventArgs e)
+    private void Splitter_MouseLeftButtonDown(object sender, System.Windows.Input.MouseButtonEventArgs e)
     {
         if (TreePanel.Visibility != Visibility.Visible)
+            return;
+        _draggingSplitter = true;
+        Splitter.CaptureMouse();
+        e.Handled = true;
+    }
+
+    private void Splitter_MouseMove(object sender, System.Windows.Input.MouseEventArgs e)
+    {
+        if (!_draggingSplitter)
             return;
 
         double splitter = Splitter.ActualWidth;
         // Cursor X within this control; the tree fills everything to the right of the cursor.
-        double cursorX = System.Windows.Input.Mouse.GetPosition(this).X;
+        double cursorX = e.GetPosition(this).X;
         double target = ActualWidth - cursorX - splitter / 2;
 
         // Never crowd the editor out: cap the tree at the room left after the editor's minimum.
@@ -481,6 +491,15 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
 
         TreeColumn.Width = new GridLength(target);
         _treeWidth = target;
+    }
+
+    private void Splitter_MouseLeftButtonUp(object sender, System.Windows.Input.MouseButtonEventArgs e)
+    {
+        if (!_draggingSplitter)
+            return;
+        _draggingSplitter = false;
+        Splitter.ReleaseMouseCapture();
+        e.Handled = true;
     }
 
     /// <summary>Reveal the tree just long enough for the user to choose a redo branch.</summary>
@@ -507,6 +526,42 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
         UndoNode.PreviewLength = len;
         if (PreviewLenLabel is not null)
             PreviewLenLabel.Text = len.ToString();
+        RefreshPreviews();
+    }
+
+    private bool _suppressFitEvent;
+
+    private void FitWidth_Changed(object sender, RoutedEventArgs e)
+    {
+        if (_suppressFitEvent)
+            return;
+        bool fit = FitWidthCheck.IsChecked == true;
+        AppSettings.Current.PreviewFitToWidth = fit;
+        AppSettings.Current.Save();
+        // Apply to every open document so the choice is process-wide.
+        foreach (Window w in Application.Current.Windows)
+            if (w is MainWindow mw)
+                foreach (var v in mw.AllEditorViews())
+                    v.ApplyPreviewFit(fit);
+    }
+
+    /// <summary>Reflect the fit-to-width preference in this view's UI and repaint its previews.</summary>
+    public void ApplyPreviewFit(bool fit)
+    {
+        UndoNode.FitToWidth = fit;
+        if (FitWidthCheck.IsChecked != fit)
+        {
+            _suppressFitEvent = true;
+            FitWidthCheck.IsChecked = fit;
+            _suppressFitEvent = false;
+        }
+        // The character-count slider is meaningless in fit-to-width mode.
+        PreviewCharsRow.IsEnabled = !fit;
+        RefreshPreviews();
+    }
+
+    private void RefreshPreviews()
+    {
         foreach (var n in _tree.AllNodes())
             n.RaisePreviewChanged();
     }

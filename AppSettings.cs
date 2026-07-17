@@ -3,6 +3,17 @@ using System.Text.Json;
 
 namespace TreeNotepad;
 
+/// <summary>What pressing the window's X (close) button should do.</summary>
+public enum CloseButtonBehavior
+{
+    /// <summary>Close the window (prompting to save unsaved work) — the normal behaviour.</summary>
+    Close,
+    /// <summary>Hide to the notification area (system tray); keep running in the background.</summary>
+    MinimizeToTray,
+    /// <summary>Minimise to the taskbar instead of closing.</summary>
+    MinimizeToTaskbar,
+}
+
 /// <summary>
 /// Process-wide, persisted user preferences. Stored as JSON under LocalAppData so the
 /// choice survives restarts and is shared by every window/instance.
@@ -17,6 +28,15 @@ public sealed class AppSettings
 
     public bool WordWrap { get; set; } = true;
     public bool ShowTree { get; set; } = true;
+
+    /// <summary>
+    /// When true, history-tree previews show as much text as fits on one line (then a trailing
+    /// ellipsis) instead of a fixed character count. The "Preview chars" slider is ignored.
+    /// </summary>
+    public bool PreviewFitToWidth { get; set; }
+
+    /// <summary>What the window's X (close) button does.</summary>
+    public CloseButtonBehavior CloseButton { get; set; } = CloseButtonBehavior.Close;
 
     private static readonly string Dir = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "TreeNotepad");

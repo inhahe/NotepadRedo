@@ -78,7 +78,16 @@ public sealed class UndoNode : INotifyPropertyChanged
     /// <summary>Shared preview length used by every node's <see cref="Preview"/>.</summary>
     public static int PreviewLength = 30;
 
+    /// <summary>
+    /// When true, <see cref="Preview"/> returns the full (single-line) edit text and the UI trims it
+    /// to the pane width with an ellipsis; when false it is clipped to <see cref="PreviewLength"/>.
+    /// </summary>
+    public static bool FitToWidth;
+
     public int Id { get; }
+
+    /// <summary>Depth below the root (root = 0), used to size the width-trimmed preview per indent.</summary>
+    public int Depth { get; }
     public TextEdit? Edit { get; private set; }   // null only for the root
     public int CaretIndex { get; private set; }
     public int Length { get; private set; }       // full text length at this node
@@ -95,6 +104,7 @@ public sealed class UndoNode : INotifyPropertyChanged
         CaretIndex = caretIndex;
         Length = fullText.Length;
         Parent = parent;
+        Depth = parent is null ? 0 : parent.Depth + 1;
         Timestamp = DateTime.Now;
         _previewPrefix = fullText.Length <= PreviewCache
             ? fullText
@@ -110,7 +120,9 @@ public sealed class UndoNode : INotifyPropertyChanged
     {
         get
         {
-            int n = Math.Max(1, PreviewLength);
+            // In fit-to-width mode we hand back the full single-line text and let the TextBlock trim
+            // it to the pane with an ellipsis; otherwise clip to a fixed character count.
+            int n = FitToWidth ? PreviewCache : Math.Max(1, PreviewLength);
 
             // Root (or any node without an edit): show the start of the document.
             if (Edit is null)

@@ -1,6 +1,10 @@
 <UserControl x:Class="TreeNotepad.EditorView"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:local="clr-namespace:TreeNotepad">
+    <UserControl.Resources>
+        <local:PreviewWidthConverter x:Key="PreviewWidth"/>
+    </UserControl.Resources>
     <Grid>
         <Grid.ColumnDefinitions>
             <ColumnDefinition Width="*" MinWidth="200"/>
@@ -20,23 +24,25 @@
                  SelectionChanged="Editor_SelectionChanged"/>
 
         <!-- Manual splitter: a bare GridSplitter would not resize the fixed tree column in this
-             layout, so we drive TreeColumn.Width directly from the Thumb's DragDelta. -->
-        <Thumb x:Name="Splitter" Grid.Column="1" Width="6"
-               HorizontalAlignment="Stretch" VerticalAlignment="Stretch"
-               Cursor="SizeWE" DragDelta="Splitter_DragDelta">
-            <Thumb.Template>
-                <ControlTemplate TargetType="Thumb">
-                    <Border Background="#DDDDDD"/>
-                </ControlTemplate>
-            </Thumb.Template>
-        </Thumb>
+             layout, and a Thumb stops firing once it repositions under the cursor. So we capture
+             the mouse ourselves and drive TreeColumn.Width from the cursor's position relative to
+             this control (a stable ancestor), which never "sticks". -->
+        <Border x:Name="Splitter" Grid.Column="1" Width="6"
+                HorizontalAlignment="Stretch" VerticalAlignment="Stretch"
+                Background="#DDDDDD" Cursor="SizeWE"
+                MouseLeftButtonDown="Splitter_MouseLeftButtonDown"
+                MouseMove="Splitter_MouseMove"
+                MouseLeftButtonUp="Splitter_MouseLeftButtonUp"/>
 
         <DockPanel x:Name="TreePanel" Grid.Column="2" Margin="4">
             <Border DockPanel.Dock="Top" Background="#F3F3F3" Padding="6" Margin="0,0,0,4"
                     BorderBrush="#DDDDDD" BorderThickness="1">
                 <StackPanel>
                     <TextBlock Text="History Tree" FontWeight="Bold"/>
-                    <DockPanel Margin="0,4,0,0" LastChildFill="True">
+                    <CheckBox x:Name="FitWidthCheck" Content="Fit preview to width"
+                              Margin="0,4,0,0" VerticalAlignment="Center"
+                              Checked="FitWidth_Changed" Unchecked="FitWidth_Changed"/>
+                    <DockPanel x:Name="PreviewCharsRow" Margin="0,4,0,0" LastChildFill="True">
                         <TextBlock Text="Preview chars:" VerticalAlignment="Center" DockPanel.Dock="Left"/>
                         <TextBlock x:Name="PreviewLenLabel" Text="30" VerticalAlignment="Center"
                                    Width="24" TextAlignment="Right" DockPanel.Dock="Right"/>
@@ -54,7 +60,8 @@
 
             <TreeView x:Name="Tree"
                       SelectedItemChanged="Tree_SelectedItemChanged"
-                      BorderBrush="#DDDDDD" BorderThickness="1">
+                      BorderBrush="#DDDDDD" BorderThickness="1"
+                      ScrollViewer.HorizontalScrollBarVisibility="Disabled">
                 <!-- Neutralise the default TreeViewItem selection highlight, which paints the
                      header blue and whites-out the label. Selection is shown by our own
                      IsCurrent / IsSelected border styling instead. -->
@@ -91,8 +98,17 @@
                                 </Style>
                             </Border.Style>
                             <StackPanel>
-                                <TextBlock Text="{Binding Preview}" FontFamily="Consolas" FontSize="13" Foreground="#222222"/>
-                                <TextBlock Text="{Binding Meta}" Foreground="#888888" FontSize="10"/>
+                                <TextBlock Text="{Binding Preview}" FontFamily="Consolas" FontSize="13" Foreground="#222222"
+                                           TextWrapping="NoWrap" TextTrimming="CharacterEllipsis">
+                                    <TextBlock.MaxWidth>
+                                        <MultiBinding Converter="{StaticResource PreviewWidth}">
+                                            <Binding Path="ActualWidth" RelativeSource="{RelativeSource AncestorType=TreeView}"/>
+                                            <Binding Path="Depth"/>
+                                        </MultiBinding>
+                                    </TextBlock.MaxWidth>
+                                </TextBlock>
+                                <TextBlock Text="{Binding Meta}" Foreground="#888888" FontSize="10"
+                                           TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"/>
                             </StackPanel>
                         </Border>
                     </HierarchicalDataTemplate>

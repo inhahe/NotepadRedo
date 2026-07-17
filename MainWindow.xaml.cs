@@ -291,7 +291,10 @@ public partial class MainWindow : Window
             return false;
         RemoveTab(ti, dispose: true);
         if (Tabs.Items.Count == 0)
+        {
+            _realClose = true;   // closing the final tab really closes the window
             Close();
+        }
         return true;
     }
 
@@ -361,7 +364,12 @@ public partial class MainWindow : Window
     private void Save_Click(object sender, RoutedEventArgs e) => ActiveView?.Save(false);
     private void SaveAs_Click(object sender, RoutedEventArgs e) => ActiveView?.Save(true);
     private void CloseTab_Click(object sender, RoutedEventArgs e) => CloseTab(Tabs.SelectedItem as TabItem);
-    private void Exit_Click(object sender, RoutedEventArgs e) => Close();
+
+    private void Exit_Click(object sender, RoutedEventArgs e)
+    {
+        _realClose = true;   // File > Exit always really closes, ignoring the X-button behaviour
+        Close();
+    }
 
     private static void LaunchInstance(string arg)
     {
@@ -435,6 +443,19 @@ public partial class MainWindow : Window
                     v.ApplyAutosaveInterval(seconds);
     }
 
+    private void CloseBehavior_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not MenuItem mi || mi.Tag is not string tag ||
+            !Enum.TryParse<CloseButtonBehavior>(tag, out var behavior))
+            return;
+        AppSettings.Current.CloseButton = behavior;
+        AppSettings.Current.Save();
+        // Keep every window's Options menu in sync with the shared preference.
+        foreach (Window w in Application.Current.Windows)
+            if (w is MainWindow mw)
+                mw.SyncOptionMenus();
+    }
+
     private void SyncOptionMenus()
     {
         var s = AppSettings.Current;
@@ -449,10 +470,17 @@ public partial class MainWindow : Window
         Auto30.IsChecked = s.AutosaveSeconds == 30;
         Auto60.IsChecked = s.AutosaveSeconds == 60;
         Auto300.IsChecked = s.AutosaveSeconds == 300;
+
+        CloseCloses.IsChecked    = s.CloseButton == CloseButtonBehavior.Close;
+        CloseToTray.IsChecked    = s.CloseButton == CloseButtonBehavior.MinimizeToTray;
+        CloseToTaskbar.IsChecked = s.CloseButton == CloseButtonBehavior.MinimizeToTaskbar;
     }
 
     private IEnumerable<EditorView> AllViews() =>
         Tabs.Items.OfType<TabItem>().Select(t => t.Content).OfType<EditorView>();
+
+    /// <summary>Public view over this window's open documents (used for process-wide setting fan-out).</summary>
+    public IEnumerable<EditorView> AllEditorViews() => AllViews();
 
     private void SetUpKeyBindings()
     {
@@ -467,6 +495,22 @@ public partial class MainWindow : Window
         Bind(Key.S, ModifierKeys.Control, () => ActiveView?.Save(false));
         Bind(Key.S, ModifierKeys.Control | ModifierKeys.Shift, () => ActiveView?.Save(true));
         Bind(Key.W, ModifierKeys.Control, () => CloseTab(Tabs.SelectedItem as TabItem));
+    }
+
+    /// <summary>
+    /// Ctrl+C closes the current tab (prompting to save unsaved changes). We intercept it on the
+    /// tunnelling preview pass because the editor TextBox binds Ctrl+C to Copy on the bubbling pass;
+    /// handling it here fires first and suppresses the copy so the close reliably wins.
+    /// </summary>
+    protected override void OnPreviewKeyDown(KeyEventArgs e)
+    {
+        if (e.Key == Key.C && Keyboard.Modifiers == ModifierKeys.Control && !e.IsRepeat)
+        {
+            CloseTab(Tabs.SelectedItem as TabItem);
+            e.Handled = true;
+            return;
+        }
+        base.OnPreviewKeyDown(e);
     }
 
     // ===================== Tab drag: tear-off & reattach =====================
@@ -790,6 +834,12 @@ public partial class MainWindow : Window
         return true;
     }
 
+    /// <summary>Set when this window should really close, overriding the X-button behaviour.</summary>
+    private bool _realClose;
+
+    /// <summary>Tray icon for the "minimise to tray" close behaviour; created on first use.</summary>
+    private System.Windows.Forms.NotifyIcon? _tray;
+
     protected override void OnClosing(System.ComponentModel.CancelEventArgs e)
     {
         if (_forceQuitting)
@@ -798,8 +848,26 @@ public partial class MainWindow : Window
             // the recovery files (do NOT Dispose) so the work is restored next launch — no prompts.
             foreach (var view in AllViews())
                 view.StopTimers();
+            DisposeTray();
             base.OnClosing(e);
             return;
+        }
+
+        // Honour the configured X-button behaviour unless a real close was explicitly requested
+        // (File > Exit, tray "Exit", or closing the final tab).
+        if (!_realClose)
+        {
+            switch (AppSettings.Current.CloseButton)
+            {
+                case CloseButtonBehavior.MinimizeToTaskbar:
+                    e.Cancel = true;
+                    WindowState = WindowState.Minimized;
+                    return;
+                case CloseButtonBehavior.MinimizeToTray:
+                    e.Cancel = true;
+                    MinimizeToTray();
+                    return;
+            }
         }
 
         foreach (var ti in Tabs.Items.OfType<TabItem>().ToList())
@@ -819,7 +887,81 @@ public partial class MainWindow : Window
         foreach (var view in AllViews())
             view.Dispose();
 
+        DisposeTray();
+
         base.OnClosing(e);
+    }
+
+    // ===================== Minimise to tray =====================
+
+    private void DisposeTray()
+    {
+        if (_tray is null)
+            return;
+        _tray.Visible = false;
+        _tray.Dispose();
+        _tray = null;
+    }
+
+    /// <summary>Hide the window to the notification area, showing (creating) its tray icon.</summary>
+    private void MinimizeToTray()
+    {
+        EnsureTrayIcon();
+        _tray!.Visible = true;
+        Hide();                    // drop out of Alt-Tab
+        ShowInTaskbar = false;
+    }
+
+    /// <summary>Bring the window back from the tray and hide its icon.</summary>
+    private void RestoreFromTray()
+    {
+        Show();
+        ShowInTaskbar = true;
+        if (WindowState == WindowState.Minimized)
+            WindowState = WindowState.Normal;
+        Activate();
+        if (_tray is not null)
+            _tray.Visible = false;
+    }
+
+    private void EnsureTrayIcon()
+    {
+        if (_tray is not null)
+            return;
+
+        var menu = new System.Windows.Forms.ContextMenuStrip();
+        menu.Items.Add("Restore", null, (_, _) => Dispatcher.Invoke(RestoreFromTray));
+        menu.Items.Add("Exit", null, (_, _) => Dispatcher.Invoke(() =>
+        {
+            _realClose = true;
+            Close();
+        }));
+
+        _tray = new System.Windows.Forms.NotifyIcon
+        {
+            Icon = TryLoadAppIcon(),
+            Text = "TreeNotepad",
+            ContextMenuStrip = menu,
+        };
+        // Double-click (or a plain left click) restores the window.
+        _tray.DoubleClick += (_, _) => Dispatcher.Invoke(RestoreFromTray);
+    }
+
+    /// <summary>The app's own exe icon, falling back to the generic application icon.</summary>
+    private static System.Drawing.Icon TryLoadAppIcon()
+    {
+        try
+        {
+            var path = Environment.ProcessPath;
+            if (!string.IsNullOrEmpty(path))
+            {
+                var ico = System.Drawing.Icon.ExtractAssociatedIcon(path);
+                if (ico is not null)
+                    return ico;
+            }
+        }
+        catch { /* fall through to the system default */ }
+        return System.Drawing.SystemIcons.Application;
     }
 }
 

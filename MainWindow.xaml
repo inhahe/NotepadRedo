@@ -40,6 +40,15 @@
                               Click="OpenTarget_Click" Tag="instance"/>
                 </MenuItem>
                 <Separator/>
+                <MenuItem Header="When the _X button is clicked...">
+                    <MenuItem x:Name="CloseCloses"    Header="_Close the window"     IsCheckable="True"
+                              Click="CloseBehavior_Click" Tag="Close"/>
+                    <MenuItem x:Name="CloseToTray"    Header="Minimize to _tray"     IsCheckable="True"
+                              Click="CloseBehavior_Click" Tag="MinimizeToTray"/>
+                    <MenuItem x:Name="CloseToTaskbar" Header="Minimize to task_bar"  IsCheckable="True"
+                              Click="CloseBehavior_Click" Tag="MinimizeToTaskbar"/>
+                </MenuItem>
+                <Separator/>
                 <MenuItem Header="_Autosave (crash recovery)">
                     <MenuItem x:Name="AutoOff"  Header="Off"              IsCheckable="True" Tag="0"   Click="AutosaveInterval_Click"/>
                     <MenuItem x:Name="Auto15"   Header="Every 15 seconds" IsCheckable="True" Tag="15"  Click="AutosaveInterval_Click"/>
