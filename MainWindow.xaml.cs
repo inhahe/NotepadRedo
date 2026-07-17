@@ -336,7 +336,16 @@ public partial class MainWindow : Window
         if (dlg.ShowDialog(this) != true)
             return;
 
-        foreach (var f in dlg.FileNames)
+        OpenPaths(dlg.FileNames);
+    }
+
+    /// <summary>
+    /// Open each path, honouring the tab-vs-instance preference and de-duplicating: a file that is
+    /// already open anywhere just gets focused. Used by File &gt; Open and by file drag-and-drop.
+    /// </summary>
+    private void OpenPaths(IEnumerable<string> paths)
+    {
+        foreach (var f in paths)
         {
             // Already open somewhere? Just focus it, regardless of the tab/instance setting.
             if (TryFocusDocument(f) || IpcServer.TryFocusInSibling(f))
@@ -519,9 +528,31 @@ public partial class MainWindow : Window
     {
         base.OnDragOver(e);
         if (!e.Data.GetDataPresent(TabDragFormat))
-            return;   // leave ordinary text/file drops for the editor to handle
+            return;   // leave ordinary text drops for the editor to handle
         e.Effects = DragDropEffects.Move;
         e.Handled = true;
+    }
+
+    // File drops from Explorer are intercepted at the tunnelling (Preview) stage so they open as
+    // tabs instead of falling through to the editor TextBox, which would otherwise insert their
+    // contents/paths into — effectively replacing — the current document.
+    protected override void OnPreviewDragOver(DragEventArgs e)
+    {
+        base.OnPreviewDragOver(e);
+        if (!e.Data.GetDataPresent(DataFormats.FileDrop))
+            return;
+        e.Effects = DragDropEffects.Copy;
+        e.Handled = true;
+    }
+
+    protected override void OnPreviewDrop(DragEventArgs e)
+    {
+        base.OnPreviewDrop(e);
+        if (e.Data.GetData(DataFormats.FileDrop) is not string[] files || files.Length == 0)
+            return;
+        e.Handled = true;
+        OpenPaths(files);
+        ForceForeground();
     }
 
     protected override void OnDrop(DragEventArgs e)
