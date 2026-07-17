@@ -461,9 +461,13 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
     /// <summary>
     /// Resize the tree pane by dragging the divider. We capture the mouse on the divider and drive
     /// <c>TreeColumn.Width</c> from the cursor's X relative to this control — a stable ancestor whose
-    /// width doesn't change during the drag. (A GridSplitter won't move the fixed tree column in this
-    /// layout, and a Thumb stops firing once it repositions under the cursor: "a few pixels then it
-    /// stops". Explicit capture avoids both problems.)
+    /// width doesn't change during the drag.
+    ///
+    /// The dragging state is validated against the live button state on every move: if the button is
+    /// no longer down (e.g. a mouse-up was missed, or capture was lost during the resize layout pass),
+    /// we end the drag and release capture immediately. Without that guard a stale capture would steal
+    /// all mouse input app-wide — the divider would "move when the mouse is merely near it" and other
+    /// controls (like the preview slider) would stop responding entirely.
     /// </summary>
     private void Splitter_MouseLeftButtonDown(object sender, System.Windows.Input.MouseButtonEventArgs e)
     {
@@ -471,6 +475,7 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
             return;
         _draggingSplitter = true;
         Splitter.CaptureMouse();
+        Splitter.LostMouseCapture += Splitter_LostMouseCapture;
         e.Handled = true;
     }
 
@@ -478,6 +483,13 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
     {
         if (!_draggingSplitter)
             return;
+
+        // Only resize while the left button is genuinely held; otherwise the drag is over.
+        if (e.LeftButton != System.Windows.Input.MouseButtonState.Pressed)
+        {
+            EndSplitterDrag();
+            return;
+        }
 
         double splitter = Splitter.ActualWidth;
         // Cursor X within this control; the tree fills everything to the right of the cursor.
@@ -497,9 +509,19 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
     {
         if (!_draggingSplitter)
             return;
-        _draggingSplitter = false;
-        Splitter.ReleaseMouseCapture();
+        EndSplitterDrag();
         e.Handled = true;
+    }
+
+    private void Splitter_LostMouseCapture(object sender, System.Windows.Input.MouseEventArgs e) => EndSplitterDrag();
+
+    /// <summary>End a divider drag and let go of the mouse, however the drag was interrupted.</summary>
+    private void EndSplitterDrag()
+    {
+        _draggingSplitter = false;
+        Splitter.LostMouseCapture -= Splitter_LostMouseCapture;
+        if (Splitter.IsMouseCaptured)
+            Splitter.ReleaseMouseCapture();
     }
 
     /// <summary>Reveal the tree just long enough for the user to choose a redo branch.</summary>
