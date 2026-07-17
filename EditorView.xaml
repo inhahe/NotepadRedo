@@ -5,7 +5,7 @@
         <Grid.ColumnDefinitions>
             <ColumnDefinition Width="*" MinWidth="200"/>
             <ColumnDefinition Width="Auto"/>
-            <ColumnDefinition x:Name="TreeColumn" Width="340" MinWidth="140"/>
+            <ColumnDefinition x:Name="TreeColumn" Width="340" MinWidth="80"/>
         </Grid.ColumnDefinitions>
 
         <TextBox x:Name="Editor" Grid.Column="0"
@@ -19,10 +19,17 @@
                  TextChanged="Editor_TextChanged"
                  SelectionChanged="Editor_SelectionChanged"/>
 
-        <GridSplitter x:Name="Splitter" Grid.Column="1" Width="6"
-                      HorizontalAlignment="Stretch" VerticalAlignment="Stretch"
-                      ResizeBehavior="PreviousAndNext" ResizeDirection="Columns"
-                      Cursor="SizeWE" Background="#DDDDDD"/>
+        <!-- Manual splitter: a bare GridSplitter would not resize the fixed tree column in this
+             layout, so we drive TreeColumn.Width directly from the Thumb's DragDelta. -->
+        <Thumb x:Name="Splitter" Grid.Column="1" Width="6"
+               HorizontalAlignment="Stretch" VerticalAlignment="Stretch"
+               Cursor="SizeWE" DragDelta="Splitter_DragDelta">
+            <Thumb.Template>
+                <ControlTemplate TargetType="Thumb">
+                    <Border Background="#DDDDDD"/>
+                </ControlTemplate>
+            </Thumb.Template>
+        </Thumb>
 
         <DockPanel x:Name="TreePanel" Grid.Column="2" Margin="4">
             <Border DockPanel.Dock="Top" Background="#F3F3F3" Padding="6" Margin="0,0,0,4"

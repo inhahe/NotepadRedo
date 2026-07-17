@@ -448,8 +448,39 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
 
         // MinWidth must drop to 0 when hidden, otherwise the column keeps its minimum width
         // and leaves an empty gap even with Width=0.
-        TreeColumn.MinWidth = show ? 140 : 0;
+        TreeColumn.MinWidth = show ? TreeMinWidth : 0;
         TreeColumn.Width = show ? new GridLength(_treeWidth) : new GridLength(0);
+    }
+
+    /// <summary>Smallest the tree pane may be dragged; also the persistent-hide floor.</summary>
+    private const double TreeMinWidth = 80;
+
+    /// <summary>
+    /// Resize the tree pane by dragging the divider. The bare GridSplitter didn't move the fixed
+    /// tree column in this layout, so we set <c>TreeColumn.Width</c> ourselves. Rather than
+    /// accumulate <see cref="System.Windows.Controls.Primitives.DragDeltaEventArgs.HorizontalChange"/>
+    /// deltas (whose meaning gets muddled once the Thumb repositions mid-drag), we derive the tree
+    /// width directly from the live cursor position relative to the control's right edge. The Thumb
+    /// captures the mouse for the duration of the drag, so <c>Mouse.GetPosition(this)</c> tracks the
+    /// cursor even when it moves off the 6px divider.
+    /// </summary>
+    private void Splitter_DragDelta(object sender, System.Windows.Controls.Primitives.DragDeltaEventArgs e)
+    {
+        if (TreePanel.Visibility != Visibility.Visible)
+            return;
+
+        double splitter = Splitter.ActualWidth;
+        // Cursor X within this control; the tree fills everything to the right of the cursor.
+        double cursorX = System.Windows.Input.Mouse.GetPosition(this).X;
+        double target = ActualWidth - cursorX - splitter / 2;
+
+        // Never crowd the editor out: cap the tree at the room left after the editor's minimum.
+        double editorMin = 200;
+        double max = Math.Max(TreeMinWidth, ActualWidth - editorMin - splitter);
+        target = Math.Clamp(target, TreeMinWidth, max);
+
+        TreeColumn.Width = new GridLength(target);
+        _treeWidth = target;
     }
 
     /// <summary>Reveal the tree just long enough for the user to choose a redo branch.</summary>
