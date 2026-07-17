@@ -20,6 +20,7 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
 
     private bool _suppressTextChange;      // ignore programmatic edits
     private bool _suppressTreeSelection;   // ignore programmatic tree selection
+    private bool _navigating;              // a commit/navigate is in flight — block reentrancy
 
     private string _currentText = "";      // materialised text of _tree.Current
     private string? _currentPath;
@@ -162,22 +163,78 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
     private void CommitPending()
     {
         _debounce.Stop();
-        var node = _tree.Commit(_currentText, Editor.Text, Editor.CaretIndex);
-        if (node is not null)
+        // Non-reentrant: a reentrant call (e.g. from a tree-selection event fired while we update
+        // the selection below) must not commit a second, duplicate node for the same edit.
+        if (_navigating)
+            return;
+        _navigating = true;
+        try
         {
-            _currentText = Editor.Text;
-            SetCurrent(node);
-            RaiseAll();
+            var node = _tree.Commit(_currentText, Editor.Text, Editor.CaretIndex);
+            if (node is not null)
+            {
+                _currentText = Editor.Text;
+                SetCurrent(node);
+                RaiseAll();
+            }
+        }
+        catch (Exception ex)
+        {
+            CrashLog.Log("CommitPending failed", ex);
+        }
+        finally
+        {
+            _navigating = false;
         }
     }
 
     private void NavigateTo(UndoNode target)
     {
-        string text = UndoTree.Reconstruct(_tree.Current, _currentText, target);
-        _tree.SetCurrent(target);
-        _currentText = text;
-        ApplyNode(target, text);
-        HideTreeIfTemporary();   // a branch was chosen — collapse a pane that was only revealed to pick it
+        // Non-reentrant: programmatically selecting the target below can fire tree-selection
+        // events that would otherwise re-enter this while _currentText is half-updated,
+        // desyncing the model and (previously) crashing text reconstruction.
+        if (_navigating)
+            return;
+        _navigating = true;
+        try
+        {
+            string text = UndoTree.Reconstruct(_tree.Current, _currentText, target);
+            _tree.SetCurrent(target);
+            _currentText = text;
+            ApplyNode(target, text);
+            HideTreeIfTemporary();   // a branch was chosen — collapse a pane revealed only to pick it
+        }
+        catch (Exception ex)
+        {
+            // Reconstruction should never fail, but if the model ever desyncs, log a full
+            // traceback and recover by re-anchoring on the target instead of crashing.
+            CrashLog.Log("NavigateTo failed — resyncing to target node", ex);
+            ResyncTo(target);
+        }
+        finally
+        {
+            _navigating = false;
+        }
+    }
+
+    /// <summary>
+    /// Recovery path: adopt <paramref name="target"/> as the current node using the editor's
+    /// live text as ground truth, without attempting delta reconstruction. Keeps the app usable
+    /// even if the history model ever gets into an inconsistent state.
+    /// </summary>
+    private void ResyncTo(UndoNode target)
+    {
+        try
+        {
+            _tree.SetCurrent(target);
+            _currentText = Editor.Text;
+            SetCurrent(target);
+            RaiseAll();
+        }
+        catch (Exception ex)
+        {
+            CrashLog.Log("ResyncTo failed", ex);
+        }
     }
 
     private void ApplyNode(UndoNode node, string text)
@@ -195,14 +252,23 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
     /// <summary>Highlight, expand to and select the given node in the tree view.</summary>
     private void SetCurrent(UndoNode node)
     {
+        // Clear both flags across the tree so stale highlights (IsCurrent) and stale selection
+        // rows (IsSelected — the TwoWay binding otherwise leaves earlier nodes marked selected)
+        // don't linger and make it look like several nodes are active at once.
+        _suppressTreeSelection = true;
         foreach (var n in _tree.AllNodes())
-            n.IsCurrent = false;
+        {
+            if (!ReferenceEquals(n, node))
+            {
+                n.IsCurrent = false;
+                n.IsSelected = false;
+            }
+        }
         node.IsCurrent = true;
 
         var p = node.Parent;
         while (p is not null) { p.IsExpanded = true; p = p.Parent; }
 
-        _suppressTreeSelection = true;
         node.IsSelected = true;
         _suppressTreeSelection = false;
     }
@@ -237,7 +303,7 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
 
     private void Tree_SelectedItemChanged(object sender, RoutedPropertyChangedEventArgs<object> e)
     {
-        if (_suppressTreeSelection)
+        if (_suppressTreeSelection || _navigating)
             return;
         if (e.NewValue is UndoNode node && node != _tree.Current)
         {

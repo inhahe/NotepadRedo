@@ -1,4 +1,6 @@
+using System.Threading.Tasks;
 using System.Windows;
+using System.Windows.Threading;
 
 namespace TreeNotepad;
 
@@ -9,6 +11,19 @@ public partial class App : Application
     protected override void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
+
+        // Log a full traceback for every unhandled exception. UI-thread exceptions are logged
+        // and swallowed so a transient bug doesn't destroy the user's unsaved work; truly fatal
+        // (non-UI) exceptions are logged on the way down.
+        DispatcherUnhandledException += OnDispatcherUnhandledException;
+        AppDomain.CurrentDomain.UnhandledException += (_, args) =>
+            CrashLog.Log($"FATAL AppDomain.UnhandledException (terminating={args.IsTerminating})",
+                         args.ExceptionObject as Exception);
+        TaskScheduler.UnobservedTaskException += (_, args) =>
+        {
+            CrashLog.Log("UnobservedTaskException", args.Exception);
+            args.SetObserved();
+        };
 
         var files = e.Args.Where(a => !a.StartsWith("--", StringComparison.Ordinal)).ToList();
         bool blankRequested = e.Args.Contains("--new");
@@ -43,6 +58,14 @@ public partial class App : Application
         var window = new MainWindow();
         window.Show();
         window.Initialize(files, blankRequested);
+    }
+
+    private void OnDispatcherUnhandledException(object sender, DispatcherUnhandledExceptionEventArgs e)
+    {
+        CrashLog.Log("DispatcherUnhandledException (UI thread)", e.Exception);
+        // Keep the app alive: the user's open documents are worth more than crashing on a
+        // recoverable UI glitch. The full traceback is already on disk for diagnosis.
+        e.Handled = true;
     }
 
     protected override void OnExit(ExitEventArgs e)
