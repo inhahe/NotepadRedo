@@ -79,14 +79,14 @@ public sealed class UndoNode : INotifyPropertyChanged
     public static int PreviewLength = 30;
 
     public int Id { get; }
-    public TextEdit? Edit { get; }        // null only for the root
-    public int CaretIndex { get; }
-    public int Length { get; }            // full text length at this node
+    public TextEdit? Edit { get; private set; }   // null only for the root
+    public int CaretIndex { get; private set; }
+    public int Length { get; private set; }       // full text length at this node
     public DateTime Timestamp { get; }
     public UndoNode? Parent { get; }
     public ObservableCollection<UndoNode> Children { get; } = new();
 
-    private readonly string _previewPrefix;   // raw first PreviewCache chars of this node's text
+    private string _previewPrefix;   // raw first PreviewCache chars of this node's text
 
     public UndoNode(int id, TextEdit? edit, string fullText, int caretIndex, UndoNode? parent)
     {
@@ -101,23 +101,48 @@ public sealed class UndoNode : INotifyPropertyChanged
             : fullText.Substring(0, PreviewCache);
     }
 
-    /// <summary>First N characters of the text, flattened to a single line.</summary>
+    /// <summary>
+    /// A human-readable summary of *what changed* at this node — not the (often identical) opening
+    /// text of the whole document. For the root, that's the document's opening text; for every
+    /// other node it's the inserted / deleted / replaced span, so sibling edits look distinct.
+    /// </summary>
     public string Preview
     {
         get
         {
-            var t = _previewPrefix
-                .Replace("\r\n", " ")
-                .Replace('\n', ' ')
-                .Replace('\r', ' ')
-                .Replace('\t', ' ')
-                .Trim();
-            if (t.Length == 0)
-                return "\u2205 (empty)";
             int n = Math.Max(1, PreviewLength);
-            return t.Length <= n ? t : t.Substring(0, n) + "\u2026";
+
+            // Root (or any node without an edit): show the start of the document.
+            if (Edit is null)
+            {
+                var t = Flatten(_previewPrefix).Trim();
+                if (t.Length == 0)
+                    return "\u2205 (empty)";
+                return Clip(t, n);
+            }
+
+            string ins = Clip(Flatten(Edit.NewText), n);
+            string del = Clip(Flatten(Edit.OldText), n);
+
+            if (ins.Length == 0 && del.Length == 0)
+                return "(no change)";
+            if (del.Length == 0)
+                return "+ " + ins;          // pure insertion
+            if (ins.Length == 0)
+                return "\u2212 " + del;     // pure deletion (minus sign)
+            return del + " \u2192 " + ins;  // replacement (arrow)
         }
     }
+
+    /// <summary>Collapse line breaks / tabs so an edit spanning newlines stays a single row.</summary>
+    private static string Flatten(string s) => s
+        .Replace("\r\n", "\u23ce")   // ⏎ return symbol keeps newline edits visible
+        .Replace('\n', '\u23ce')
+        .Replace('\r', '\u23ce')
+        .Replace('\t', ' ');
+
+    /// <summary>Truncate to n characters with a trailing ellipsis.</summary>
+    private static string Clip(string s, int n) => s.Length <= n ? s : s.Substring(0, n) + "\u2026";
 
     public string Meta => $"#{Id}  \u00b7  {Length} chars  \u00b7  {Timestamp:HH:mm:ss}";
 
@@ -147,6 +172,20 @@ public sealed class UndoNode : INotifyPropertyChanged
     {
         OnPropertyChanged(nameof(Preview));
         OnPropertyChanged(nameof(Meta));
+    }
+
+    /// <summary>
+    /// Rewrite this node's edit and cached text in place. Used to coalesce a continuous run of
+    /// typing into a single history node (instead of one node per debounce tick) — only ever
+    /// applied to the leaf node that the current typing burst created.
+    /// </summary>
+    internal void UpdateEdit(TextEdit edit, string fullText, int caretIndex)
+    {
+        Edit = edit;
+        CaretIndex = caretIndex;
+        Length = fullText.Length;
+        _previewPrefix = fullText.Length <= PreviewCache ? fullText : fullText.Substring(0, PreviewCache);
+        RaisePreviewChanged();
     }
 
     public event PropertyChangedEventHandler? PropertyChanged;
@@ -188,6 +227,28 @@ public sealed class UndoTree
         Current.Children.Add(node);
         Current = node;
         return node;
+    }
+
+    /// <summary>
+    /// Fold a continuation edit into the current node instead of adding a new child. The current
+    /// node must be a childless, non-root leaf (an in-progress typing node); its edit is recomputed
+    /// as the diff from its parent's text straight to <paramref name="newText"/>, so a whole run of
+    /// consecutive keystrokes collapses to one history node. <paramref name="currentText"/> is the
+    /// materialised text of <see cref="Current"/>. Returns false when coalescing doesn't apply
+    /// (caller should <see cref="Commit"/> a new node instead).
+    /// </summary>
+    public bool Coalesce(string currentText, string newText, int caretIndex)
+    {
+        if (Current.Parent is null || Current.Children.Count > 0)
+            return false;
+
+        string parentText = Reconstruct(Current, currentText, Current.Parent);
+        var edit = TextEdit.Diff(parentText, newText);
+        if (edit is null)
+            return false;   // typing came back to exactly the parent's text — let the caller decide
+
+        Current.UpdateEdit(edit, newText, caretIndex);
+        return true;
     }
 
     /// <summary>The most recently created child of the current node (newest redo branch).</summary>

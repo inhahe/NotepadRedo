@@ -28,6 +28,15 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
 
     private const int DebounceMs = 500;
 
+    // ----- Typing-burst coalescing -----
+    // Consecutive edits within one continuous typing session are folded into a single history node
+    // rather than creating one node per 500ms debounce tick (which used to bury the tree under
+    // dozens of near-identical entries). A burst is broken by navigating/undo/redo, or by an idle
+    // gap longer than CoalesceWindowMs — each of those starts a fresh checkpoint node.
+    private const int CoalesceWindowMs = 4000;
+    private UndoNode? _typingNode;         // the leaf node the current burst is being folded into
+    private DateTime _lastEditTime;        // when the last edit was committed/coalesced
+
     // ----- Autosave / crash recovery (per document) -----
     private readonly DispatcherTimer _autosave = new();
     private string _lastRecoveryText = "";
@@ -116,6 +125,7 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
         _savedText = dto.SavedText;
         _tree = UndoTree.Deserialize(dto.Tree);
         _currentText = dto.CurrentText;
+        _typingNode = null;
         Tree.ItemsSource = _tree.Root.Children;
 
         _suppressTextChange = true;
@@ -170,10 +180,28 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
         _navigating = true;
         try
         {
+            if (Editor.Text == _currentText)
+                return;   // nothing changed since the last commit
+
+            // Fold this edit into the current burst's node when it's still the open typing leaf and
+            // the pause was short; otherwise start a fresh checkpoint node.
+            bool canCoalesce = ReferenceEquals(_tree.Current, _typingNode)
+                               && (DateTime.Now - _lastEditTime).TotalMilliseconds <= CoalesceWindowMs;
+
+            if (canCoalesce && _tree.Coalesce(_currentText, Editor.Text, Editor.CaretIndex))
+            {
+                _currentText = Editor.Text;
+                _lastEditTime = DateTime.Now;
+                RaiseAll();
+                return;
+            }
+
             var node = _tree.Commit(_currentText, Editor.Text, Editor.CaretIndex);
             if (node is not null)
             {
                 _currentText = Editor.Text;
+                _typingNode = node;
+                _lastEditTime = DateTime.Now;
                 SetCurrent(node);
                 RaiseAll();
             }
@@ -201,6 +229,7 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
             string text = UndoTree.Reconstruct(_tree.Current, _currentText, target);
             _tree.SetCurrent(target);
             _currentText = text;
+            _typingNode = null;   // a jump ends the current typing burst — next edit starts anew
             ApplyNode(target, text);
             HideTreeIfTemporary();   // a branch was chosen — collapse a pane revealed only to pick it
         }
@@ -228,6 +257,7 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
         {
             _tree.SetCurrent(target);
             _currentText = Editor.Text;
+            _typingNode = null;
             SetCurrent(target);
             RaiseAll();
         }
@@ -373,6 +403,7 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
     {
         _tree = new UndoTree(text);
         _currentText = text;
+        _typingNode = null;
         Tree.ItemsSource = _tree.Root.Children;
 
         _suppressTextChange = true;

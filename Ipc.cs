@@ -16,6 +16,8 @@ namespace TreeNotepad;
 ///                       across processes, so the origin drops its copy after the move).
 ///   QUIT  &lt;any&gt;     — flush every open document to crash recovery and exit (used by the build
 ///                       script to close the app cleanly before overwriting the exe).
+///   QUITSAVE &lt;any&gt;  — save titled docs to disk and untitled docs to crash recovery, then exit
+///                       (save-first variant of QUIT).
 /// </summary>
 public sealed class IpcServer : IDisposable
 {
@@ -62,6 +64,7 @@ public sealed class IpcServer : IDisposable
                 "OPEN"  => MainWindow.OpenDocument(arg),
                 "CLOSE" => MainWindow.CloseTabByToken(arg),
                 "QUIT"  => MainWindow.RequestQuitWithRecovery(),
+                "QUITSAVE" => MainWindow.RequestQuitWithSave(),
                 _       => false,
             });
         }
@@ -109,6 +112,32 @@ public sealed class IpcServer : IDisposable
                 if (proc.Id == self)
                     continue;
                 if (Send(proc.Id, "QUIT", "quit", steal: false))
+                    acked++;
+            }
+        }
+        return acked;
+    }
+
+    /// <summary>
+    /// Ask every other TreeNotepad process to save its work (titled documents to disk, untitled
+    /// ones to crash recovery) and exit. Returns the number of siblings that acknowledged. Used
+    /// before a redeploy overwrites the exe when unsaved work should be persisted, not just parked.
+    /// </summary>
+    public static int QuitAllSiblingsAndSave()
+    {
+        int self = Environment.ProcessId;
+        string procName;
+        try { procName = Process.GetCurrentProcess().ProcessName; }
+        catch { return 0; }
+
+        int acked = 0;
+        foreach (var proc in SafeGetProcesses(procName))
+        {
+            using (proc)
+            {
+                if (proc.Id == self)
+                    continue;
+                if (Send(proc.Id, "QUITSAVE", "quit", steal: false))
                     acked++;
             }
         }

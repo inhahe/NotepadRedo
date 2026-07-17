@@ -10,9 +10,10 @@ if errorlevel 1 (
     exit /b 1
 )
 
-echo Closing any running TreeNotepad (autosaving to crash recovery first)...
-REM Ask every running instance to flush unsaved work to crash recovery and exit cleanly.
-"%~dp0publish\TreeNotepad.exe" --quit
+echo Closing any running TreeNotepad (saving work first)...
+REM Ask every running instance to save its work and exit cleanly: titled documents are written
+REM straight to their file, untitled ones are parked in crash recovery (restored on next launch).
+"%~dp0publish\TreeNotepad.exe" --quit-save
 REM Give graceful shutdown a moment to complete. (ping is used instead of timeout so the
 REM wait works even when stdin is redirected or a shadowing "timeout" is on PATH.)
 "%SystemRoot%\System32\ping.exe" -n 3 127.0.0.1 >nul

@@ -25,8 +25,17 @@ public partial class App : Application
             args.SetObserved();
         };
 
-        // Signalling launch: tell every running instance to autosave-to-recovery and exit, then
-        // exit ourselves without ever showing a window. Used by build.bat before a redeploy.
+        // Signalling launch: tell every running instance to save/park its work and exit, then exit
+        // ourselves without ever showing a window. Used by build.bat before a redeploy.
+        //   --quit-save : titled docs saved to disk, untitled parked in crash recovery.
+        //   --quit      : everything parked in crash recovery (nothing written to its file).
+        // Check the more specific flag first so "--quit-save" isn't swallowed by the "--quit" case.
+        if (e.Args.Contains("--quit-save"))
+        {
+            IpcServer.QuitAllSiblingsAndSave();
+            Shutdown();
+            return;
+        }
         if (e.Args.Contains("--quit"))
         {
             IpcServer.QuitAllSiblings();
