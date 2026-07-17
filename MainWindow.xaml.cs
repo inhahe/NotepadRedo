@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Text.Json;
+using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -514,15 +515,108 @@ public partial class MainWindow : Window
         try { data.SetData(DocFormat, JsonSerializer.Serialize(view.SerializeDocument())); }
         catch { /* worst case: cross-process drop is a no-op, local move still works */ }
 
-        var effect = DragDrop.DoDragDrop(ti, data, DragDropEffects.Move);
+        // WPF's DoDragDrop draws no drag image, so a torn-off tab used to give no visual feedback.
+        // Float a small click-through label under the cursor for the duration of the drag. The
+        // ghost is best-effort: any failure here must never disturb the actual drag/drop.
+        Window? ghost = null;
+        QueryContinueDragEventHandler? onQuery = null;
+        try { ghost = CreateDragGhost(view.TabTitle); PositionGhost(ghost); } catch { ghost = null; }
+        if (ghost is not null)
+        {
+            onQuery = (_, _) => PositionGhost(ghost);
+            ti.QueryContinueDrag += onQuery;
+        }
 
-        // No window accepted the drop (and the tab is still ours) → tear off at the cursor.
-        if (effect != DragDropEffects.Move && ReferenceEquals(TabDrag.Item, ti) && FindTab(view) is not null)
-            DetachToNewWindow(ti);
+        try
+        {
+            var effect = DragDrop.DoDragDrop(ti, data, DragDropEffects.Move);
 
-        TabDrag.Item = null;
-        TabDrag.Source = null;
+            // No window accepted the drop (and the tab is still ours) → tear off at the cursor.
+            if (effect != DragDropEffects.Move && ReferenceEquals(TabDrag.Item, ti) && FindTab(view) is not null)
+                DetachToNewWindow(ti);
+        }
+        finally
+        {
+            if (onQuery is not null) ti.QueryContinueDrag -= onQuery;
+            try { ghost?.Close(); } catch { /* already gone */ }
+            TabDrag.Item = null;
+            TabDrag.Source = null;
+        }
     }
+
+    /// <summary>A small translucent label that trails the cursor while a tab is being dragged.</summary>
+    private Window CreateDragGhost(string title)
+    {
+        var w = new Window
+        {
+            WindowStyle = WindowStyle.None,
+            AllowsTransparency = true,
+            Background = Brushes.Transparent,
+            ShowInTaskbar = false,
+            ShowActivated = false,          // never steal focus / capture from the drag
+            Topmost = true,
+            ResizeMode = ResizeMode.NoResize,
+            SizeToContent = SizeToContent.WidthAndHeight,
+            IsHitTestVisible = false,
+            Focusable = false,
+            Content = new Border
+            {
+                Background = new SolidColorBrush(Color.FromArgb(235, 45, 45, 48)),
+                BorderBrush = new SolidColorBrush(Color.FromArgb(255, 110, 110, 115)),
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(3),
+                Padding = new Thickness(10, 5, 10, 5),
+                Child = new TextBlock
+                {
+                    Text = string.IsNullOrEmpty(title) ? "Untitled" : title,
+                    Foreground = Brushes.White,
+                    FontSize = 12,
+                    TextTrimming = TextTrimming.CharacterEllipsis,
+                    MaxWidth = 360,
+                }
+            }
+        };
+        // Make it click-through at the Win32 level so it never intercepts OLE drop hit-testing.
+        w.SourceInitialized += (_, _) => MakeClickThrough(w);
+        w.Show();
+        return w;
+    }
+
+    private void PositionGhost(Window ghost)
+    {
+        try
+        {
+            var p = CursorPositionDip();
+            ghost.Left = p.X + 14;   // offset so the cursor hotspot stays clear of the label
+            ghost.Top = p.Y + 8;
+        }
+        catch { /* best-effort */ }
+    }
+
+    private const int GWL_EXSTYLE = -20;
+    private const int WS_EX_TRANSPARENT = 0x00000020;
+    private const int WS_EX_NOACTIVATE = 0x08000000;
+    private const int WS_EX_TOOLWINDOW = 0x00000080;
+
+    private static void MakeClickThrough(Window w)
+    {
+        try
+        {
+            var hwnd = new WindowInteropHelper(w).Handle;
+            if (hwnd == IntPtr.Zero)
+                return;
+            long ex = GetWindowLongPtr(hwnd, GWL_EXSTYLE).ToInt64();
+            ex |= WS_EX_TRANSPARENT | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW;
+            SetWindowLongPtr(hwnd, GWL_EXSTYLE, new IntPtr(ex));
+        }
+        catch { /* click-through is a nicety, not required */ }
+    }
+
+    [DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW", SetLastError = true)]
+    private static extern IntPtr GetWindowLongPtr(IntPtr hWnd, int nIndex);
+
+    [DllImport("user32.dll", EntryPoint = "SetWindowLongPtrW", SetLastError = true)]
+    private static extern IntPtr SetWindowLongPtr(IntPtr hWnd, int nIndex, IntPtr dwNewLong);
 
     protected override void OnDragOver(DragEventArgs e)
     {
@@ -595,7 +689,17 @@ public partial class MainWindow : Window
         ForceForeground();
 
         if (e.Data.GetData(TokenFormat) is string token && !string.IsNullOrEmpty(token))
-            IpcServer.CloseTabInProcess(srcPid, token);
+        {
+            // Fire-and-forget on a background thread — do NOT block here. We are running inside the
+            // OLE drop callback while the source process is still blocked in DoDragDrop; it can only
+            // service our CLOSE request after its Drop call (i.e. this method) returns. Blocking on
+            // the pipe round-trip here would deadlock both processes (source waits on us, we wait on
+            // source). Returning promptly lets the source's DoDragDrop finish and then answer the
+            // CLOSE. The source only tears off when the drop reports something other than Move, and
+            // we set Move above, so the leftover tab is simply closed a moment later.
+            int pidToClose = srcPid;
+            Task.Run(() => IpcServer.CloseTabInProcess(pidToClose, token));
+        }
     }
 
     private void DetachToNewWindow(TabItem ti)
