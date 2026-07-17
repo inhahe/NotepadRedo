@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -17,14 +18,16 @@ namespace TreeNotepad;
 /// </summary>
 public partial class MainWindow : Window
 {
-    private const string TabDragFormat = "TreeNotepadTab";
+    private const string TabDragFormat = "TreeNotepadTab";     // marker: this drag is a tab
+    private const string DocFormat = "TreeNotepadDoc";         // JSON DocDto for cross-process moves
+    private const string PidFormat = "TreeNotepadPid";         // origin process id
+    private const string TokenFormat = "TreeNotepadToken";     // origin document RecoveryId
 
     /// <summary>In-process handoff state for a tab drag (never serialised across processes).</summary>
     private static class TabDrag
     {
         public static TabItem? Item;
         public static MainWindow? Source;
-        public static bool Handled;
     }
 
     private Point _dragStart;
@@ -175,6 +178,44 @@ public partial class MainWindow : Window
             mw.Tabs.SelectedItem = ti;
             mw.ForceForeground();
             (ti.Content as EditorView)?.FocusEditor();
+            return true;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Open a file as a new tab in an existing window of this process (tab-mode consolidation
+    /// from another launch). Focuses it if it happens to be open already. Always succeeds when
+    /// there is a window to host it.
+    /// </summary>
+    public static bool OpenDocument(string path)
+    {
+        if (TryFocusDocument(path))
+            return true;
+        var mw = Application.Current.Windows.OfType<MainWindow>().FirstOrDefault();
+        if (mw is null)
+            return false;
+        mw.OpenFileInTab(path);
+        mw.ForceForeground();
+        return true;
+    }
+
+    /// <summary>
+    /// Remove (and dispose) the tab whose document has the given RecoveryId, wherever it lives
+    /// in this process. Used after a tab is torn off into another process. Returns true if found.
+    /// </summary>
+    public static bool CloseTabByToken(string token)
+    {
+        foreach (Window w in Application.Current.Windows)
+        {
+            if (w is not MainWindow mw)
+                continue;
+            var ti = mw.Tabs.Items.OfType<TabItem>().FirstOrDefault(t =>
+                t.Content is EditorView v && v.RecoveryId == token);
+            if (ti is null)
+                continue;
+            mw.RemoveTab(ti, dispose: true);
+            mw.CloseIfEmpty();
             return true;
         }
         return false;
@@ -442,18 +483,28 @@ public partial class MainWindow : Window
 
     private void BeginTabDrag(TabItem ti)
     {
+        if (ti.Content is not EditorView view)
+            return;
+
         TabDrag.Item = ti;
         TabDrag.Source = this;
-        TabDrag.Handled = false;
 
-        var data = new DataObject(TabDragFormat, "1");
-        DragDrop.DoDragDrop(ti, data, DragDropEffects.Move);
+        // Carry both an in-process handle (via the static) and a fully serialised copy so the
+        // tab can be reconstructed in another process. The pid lets a drop target tell the two
+        // paths apart; the token lets the origin be asked to drop its copy after a cross-process move.
+        var data = new DataObject();
+        data.SetData(TabDragFormat, "1");
+        data.SetData(PidFormat, Environment.ProcessId.ToString());
+        data.SetData(TokenFormat, view.RecoveryId);
+        try { data.SetData(DocFormat, JsonSerializer.Serialize(view.SerializeDocument())); }
+        catch { /* worst case: cross-process drop is a no-op, local move still works */ }
 
-        if (!TabDrag.Handled && ReferenceEquals(TabDrag.Item, ti))
-        {
-            // Dropped outside every window → tear off into a new window at the cursor.
+        var effect = DragDrop.DoDragDrop(ti, data, DragDropEffects.Move);
+
+        // No window accepted the drop (and the tab is still ours) → tear off at the cursor.
+        if (effect != DragDropEffects.Move && ReferenceEquals(TabDrag.Item, ti) && FindTab(view) is not null)
             DetachToNewWindow(ti);
-        }
+
         TabDrag.Item = null;
         TabDrag.Source = null;
     }
@@ -470,20 +521,44 @@ public partial class MainWindow : Window
     protected override void OnDrop(DragEventArgs e)
     {
         base.OnDrop(e);
-        if (!e.Data.GetDataPresent(TabDragFormat) || TabDrag.Item is not TabItem ti)
+        if (!e.Data.GetDataPresent(TabDragFormat))
             return;
 
-        TabDrag.Handled = true;
+        e.Handled = true;
+        e.Effects = DragDropEffects.Move;   // accepted → origin's DoDragDrop returns Move (no tear-off)
 
-        if (ReferenceEquals(TabDrag.Source, this))
-            return;   // dropped back on its own window: keep it where it is
+        int srcPid = (e.Data.GetData(PidFormat) as string) is string ps && int.TryParse(ps, out int p) ? p : -1;
 
-        if (ti.Content is EditorView view)
+        if (srcPid == Environment.ProcessId)
         {
+            // Same process: move the live control, preserving all in-memory state and UI.
+            if (TabDrag.Item is not TabItem ti || ti.Content is not EditorView view)
+                return;
+            if (ReferenceEquals(TabDrag.Source, this))
+                return;   // dropped back on its own window: keep it where it is
             TabDrag.Source?.RemoveTab(ti, dispose: false);
             AdoptView(view, select: true);
             TabDrag.Source?.CloseIfEmpty();
+            return;
         }
+
+        // Cross process: reconstruct the document from its serialised form, then ask the origin
+        // process to drop its now-moved tab.
+        if (e.Data.GetData(DocFormat) is not string json || string.IsNullOrEmpty(json))
+            return;
+        EditorView.DocDto? dto = null;
+        try { dto = JsonSerializer.Deserialize<EditorView.DocDto>(json); }
+        catch { }
+        if (dto is null)
+            return;
+
+        var adopted = CreateBlankView();
+        adopted.LoadTransferred(dto);
+        AdoptView(adopted, select: true);
+        ForceForeground();
+
+        if (e.Data.GetData(TokenFormat) is string token && !string.IsNullOrEmpty(token))
+            IpcServer.CloseTabInProcess(srcPid, token);
     }
 
     private void DetachToNewWindow(TabItem ti)

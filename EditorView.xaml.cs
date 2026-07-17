@@ -98,6 +98,39 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
         ResetTree(text);
     }
 
+    /// <summary>Full document snapshot (path + saved/current text + entire history) for tab transfer.</summary>
+    public sealed record DocDto(string? Path, string SavedText, string CurrentText, TreeDto Tree);
+
+    /// <summary>Serialise this document (with its whole undo history) for a cross-process tab move.</summary>
+    public DocDto SerializeDocument()
+    {
+        CommitPending();
+        return new DocDto(_currentPath, _savedText, Editor.Text, _tree.Serialize(_currentText));
+    }
+
+    /// <summary>Rebuild a document (moved here from another process) into this blank view.</summary>
+    public void LoadTransferred(DocDto dto)
+    {
+        _currentPath = dto.Path;
+        _savedText = dto.SavedText;
+        _tree = UndoTree.Deserialize(dto.Tree);
+        _currentText = dto.CurrentText;
+        Tree.ItemsSource = _tree.Root.Children;
+
+        _suppressTextChange = true;
+        Editor.Text = dto.CurrentText;
+        Editor.CaretIndex = Math.Clamp(_tree.Current.CaretIndex, 0, dto.CurrentText.Length);
+        _suppressTextChange = false;
+
+        _lastAutosave = null;
+        _lastRecoveryText = "";
+
+        SetCurrent(_tree.Current);
+        RaiseAll();
+        WriteRecovery();   // this instance now owns crash recovery for the moved document
+        Editor.Focus();
+    }
+
     /// <summary>Seed this view directly from a recovered snapshot (marked dirty as appropriate).</summary>
     public void LoadRecovered(RecoveryData data)
     {

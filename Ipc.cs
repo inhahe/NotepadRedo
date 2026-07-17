@@ -7,10 +7,13 @@ using System.Windows;
 namespace TreeNotepad;
 
 /// <summary>
-/// Cross-instance coordination so a file is only ever open once. Each process runs a tiny
-/// named-pipe server; when any process is asked to open a file it first asks its siblings
-/// (over their pipes) whether one already has it, and if so hands focus over instead of
-/// opening a duplicate.
+/// Cross-instance coordination. Each process runs a tiny named-pipe server; other processes
+/// connect to ask it to do something with a document. The protocol is one request line
+/// "VERB\tARG\n" and one reply line "OK\n" / "NO\n". Verbs:
+///   FOCUS &lt;path&gt;   — if this process has the file open, select that tab and come forward.
+///   OPEN  &lt;path&gt;   — open the file here as a new tab (tab-mode consolidation).
+///   CLOSE &lt;token&gt;  — remove the tab whose document RecoveryId == token (used on tab tear-off
+///                       across processes, so the origin drops its copy after the move).
 /// </summary>
 public sealed class IpcServer : IDisposable
 {
@@ -42,16 +45,25 @@ public sealed class IpcServer : IDisposable
 
     private static void HandleConnection(NamedPipeServerStream server)
     {
-        string path = ReadLine(server);
-        bool focused = false;
-        if (!string.IsNullOrEmpty(path))
+        string request = ReadLine(server);
+        int tab = request.IndexOf('\t');
+        string verb = tab < 0 ? request : request.Substring(0, tab);
+        string arg = tab < 0 ? "" : request.Substring(tab + 1);
+
+        bool ok = false;
+        var app = Application.Current;
+        if (app is not null && !string.IsNullOrEmpty(arg))
         {
-            var app = Application.Current;
-            if (app is not null)
-                focused = app.Dispatcher.Invoke(() => MainWindow.TryFocusDocument(path));
+            ok = app.Dispatcher.Invoke(() => verb switch
+            {
+                "FOCUS" => MainWindow.TryFocusDocument(arg),
+                "OPEN"  => MainWindow.OpenDocument(arg),
+                "CLOSE" => MainWindow.CloseTabByToken(arg),
+                _       => false,
+            });
         }
 
-        var reply = Encoding.UTF8.GetBytes((focused ? "OK" : "NO") + "\n");
+        var reply = Encoding.UTF8.GetBytes((ok ? "OK" : "NO") + "\n");
         server.Write(reply, 0, reply.Length);
         server.Flush();
         try { server.WaitForPipeDrain(); } catch { /* client already gone */ }
@@ -64,7 +76,19 @@ public sealed class IpcServer : IDisposable
     /// the first that does is brought to the foreground with that tab selected. Returns true
     /// when a sibling took ownership.
     /// </summary>
-    public static bool TryFocusInSibling(string path)
+    public static bool TryFocusInSibling(string path) => AnySibling(pid => Send(pid, "FOCUS", path, steal: true));
+
+    /// <summary>
+    /// Forward <paramref name="path"/> to an existing instance so it opens as a new tab there.
+    /// Returns true when a sibling accepted it (tab-mode consolidation).
+    /// </summary>
+    public static bool OpenInSibling(string path) => AnySibling(pid => Send(pid, "OPEN", path, steal: true));
+
+    /// <summary>Tell a specific process to drop the tab holding <paramref name="token"/>.</summary>
+    public static bool CloseTabInProcess(int pid, string token) => Send(pid, "CLOSE", token, steal: false);
+
+    /// <summary>Run <paramref name="ask"/> against each sibling process; stop at the first true.</summary>
+    private static bool AnySibling(Func<int, bool> ask)
     {
         int self = Environment.ProcessId;
         string procName;
@@ -77,14 +101,14 @@ public sealed class IpcServer : IDisposable
             {
                 if (proc.Id == self)
                     continue;
-                if (AskSibling(proc.Id, path))
+                if (ask(proc.Id))
                     return true;
             }
         }
         return false;
     }
 
-    private static bool AskSibling(int pid, string path)
+    private static bool Send(int pid, string verb, string arg, bool steal)
     {
         NamedPipeClientStream? client = null;
         try
@@ -92,10 +116,10 @@ public sealed class IpcServer : IDisposable
             client = new NamedPipeClientStream(".", PipeNameFor(pid), PipeDirection.InOut);
             client.Connect(250);
 
-            // Let the target legitimately steal the foreground from us.
-            AllowSetForegroundWindow(pid);
+            if (steal)
+                AllowSetForegroundWindow(pid);   // let the target legitimately grab the foreground
 
-            var outBytes = Encoding.UTF8.GetBytes(path + "\n");
+            var outBytes = Encoding.UTF8.GetBytes(verb + "\t" + arg + "\n");
             client.Write(outBytes, 0, outBytes.Length);
             client.Flush();
 

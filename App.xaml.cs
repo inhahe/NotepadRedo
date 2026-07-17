@@ -13,11 +13,22 @@ public partial class App : Application
         var files = e.Args.Where(a => !a.StartsWith("--", StringComparison.Ordinal)).ToList();
         bool blankRequested = e.Args.Contains("--new");
 
-        // If every file passed on the command line is already open in another instance, hand
-        // focus over and exit without ever showing a window (no flash, no duplicate).
         if (files.Count > 0 && !blankRequested)
         {
-            var remaining = files.Where(f => !IpcServer.TryFocusInSibling(f)).ToList();
+            var remaining = new List<string>();
+            foreach (var f in files)
+            {
+                // Already open somewhere? Just focus that tab/instance.
+                if (IpcServer.TryFocusInSibling(f))
+                    continue;
+                // Tab mode: hand the file to the existing instance so it opens as a new tab there
+                // (rather than spawning a second window). Instance mode: fall through and open here.
+                if (!AppSettings.Current.OpenInNewInstance && IpcServer.OpenInSibling(f))
+                    continue;
+                remaining.Add(f);
+            }
+
+            // Everything was routed to a sibling — exit without ever showing a window.
             if (remaining.Count == 0)
             {
                 Shutdown();

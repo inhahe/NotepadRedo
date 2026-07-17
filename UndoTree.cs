@@ -24,6 +24,10 @@ public sealed class TextEdit
         NewText = newText;
     }
 
+    /// <summary>Rebuild an edit from its serialised parts.</summary>
+    public static TextEdit FromParts(int pos, string oldText, string newText) =>
+        new(pos, oldText, newText);
+
     /// <summary>Diff two strings by collapsing the common prefix and suffix. Null if equal.</summary>
     public static TextEdit? Diff(string oldText, string newText)
     {
@@ -249,4 +253,64 @@ public sealed class UndoTree
                 stack.Push(c);
         }
     }
+
+    // ===================== Serialization (for cross-process tab transfer) =====================
+
+    /// <summary>
+    /// Capture the whole branching history as a flat DTO. Node texts are not stored — only the
+    /// per-edit deltas — so this stays small. <paramref name="currentText"/> must be the
+    /// materialised text of <see cref="Current"/>, from which the root text is reconstructed.
+    /// </summary>
+    public TreeDto Serialize(string currentText)
+    {
+        string rootText = Reconstruct(Current, currentText, Root);
+        var nodes = new List<NodeDto>();
+        foreach (var n in AllNodes())
+        {
+            if (n.Edit is null || n.Parent is null)
+                continue;   // root carries no edit
+            nodes.Add(new NodeDto(n.Id, n.Parent.Id, n.Edit.Pos, n.Edit.OldText, n.Edit.NewText, n.CaretIndex));
+        }
+        nodes.Sort((a, b) => a.Id.CompareTo(b.Id));   // parents always precede children
+        return new TreeDto(rootText, nodes, Current.Id);
+    }
+
+    /// <summary>Rebuild a full tree (including the current-node selection) from a DTO.</summary>
+    public static UndoTree Deserialize(TreeDto dto)
+    {
+        var tree = new UndoTree(dto.RootText);
+        var byId = new Dictionary<int, UndoNode> { [tree.Root.Id] = tree.Root };
+        var textById = new Dictionary<int, string> { [tree.Root.Id] = dto.RootText };
+        int maxId = tree.Root.Id;
+
+        foreach (var nd in dto.Nodes)   // sorted so each parent already exists
+        {
+            if (!byId.TryGetValue(nd.ParentId, out var parent))
+                continue;   // orphan (shouldn't happen) — skip defensively
+            var edit = TextEdit.FromParts(nd.Pos, nd.OldText, nd.NewText);
+            var sb = new StringBuilder(textById[nd.ParentId]);
+            edit.ApplyForward(sb);
+            string childText = sb.ToString();
+
+            var node = new UndoNode(nd.Id, edit, childText, nd.CaretIndex, parent);
+            parent.Children.Add(node);
+            byId[nd.Id] = node;
+            textById[nd.Id] = childText;
+            if (nd.Id > maxId) maxId = nd.Id;
+        }
+
+        tree._nextId = maxId + 1;
+        if (byId.TryGetValue(dto.CurrentId, out var cur))
+        {
+            tree.Root.IsCurrent = false;
+            tree.Current = cur;
+        }
+        return tree;
+    }
 }
+
+/// <summary>One serialised history node: its edit delta plus parent/caret metadata.</summary>
+public sealed record NodeDto(int Id, int ParentId, int Pos, string OldText, string NewText, int CaretIndex);
+
+/// <summary>A serialised branching history: the root's full text plus every edit delta.</summary>
+public sealed record TreeDto(string RootText, List<NodeDto> Nodes, int CurrentId);
