@@ -5,7 +5,7 @@
         <Grid.ColumnDefinitions>
             <ColumnDefinition Width="*" MinWidth="200"/>
             <ColumnDefinition Width="Auto"/>
-            <ColumnDefinition x:Name="TreeColumn" Width="340" MinWidth="220"/>
+            <ColumnDefinition x:Name="TreeColumn" Width="340" MinWidth="140"/>
         </Grid.ColumnDefinitions>
 
         <TextBox x:Name="Editor" Grid.Column="0"
@@ -19,24 +19,29 @@
                  TextChanged="Editor_TextChanged"
                  SelectionChanged="Editor_SelectionChanged"/>
 
-        <GridSplitter x:Name="Splitter" Grid.Column="1" Width="5"
-                      HorizontalAlignment="Center" VerticalAlignment="Stretch"
-                      Background="#DDDDDD"/>
+        <GridSplitter x:Name="Splitter" Grid.Column="1" Width="6"
+                      HorizontalAlignment="Stretch" VerticalAlignment="Stretch"
+                      ResizeBehavior="PreviousAndNext" ResizeDirection="Columns"
+                      Cursor="SizeWE" Background="#DDDDDD"/>
 
         <DockPanel x:Name="TreePanel" Grid.Column="2" Margin="4">
             <Border DockPanel.Dock="Top" Background="#F3F3F3" Padding="6" Margin="0,0,0,4"
                     BorderBrush="#DDDDDD" BorderThickness="1">
                 <StackPanel>
                     <TextBlock Text="History Tree" FontWeight="Bold"/>
-                    <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
-                        <TextBlock Text="Preview chars:" VerticalAlignment="Center"/>
-                        <Slider x:Name="PreviewSlider" Width="120" Margin="6,0"
+                    <DockPanel Margin="0,4,0,0" LastChildFill="True">
+                        <TextBlock Text="Preview chars:" VerticalAlignment="Center" DockPanel.Dock="Left"/>
+                        <TextBlock x:Name="PreviewLenLabel" Text="30" VerticalAlignment="Center"
+                                   Width="24" TextAlignment="Right" DockPanel.Dock="Right"/>
+                        <!-- IsMoveToPointEnabled lets a click anywhere on the track jump the thumb
+                             there, so it's far easier to move than a small draggable thumb. -->
+                        <Slider x:Name="PreviewSlider" Margin="6,0"
                                 Minimum="5" Maximum="80" Value="30"
                                 TickFrequency="5" IsSnapToTickEnabled="True"
+                                IsMoveToPointEnabled="True"
                                 VerticalAlignment="Center"
                                 ValueChanged="PreviewSlider_ValueChanged"/>
-                        <TextBlock x:Name="PreviewLenLabel" Text="30" VerticalAlignment="Center" Width="24"/>
-                    </StackPanel>
+                    </DockPanel>
                 </StackPanel>
             </Border>
 

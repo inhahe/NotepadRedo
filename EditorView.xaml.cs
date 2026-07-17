@@ -337,11 +337,22 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
         SetTreePaneVisible(show);
     }
 
+    /// <summary>Last width the tree pane had while visible, restored the next time it is shown.</summary>
+    private double _treeWidth = 340;
+
     private void SetTreePaneVisible(bool show)
     {
+        // Remember the user's chosen width before collapsing so toggling doesn't reset it.
+        if (!show && TreePanel.Visibility == Visibility.Visible && TreeColumn.ActualWidth > 0)
+            _treeWidth = TreeColumn.ActualWidth;
+
         TreePanel.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
         Splitter.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
-        TreeColumn.Width = show ? new GridLength(340) : new GridLength(0);
+
+        // MinWidth must drop to 0 when hidden, otherwise the column keeps its minimum width
+        // and leaves an empty gap even with Width=0.
+        TreeColumn.MinWidth = show ? 140 : 0;
+        TreeColumn.Width = show ? new GridLength(_treeWidth) : new GridLength(0);
     }
 
     /// <summary>Reveal the tree just long enough for the user to choose a redo branch.</summary>
