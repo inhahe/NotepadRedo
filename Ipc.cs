@@ -14,6 +14,8 @@ namespace TreeNotepad;
 ///   OPEN  &lt;path&gt;   — open the file here as a new tab (tab-mode consolidation).
 ///   CLOSE &lt;token&gt;  — remove the tab whose document RecoveryId == token (used on tab tear-off
 ///                       across processes, so the origin drops its copy after the move).
+///   QUIT  &lt;any&gt;     — flush every open document to crash recovery and exit (used by the build
+///                       script to close the app cleanly before overwriting the exe).
 /// </summary>
 public sealed class IpcServer : IDisposable
 {
@@ -59,6 +61,7 @@ public sealed class IpcServer : IDisposable
                 "FOCUS" => MainWindow.TryFocusDocument(arg),
                 "OPEN"  => MainWindow.OpenDocument(arg),
                 "CLOSE" => MainWindow.CloseTabByToken(arg),
+                "QUIT"  => MainWindow.RequestQuitWithRecovery(),
                 _       => false,
             });
         }
@@ -86,6 +89,31 @@ public sealed class IpcServer : IDisposable
 
     /// <summary>Tell a specific process to drop the tab holding <paramref name="token"/>.</summary>
     public static bool CloseTabInProcess(int pid, string token) => Send(pid, "CLOSE", token, steal: false);
+
+    /// <summary>
+    /// Ask every other TreeNotepad process to autosave to crash recovery and exit. Returns the
+    /// number of siblings that acknowledged. Used before a redeploy overwrites the exe.
+    /// </summary>
+    public static int QuitAllSiblings()
+    {
+        int self = Environment.ProcessId;
+        string procName;
+        try { procName = Process.GetCurrentProcess().ProcessName; }
+        catch { return 0; }
+
+        int acked = 0;
+        foreach (var proc in SafeGetProcesses(procName))
+        {
+            using (proc)
+            {
+                if (proc.Id == self)
+                    continue;
+                if (Send(proc.Id, "QUIT", "quit", steal: false))
+                    acked++;
+            }
+        }
+        return acked;
+    }
 
     /// <summary>Run <paramref name="ask"/> against each sibling process; stop at the first true.</summary>
     private static bool AnySibling(Func<int, bool> ask)

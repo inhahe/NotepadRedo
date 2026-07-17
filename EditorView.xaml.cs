@@ -480,12 +480,12 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
         }
     }
 
-    private void WriteRecovery()
+    private void WriteRecovery(bool force = false)
     {
         try
         {
             if (!IsDirty) { DeleteRecovery(); return; }
-            if (Editor.Text == _lastRecoveryText) return;
+            if (!force && Editor.Text == _lastRecoveryText) return;
 
             Directory.CreateDirectory(RecoveryDir);
             var data = new RecoveryData(RecoveryId, _currentPath, _savedText, Editor.Text, DateTime.Now);
@@ -508,11 +508,23 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
         catch { /* best-effort */ }
     }
 
-    /// <summary>Stop timers and clear the recovery file — called when the tab is closed cleanly.</summary>
-    public void Dispose()
+    /// <summary>Stop this document's timers without touching its recovery file.</summary>
+    public void StopTimers()
     {
         _debounce.Stop();
         _autosave.Stop();
+    }
+
+    /// <summary>
+    /// Force an immediate crash-recovery snapshot of the current text. Used before a forced /
+    /// redeploy shutdown so no unsaved work is lost even though the process is about to be closed.
+    /// </summary>
+    public void FlushRecovery() => WriteRecovery(force: true);
+
+    /// <summary>Stop timers and clear the recovery file — called when the tab is closed cleanly.</summary>
+    public void Dispose()
+    {
+        StopTimers();
         DeleteRecovery();
     }
 

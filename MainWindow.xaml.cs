@@ -640,8 +640,38 @@ public partial class MainWindow : Window
 
     // ===================== Closing =====================
 
+    /// <summary>Set while an external tool (build/deploy) is force-closing the app.</summary>
+    private static bool _forceQuitting;
+
+    /// <summary>
+    /// Flush every open document to crash recovery, then shut the whole app down with no save
+    /// prompts. Used when a build/deploy needs the exe closed but must not lose unsaved work —
+    /// the recovery snapshots are offered again on the next launch. Runs on the UI thread.
+    /// </summary>
+    public static bool RequestQuitWithRecovery()
+    {
+        _forceQuitting = true;
+        foreach (Window w in Application.Current.Windows)
+            if (w is MainWindow mw)
+                foreach (var v in mw.AllViews())
+                    v.FlushRecovery();
+        // Shut down after this returns, so the IPC "OK" reply is sent before the app tears down.
+        Application.Current.Dispatcher.BeginInvoke(new Action(() => Application.Current.Shutdown()));
+        return true;
+    }
+
     protected override void OnClosing(System.ComponentModel.CancelEventArgs e)
     {
+        if (_forceQuitting)
+        {
+            // Forced quit for redeploy: recovery was already flushed above. Stop timers but keep
+            // the recovery files (do NOT Dispose) so the work is restored next launch — no prompts.
+            foreach (var view in AllViews())
+                view.StopTimers();
+            base.OnClosing(e);
+            return;
+        }
+
         foreach (var ti in Tabs.Items.OfType<TabItem>().ToList())
         {
             if (ti.Content is not EditorView view)

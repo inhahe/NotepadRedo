@@ -25,6 +25,15 @@ public partial class App : Application
             args.SetObserved();
         };
 
+        // Signalling launch: tell every running instance to autosave-to-recovery and exit, then
+        // exit ourselves without ever showing a window. Used by build.bat before a redeploy.
+        if (e.Args.Contains("--quit"))
+        {
+            IpcServer.QuitAllSiblings();
+            Shutdown();
+            return;
+        }
+
         var files = e.Args.Where(a => !a.StartsWith("--", StringComparison.Ordinal)).ToList();
         bool blankRequested = e.Args.Contains("--new");
 
