@@ -380,12 +380,23 @@ public partial class MainWindow : Window
             v.ApplyWordWrap(AppSettings.Current.WordWrap);
     }
 
-    private void ShowTree_Click(object sender, RoutedEventArgs e)
+    private void ShowTree_Click(object sender, RoutedEventArgs e) => SetTreePreference(ShowTreeItem.IsChecked);
+
+    private void ToggleTree_Click(object sender, RoutedEventArgs e) => SetTreePreference(TreeToggle.IsChecked == true);
+
+    /// <summary>Persist the history-tree preference and apply it to every open document.</summary>
+    private static void SetTreePreference(bool show)
     {
-        AppSettings.Current.ShowTree = ShowTreeItem.IsChecked;
+        AppSettings.Current.ShowTree = show;
         AppSettings.Current.Save();
-        foreach (var v in AllViews())
-            v.ApplyTreeVisible(AppSettings.Current.ShowTree);
+        foreach (Window w in Application.Current.Windows)
+        {
+            if (w is not MainWindow mw)
+                continue;
+            mw.SyncOptionMenus();
+            foreach (var v in mw.AllViews())
+                v.ApplyTreeVisible(show);
+        }
     }
 
     // ===================== Menu: Options =====================
@@ -419,6 +430,7 @@ public partial class MainWindow : Window
         var s = AppSettings.Current;
         WordWrapItem.IsChecked = s.WordWrap;
         ShowTreeItem.IsChecked = s.ShowTree;
+        TreeToggle.IsChecked = s.ShowTree;
         OpenInTabItem.IsChecked = !s.OpenInNewInstance;
         OpenInInstanceItem.IsChecked = s.OpenInNewInstance;
 
@@ -439,6 +451,7 @@ public partial class MainWindow : Window
 
         Bind(Key.Z, ModifierKeys.Control, () => ActiveView?.Undo());
         Bind(Key.Y, ModifierKeys.Control, () => ActiveView?.Redo());
+        Bind(Key.Z, ModifierKeys.Control | ModifierKeys.Shift, () => ActiveView?.Redo());
         Bind(Key.N, ModifierKeys.Control, () => New_Click(this, new RoutedEventArgs()));
         Bind(Key.O, ModifierKeys.Control, () => Open_Click(this, new RoutedEventArgs()));
         Bind(Key.S, ModifierKeys.Control, () => ActiveView?.Save(false));

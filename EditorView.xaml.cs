@@ -177,6 +177,7 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
         _tree.SetCurrent(target);
         _currentText = text;
         ApplyNode(target, text);
+        HideTreeIfTemporary();   // a branch was chosen — collapse a pane that was only revealed to pick it
     }
 
     private void ApplyNode(UndoNode node, string text)
@@ -219,6 +220,16 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
     public void Redo()
     {
         CommitPending();
+
+        // Ambiguous redo: the current node has more than one child branch. If the tree is
+        // hidden, reveal it so the user can choose which branch instead of silently redoing
+        // into the newest one. (When the tree is already visible we just take the newest.)
+        if (_tree.Current.Children.Count > 1 && TreePanel.Visibility != Visibility.Visible)
+        {
+            RevealTreeTemporarily();
+            return;
+        }
+
         var child = _tree.NewestChild();
         if (child is not null)
             NavigateTo(child);
@@ -316,11 +327,39 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
     public void ApplyWordWrap(bool wrap) =>
         Editor.TextWrapping = wrap ? TextWrapping.Wrap : TextWrapping.NoWrap;
 
+    /// <summary>Whether the tree pane is only showing to let the user pick an ambiguous redo branch.</summary>
+    private bool _treeTemporarilyShown;
+
+    /// <summary>Apply the persistent show/hide preference (clears any temporary reveal).</summary>
     public void ApplyTreeVisible(bool show)
+    {
+        _treeTemporarilyShown = false;
+        SetTreePaneVisible(show);
+    }
+
+    private void SetTreePaneVisible(bool show)
     {
         TreePanel.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
         Splitter.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
         TreeColumn.Width = show ? new GridLength(340) : new GridLength(0);
+    }
+
+    /// <summary>Reveal the tree just long enough for the user to choose a redo branch.</summary>
+    private void RevealTreeTemporarily()
+    {
+        _treeTemporarilyShown = true;
+        SetTreePaneVisible(true);
+        Tree.Focus();
+    }
+
+    /// <summary>Collapse a temporarily-revealed tree once the persistent preference is "hidden".</summary>
+    private void HideTreeIfTemporary()
+    {
+        if (_treeTemporarilyShown && !AppSettings.Current.ShowTree)
+        {
+            _treeTemporarilyShown = false;
+            SetTreePaneVisible(false);
+        }
     }
 
     private void PreviewSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
