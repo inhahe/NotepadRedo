@@ -1,8 +1,10 @@
 using System.Diagnostics;
+using System.IO;
 using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
+using System.Windows.Interop;
 using System.Windows.Media;
 using Microsoft.Win32;
 
@@ -37,21 +39,15 @@ public partial class MainWindow : Window
         Loaded += (_, _) => UpdateChrome();
     }
 
-    /// <summary>Seed the primary window: open files from the command line, or offer recovery.</summary>
-    public void Initialize(string[] args)
+    /// <summary>Seed a freshly-shown window: open the given files, or offer recovery when there are none.</summary>
+    public void Initialize(IEnumerable<string> files, bool blankRequested)
     {
-        var files = args.Where(a => !a.StartsWith("--", StringComparison.Ordinal)).ToList();
-        bool blankRequested = args.Contains("--new");
+        var list = files.ToList();
+        foreach (var f in list)
+            RequestOpenFile(f);   // focuses instead of duplicating if already open here
 
-        if (files.Count > 0)
-        {
-            foreach (var f in files)
-                OpenFileInTab(f);
-        }
-        else if (!blankRequested && OfferRecovery())
-        {
-            // recovery opened one or more tabs
-        }
+        if (Tabs.Items.Count == 0 && !blankRequested && list.Count == 0)
+            OfferRecovery();
 
         if (Tabs.Items.Count == 0)
             AddView(CreateBlankView(), select: true);
@@ -138,6 +134,67 @@ public partial class MainWindow : Window
         }
         AddView(view, select: true);
     }
+
+    /// <summary>
+    /// Open a file, but if it is already open — in this process or another instance — just
+    /// focus the existing tab instead of creating a duplicate. Returns true if it was focused
+    /// (rather than newly opened here).
+    /// </summary>
+    private bool RequestOpenFile(string path)
+    {
+        if (TryFocusDocument(path) || IpcServer.TryFocusInSibling(path))
+            return true;
+        OpenFileInTab(path);
+        return false;
+    }
+
+    /// <summary>Canonical form for comparing file paths (case-insensitive on Windows).</summary>
+    public static string NormalizePath(string path)
+    {
+        try { return Path.GetFullPath(path).TrimEnd('\\'); }
+        catch { return path; }
+    }
+
+    /// <summary>
+    /// If any window in this process has the file open, select that tab and bring the window
+    /// forward. Returns true when the document was found and focused.
+    /// </summary>
+    public static bool TryFocusDocument(string path)
+    {
+        string norm = NormalizePath(path);
+        foreach (Window w in Application.Current.Windows)
+        {
+            if (w is not MainWindow mw)
+                continue;
+            var ti = mw.Tabs.Items.OfType<TabItem>().FirstOrDefault(t =>
+                t.Content is EditorView v && v.FilePath is string p &&
+                string.Equals(NormalizePath(p), norm, StringComparison.OrdinalIgnoreCase));
+            if (ti is null)
+                continue;
+
+            mw.Tabs.SelectedItem = ti;
+            mw.ForceForeground();
+            (ti.Content as EditorView)?.FocusEditor();
+            return true;
+        }
+        return false;
+    }
+
+    /// <summary>Restore (if minimised) and force this window to the foreground.</summary>
+    public void ForceForeground()
+    {
+        if (WindowState == WindowState.Minimized)
+            WindowState = WindowState.Normal;
+        Activate();
+        Topmost = true;
+        Topmost = false;
+        var handle = new WindowInteropHelper(this).Handle;
+        if (handle != IntPtr.Zero)
+            SetForegroundWindow(handle);
+    }
+
+    [DllImport("user32.dll")]
+    private static extern bool SetForegroundWindow(IntPtr hWnd);
 
     /// <summary>Wrap a live EditorView in a tab (with a full-path header + close button) and add it.</summary>
     private void AddView(EditorView view, bool select)
@@ -247,6 +304,9 @@ public partial class MainWindow : Window
 
         foreach (var f in dlg.FileNames)
         {
+            // Already open somewhere? Just focus it, regardless of the tab/instance setting.
+            if (TryFocusDocument(f) || IpcServer.TryFocusInSibling(f))
+                continue;
             if (AppSettings.Current.OpenInNewInstance)
                 LaunchInstance(f);
             else
