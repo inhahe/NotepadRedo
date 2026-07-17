@@ -1,0 +1,91 @@
+<UserControl x:Class="TreeNotepad.EditorView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <Grid>
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="*" MinWidth="200"/>
+            <ColumnDefinition Width="Auto"/>
+            <ColumnDefinition x:Name="TreeColumn" Width="340" MinWidth="220"/>
+        </Grid.ColumnDefinitions>
+
+        <TextBox x:Name="Editor" Grid.Column="0"
+                 AcceptsReturn="True" AcceptsTab="True"
+                 TextWrapping="Wrap"
+                 VerticalScrollBarVisibility="Auto"
+                 HorizontalScrollBarVisibility="Auto"
+                 FontFamily="Consolas" FontSize="14"
+                 IsUndoEnabled="False"
+                 Padding="6"
+                 TextChanged="Editor_TextChanged"
+                 SelectionChanged="Editor_SelectionChanged"/>
+
+        <GridSplitter x:Name="Splitter" Grid.Column="1" Width="5"
+                      HorizontalAlignment="Center" VerticalAlignment="Stretch"
+                      Background="#DDDDDD"/>
+
+        <DockPanel x:Name="TreePanel" Grid.Column="2" Margin="4">
+            <Border DockPanel.Dock="Top" Background="#F3F3F3" Padding="6" Margin="0,0,0,4"
+                    BorderBrush="#DDDDDD" BorderThickness="1">
+                <StackPanel>
+                    <TextBlock Text="History Tree" FontWeight="Bold"/>
+                    <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
+                        <TextBlock Text="Preview chars:" VerticalAlignment="Center"/>
+                        <Slider x:Name="PreviewSlider" Width="120" Margin="6,0"
+                                Minimum="5" Maximum="80" Value="30"
+                                TickFrequency="5" IsSnapToTickEnabled="True"
+                                VerticalAlignment="Center"
+                                ValueChanged="PreviewSlider_ValueChanged"/>
+                        <TextBlock x:Name="PreviewLenLabel" Text="30" VerticalAlignment="Center" Width="24"/>
+                    </StackPanel>
+                </StackPanel>
+            </Border>
+
+            <TreeView x:Name="Tree"
+                      SelectedItemChanged="Tree_SelectedItemChanged"
+                      BorderBrush="#DDDDDD" BorderThickness="1">
+                <!-- Neutralise the default TreeViewItem selection highlight, which paints the
+                     header blue and whites-out the label. Selection is shown by our own
+                     IsCurrent / IsSelected border styling instead. -->
+                <TreeView.Resources>
+                    <SolidColorBrush x:Key="{x:Static SystemColors.HighlightBrushKey}" Color="Transparent"/>
+                    <SolidColorBrush x:Key="{x:Static SystemColors.HighlightTextBrushKey}" Color="#222222"/>
+                    <SolidColorBrush x:Key="{x:Static SystemColors.InactiveSelectionHighlightBrushKey}" Color="Transparent"/>
+                    <SolidColorBrush x:Key="{x:Static SystemColors.InactiveSelectionHighlightTextBrushKey}" Color="#222222"/>
+                </TreeView.Resources>
+                <TreeView.ItemContainerStyle>
+                    <Style TargetType="TreeViewItem">
+                        <Setter Property="IsExpanded" Value="{Binding IsExpanded, Mode=TwoWay}"/>
+                        <Setter Property="IsSelected" Value="{Binding IsSelected, Mode=TwoWay}"/>
+                    </Style>
+                </TreeView.ItemContainerStyle>
+                <TreeView.ItemTemplate>
+                    <HierarchicalDataTemplate ItemsSource="{Binding Children}">
+                        <Border CornerRadius="3" Padding="6,3" Margin="0,1">
+                            <Border.Style>
+                                <Style TargetType="Border">
+                                    <Setter Property="Background" Value="Transparent"/>
+                                    <Setter Property="BorderThickness" Value="1"/>
+                                    <Setter Property="BorderBrush" Value="Transparent"/>
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding IsSelected}" Value="True">
+                                            <Setter Property="Background" Value="#EAEAEA"/>
+                                            <Setter Property="BorderBrush" Value="#CCCCCC"/>
+                                        </DataTrigger>
+                                        <DataTrigger Binding="{Binding IsCurrent}" Value="True">
+                                            <Setter Property="Background" Value="#FFF3D9"/>
+                                            <Setter Property="BorderBrush" Value="#E0A93B"/>
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </Border.Style>
+                            <StackPanel>
+                                <TextBlock Text="{Binding Preview}" FontFamily="Consolas" FontSize="13" Foreground="#222222"/>
+                                <TextBlock Text="{Binding Meta}" Foreground="#888888" FontSize="10"/>
+                            </StackPanel>
+                        </Border>
+                    </HierarchicalDataTemplate>
+                </TreeView.ItemTemplate>
+            </TreeView>
+        </DockPanel>
+    </Grid>
+</UserControl>
