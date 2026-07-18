@@ -166,19 +166,24 @@
                         <TextBlock x:Name="AddTermHint" Margin="0,4,0,0" FontSize="11"
                                    TextWrapping="Wrap" Foreground="{DynamicResource Theme.TreeMetaFg}"
                                    Text="Press Enter to add each item to match near the others."/>
-                        <ItemsControl x:Name="TermsList" Margin="0,4,0,0">
+                        <!-- Focusable=False + TabNavigation=Continue so Tab from the add box lands on
+                             the first item's field, not a focus rectangle around the whole control. -->
+                        <ItemsControl x:Name="TermsList" Margin="0,4,0,0"
+                                      Focusable="False" KeyboardNavigation.TabNavigation="Continue">
                             <ItemsControl.ItemTemplate>
                                 <DataTemplate>
                                     <DockPanel Margin="0,2,0,0" LastChildFill="True">
                                         <Button DockPanel.Dock="Right" Content="&#x2715;"
                                                 Width="20" Height="20" Padding="0" Margin="4,0,0,0"
+                                                IsTabStop="False"
                                                 Click="RemoveTerm_Click" ToolTip="Remove this item"/>
                                         <TextBox Text="{Binding Text, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
                                                  Background="{DynamicResource Theme.EditorBg}"
                                                  Foreground="{DynamicResource Theme.EditorFg}"
                                                  CaretBrush="{DynamicResource Theme.EditorFg}"
                                                  Padding="4,2"
-                                                 TextChanged="TermEdit_Changed"/>
+                                                 TextChanged="TermEdit_Changed"
+                                                 PreviewKeyDown="TermEdit_PreviewKeyDown"/>
                                     </DockPanel>
                                 </DataTemplate>
                             </ItemsControl.ItemTemplate>

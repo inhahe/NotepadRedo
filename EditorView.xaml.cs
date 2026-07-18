@@ -1328,14 +1328,76 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
     private void RemoveTerm_Click(object sender, RoutedEventArgs e)
     {
         if (sender is FrameworkElement fe && fe.DataContext is SearchTermVM vm)
-        {
-            _searchTerms.Remove(vm);
-            RunSearch();
-        }
+            RemoveTerm(vm);
     }
 
     // An item was edited in place — re-run (debounced) so results track the change.
     private void TermEdit_Changed(object sender, TextChangedEventArgs e) => QueueSearch();
+
+    /// <summary>Key handling inside an item's edit box. Pressing Delete while the whole item is
+    /// highlighted (the state right after you Tab onto it, or Select-All) removes the item from the
+    /// list instead of just clearing its text — so you can Tab through and prune with Delete.</summary>
+    private void TermEdit_PreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        if (sender is not TextBox tb || tb.DataContext is not SearchTermVM vm)
+            return;
+
+        if (e.Key == Key.Delete && tb.SelectionLength == tb.Text.Length)
+        {
+            RemoveTerm(vm);
+            e.Handled = true;
+        }
+    }
+
+    /// <summary>Remove an item, re-search, and move focus to a sensible neighbour (the item that
+    /// slid into its place, else the previous one, else back to the add box) so repeated Delete
+    /// keeps pruning down the list.</summary>
+    private void RemoveTerm(SearchTermVM vm)
+    {
+        int idx = _searchTerms.IndexOf(vm);
+        if (idx < 0)
+            return;
+        _searchTerms.Remove(vm);
+        RunSearch();
+
+        // Containers regenerate after the removal; defer focus until layout has caught up.
+        Dispatcher.BeginInvoke(new Action(() =>
+        {
+            if (_searchTerms.Count == 0)
+            {
+                SearchBox.Focus();
+                return;
+            }
+            int target = Math.Min(idx, _searchTerms.Count - 1);
+            var tb = TermTextBoxAt(target);
+            if (tb is not null) { tb.Focus(); tb.SelectAll(); }
+            else SearchBox.Focus();
+        }), DispatcherPriority.Background);
+    }
+
+    /// <summary>The editable TextBox inside the item container at <paramref name="index"/>, if any.</summary>
+    private TextBox? TermTextBoxAt(int index)
+    {
+        if (index < 0 || index >= _searchTerms.Count)
+            return null;
+        return TermsList.ItemContainerGenerator.ContainerFromIndex(index) is FrameworkElement fe
+            ? FindVisualChild<TextBox>(fe)
+            : null;
+    }
+
+    private static T? FindVisualChild<T>(DependencyObject parent) where T : DependencyObject
+    {
+        int count = System.Windows.Media.VisualTreeHelper.GetChildrenCount(parent);
+        for (int i = 0; i < count; i++)
+        {
+            var child = System.Windows.Media.VisualTreeHelper.GetChild(parent, i);
+            if (child is T typed)
+                return typed;
+            if (FindVisualChild<T>(child) is T deeper)
+                return deeper;
+        }
+        return null;
+    }
 
     private void SearchBox_PreviewKeyDown(object sender, KeyEventArgs e)
     {
