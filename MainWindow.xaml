@@ -3,6 +3,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="TreeNotepad" Height="640" Width="1000"
         WindowStartupLocation="CenterScreen"
+        Background="{DynamicResource Theme.WindowBg}"
         AllowDrop="True">
 
     <DockPanel>
@@ -103,26 +104,29 @@
         </Menu>
 
         <!-- ============ Toolbar ============ -->
-        <ToolBarTray DockPanel.Dock="Top" IsLocked="True" Background="#F7F7F7">
-            <ToolBar ToolBarTray.IsLocked="True" Padding="2">
+        <ToolBarTray DockPanel.Dock="Top" IsLocked="True" Background="{DynamicResource Theme.ToolbarBg}">
+            <ToolBar ToolBarTray.IsLocked="True" Padding="2" Background="{DynamicResource Theme.ToolbarBg}">
                 <ToggleButton x:Name="TreeToggle" Click="ToggleTree_Click"
                               Padding="6,2" ToolTip="Show/hide the history tree">
                     <StackPanel Orientation="Horizontal">
                         <Canvas Width="16" Height="16" VerticalAlignment="Center">
-                            <Line X1="4" Y1="4" X2="4" Y2="12" Stroke="#555555" StrokeThickness="1.5"/>
-                            <Line X1="4" Y1="8" X2="11" Y2="8" Stroke="#555555" StrokeThickness="1.5"/>
-                            <Ellipse Canvas.Left="2" Canvas.Top="2"  Width="4" Height="4" Fill="#555555"/>
-                            <Ellipse Canvas.Left="2" Canvas.Top="10" Width="4" Height="4" Fill="#555555"/>
-                            <Ellipse Canvas.Left="9" Canvas.Top="6"  Width="4" Height="4" Fill="#555555"/>
+                            <Line X1="4" Y1="4" X2="4" Y2="12" Stroke="{DynamicResource Theme.ToolbarFg}" StrokeThickness="1.5"/>
+                            <Line X1="4" Y1="8" X2="11" Y2="8" Stroke="{DynamicResource Theme.ToolbarFg}" StrokeThickness="1.5"/>
+                            <Ellipse Canvas.Left="2" Canvas.Top="2"  Width="4" Height="4" Fill="{DynamicResource Theme.ToolbarFg}"/>
+                            <Ellipse Canvas.Left="2" Canvas.Top="10" Width="4" Height="4" Fill="{DynamicResource Theme.ToolbarFg}"/>
+                            <Ellipse Canvas.Left="9" Canvas.Top="6"  Width="4" Height="4" Fill="{DynamicResource Theme.ToolbarFg}"/>
                         </Canvas>
-                        <TextBlock Text="History Tree" Margin="6,0,0,0" VerticalAlignment="Center"/>
+                        <TextBlock Text="History Tree" Margin="6,0,0,0" VerticalAlignment="Center"
+                                   Foreground="{DynamicResource Theme.ToolbarFg}"/>
                     </StackPanel>
                 </ToggleButton>
             </ToolBar>
         </ToolBarTray>
 
         <!-- ============ Status bar ============ -->
-        <StatusBar DockPanel.Dock="Bottom">
+        <StatusBar DockPanel.Dock="Bottom"
+                   Background="{DynamicResource Theme.StatusBg}"
+                   Foreground="{DynamicResource Theme.StatusFg}">
             <StatusBarItem>
                 <TextBlock x:Name="CaretStatus" Text="Ln 1, Col 1"/>
             </StatusBarItem>

@@ -1,0 +1,35 @@
+<!-- "Sunset" — a warm, cosy light theme: cream backgrounds, peach chrome, and a coral accent. -->
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <SolidColorBrush x:Key="Theme.WindowBg"    Color="#FFFDFB"/>
+    <SolidColorBrush x:Key="Theme.EditorBg"    Color="#FFFCF8"/>
+    <SolidColorBrush x:Key="Theme.EditorFg"    Color="#2A211C"/>
+
+    <SolidColorBrush x:Key="Theme.ToolbarBg"   Color="#FBEFE7"/>
+    <SolidColorBrush x:Key="Theme.ToolbarFg"   Color="#A65A43"/>
+
+    <SolidColorBrush x:Key="Theme.Splitter"    Color="#EAD9CE"/>
+
+    <SolidColorBrush x:Key="Theme.PanelBg"      Color="#FBF1E9"/>
+    <SolidColorBrush x:Key="Theme.PanelBorder"  Color="#EAD9CE"/>
+    <SolidColorBrush x:Key="Theme.TreeBg"       Color="#FFFCF8"/>
+    <SolidColorBrush x:Key="Theme.TreePreviewFg" Color="#2A211C"/>
+    <SolidColorBrush x:Key="Theme.TreeMetaFg"   Color="#A8968B"/>
+    <SolidColorBrush x:Key="Theme.NodeSelBg"    Color="#F7E7DC"/>
+    <SolidColorBrush x:Key="Theme.NodeSelBorder" Color="#E6C6B4"/>
+    <SolidColorBrush x:Key="Theme.NodeCurBg"    Color="#FCE3D2"/>
+    <SolidColorBrush x:Key="Theme.NodeCurBorder" Color="#E5533D"/>
+
+    <SolidColorBrush x:Key="Theme.StatusBg"    Color="#FBEFE7"/>
+    <SolidColorBrush x:Key="Theme.StatusFg"    Color="#6B4A3C"/>
+
+    <SolidColorBrush x:Key="Theme.Accent"      Color="#E5533D"/>
+    <SolidColorBrush x:Key="Theme.AccentHover" Color="#C8412D"/>
+    <SolidColorBrush x:Key="Theme.AccentText"  Color="#FFFFFF"/>
+    <SolidColorBrush x:Key="Theme.AccentSoft"  Color="#FBE0D5"/>
+    <SolidColorBrush x:Key="Theme.ButtonBg"    Color="#FFF7F1"/>
+    <SolidColorBrush x:Key="Theme.ButtonBorder" Color="#EAD3C6"/>
+    <SolidColorBrush x:Key="Theme.ButtonHover" Color="#FBE9DE"/>
+    <SolidColorBrush x:Key="Theme.ButtonText"  Color="#2A211C"/>
+</ResourceDictionary>

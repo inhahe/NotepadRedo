@@ -19,6 +19,9 @@
                  HorizontalScrollBarVisibility="Auto"
                  FontFamily="Consolas" FontSize="14"
                  IsUndoEnabled="False"
+                 Background="{DynamicResource Theme.EditorBg}"
+                 Foreground="{DynamicResource Theme.EditorFg}"
+                 CaretBrush="{DynamicResource Theme.EditorFg}"
                  Padding="6"
                  PreviewKeyDown="Editor_PreviewKeyDown"
                  TextChanged="Editor_TextChanged"
@@ -30,16 +33,16 @@
              this control (a stable ancestor), which never "sticks". -->
         <Border x:Name="Splitter" Grid.Column="1" Width="6"
                 HorizontalAlignment="Stretch" VerticalAlignment="Stretch"
-                Background="#DDDDDD" Cursor="SizeWE"
+                Background="{DynamicResource Theme.Splitter}" Cursor="SizeWE"
                 MouseLeftButtonDown="Splitter_MouseLeftButtonDown"
                 MouseMove="Splitter_MouseMove"
                 MouseLeftButtonUp="Splitter_MouseLeftButtonUp"/>
 
         <DockPanel x:Name="TreePanel" Grid.Column="2" Margin="4">
-            <Border DockPanel.Dock="Top" Background="#F3F3F3" Padding="6" Margin="0,0,0,4"
-                    BorderBrush="#DDDDDD" BorderThickness="1">
+            <Border DockPanel.Dock="Top" Background="{DynamicResource Theme.PanelBg}" Padding="6" Margin="0,0,0,4"
+                    BorderBrush="{DynamicResource Theme.PanelBorder}" BorderThickness="1">
                 <StackPanel>
-                    <TextBlock Text="History Tree" FontWeight="Bold"/>
+                    <TextBlock Text="History Tree" FontWeight="Bold" Foreground="{DynamicResource Theme.TreePreviewFg}"/>
                     <CheckBox x:Name="FitWidthCheck" Content="Fit preview to width"
                               Margin="0,4,0,0" VerticalAlignment="Center"
                               Checked="FitWidth_Changed" Unchecked="FitWidth_Changed"/>
@@ -61,7 +64,8 @@
 
             <TreeView x:Name="Tree"
                       SelectedItemChanged="Tree_SelectedItemChanged"
-                      BorderBrush="#DDDDDD" BorderThickness="1"
+                      Background="{DynamicResource Theme.TreeBg}"
+                      BorderBrush="{DynamicResource Theme.PanelBorder}" BorderThickness="1"
                       ScrollViewer.HorizontalScrollBarVisibility="Disabled">
                 <!-- Neutralise the default TreeViewItem selection highlight, which paints the
                      header blue and whites-out the label. Selection is shown by our own
@@ -88,18 +92,19 @@
                                     <Setter Property="BorderBrush" Value="Transparent"/>
                                     <Style.Triggers>
                                         <DataTrigger Binding="{Binding IsSelected}" Value="True">
-                                            <Setter Property="Background" Value="#EAEAEA"/>
-                                            <Setter Property="BorderBrush" Value="#CCCCCC"/>
+                                            <Setter Property="Background" Value="{DynamicResource Theme.NodeSelBg}"/>
+                                            <Setter Property="BorderBrush" Value="{DynamicResource Theme.NodeSelBorder}"/>
                                         </DataTrigger>
                                         <DataTrigger Binding="{Binding IsCurrent}" Value="True">
-                                            <Setter Property="Background" Value="#FFF3D9"/>
-                                            <Setter Property="BorderBrush" Value="#E0A93B"/>
+                                            <Setter Property="Background" Value="{DynamicResource Theme.NodeCurBg}"/>
+                                            <Setter Property="BorderBrush" Value="{DynamicResource Theme.NodeCurBorder}"/>
                                         </DataTrigger>
                                     </Style.Triggers>
                                 </Style>
                             </Border.Style>
                             <StackPanel>
-                                <TextBlock Text="{Binding Preview}" FontFamily="Consolas" FontSize="13" Foreground="#222222"
+                                <TextBlock Text="{Binding Preview}" FontFamily="Consolas" FontSize="13"
+                                           Foreground="{DynamicResource Theme.TreePreviewFg}"
                                            TextWrapping="NoWrap" TextTrimming="CharacterEllipsis">
                                     <TextBlock.MaxWidth>
                                         <MultiBinding Converter="{StaticResource PreviewWidth}">
@@ -108,7 +113,7 @@
                                         </MultiBinding>
                                     </TextBlock.MaxWidth>
                                 </TextBlock>
-                                <TextBlock Text="{Binding Meta}" Foreground="#888888" FontSize="10"
+                                <TextBlock Text="{Binding Meta}" Foreground="{DynamicResource Theme.TreeMetaFg}" FontSize="10"
                                            TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"/>
                             </StackPanel>
                         </Border>

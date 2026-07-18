@@ -1,3 +1,4 @@
+using System.IO;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Threading;
@@ -11,6 +12,11 @@ public partial class App : Application
     protected override void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
+
+        // Pick a visual theme from the executable's own filename, so a single build can be shipped
+        // under several names (TreeNotepad-Fluent.exe, -Graphite.exe, -Sunset.exe) to compare looks.
+        // The plain "TreeNotepad.exe" matches nothing and keeps its original appearance.
+        ApplyThemeFromExeName();
 
         // Log a full traceback for every unhandled exception. UI-thread exceptions are logged
         // and swallowed so a transient bug doesn't destroy the user's unsaved work; truly fatal
@@ -76,6 +82,40 @@ public partial class App : Application
         var window = new MainWindow();
         window.Show();
         window.Initialize(files, blankRequested);
+    }
+
+    /// <summary>
+    /// If this executable's filename names a theme, merge that palette (overriding the base colours)
+    /// plus the themed control styles. Unknown names leave the original look untouched.
+    /// </summary>
+    private void ApplyThemeFromExeName()
+    {
+        string name;
+        try { name = Path.GetFileNameWithoutExtension(Environment.ProcessPath ?? "") ?? ""; }
+        catch { return; }
+
+        string? palette = null;
+        if (name.Contains("Fluent", StringComparison.OrdinalIgnoreCase))
+            palette = "Themes/Palette.Fluent.xaml";
+        else if (name.Contains("Graphite", StringComparison.OrdinalIgnoreCase))
+            palette = "Themes/Palette.Graphite.xaml";
+        else if (name.Contains("Sunset", StringComparison.OrdinalIgnoreCase))
+            palette = "Themes/Palette.Sunset.xaml";
+
+        if (palette is null)
+            return;   // plain build — keep the original appearance
+
+        try
+        {
+            Resources.MergedDictionaries.Add(
+                new ResourceDictionary { Source = new Uri(palette, UriKind.Relative) });
+            Resources.MergedDictionaries.Add(
+                new ResourceDictionary { Source = new Uri("Themes/Controls.xaml", UriKind.Relative) });
+        }
+        catch (Exception ex)
+        {
+            CrashLog.Log($"Failed to apply theme '{palette}'", ex);
+        }
     }
 
     private void OnDispatcherUnhandledException(object sender, DispatcherUnhandledExceptionEventArgs e)
