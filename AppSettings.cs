@@ -50,6 +50,24 @@ public sealed class AppSettings
     public bool FontBold { get; set; }
     public bool FontItalic { get; set; }
 
+    // ----- Undo granularity (how typing is grouped into history-tree nodes) -----
+
+    /// <summary>When true, pressing Enter ends the current typing burst so each line becomes
+    /// its own undo step.</summary>
+    public bool UndoBreakOnEnter { get; set; } = true;
+
+    /// <summary>When true, a paste is isolated as its own undo step (separate from the typing
+    /// before and after it).</summary>
+    public bool UndoBreakOnPaste { get; set; } = true;
+
+    /// <summary>When true, every single character (and deletion) is its own undo step —
+    /// coalescing and the pause timer are ignored.</summary>
+    public bool UndoPerCharacter { get; set; }
+
+    /// <summary>How long a typing pause (in seconds) can be before the next edit starts a fresh
+    /// undo step. Consecutive edits closer together than this are folded into one node.</summary>
+    public double UndoCoalesceSeconds { get; set; } = 4;
+
     private static readonly string Dir = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "TreeNotepad");
     private static readonly string FilePath = Path.Combine(Dir, "settings.json");

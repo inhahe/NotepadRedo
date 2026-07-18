@@ -32,9 +32,9 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
     // ----- Typing-burst coalescing -----
     // Consecutive edits within one continuous typing session are folded into a single history node
     // rather than creating one node per 500ms debounce tick (which used to bury the tree under
-    // dozens of near-identical entries). A burst is broken by navigating/undo/redo, or by an idle
-    // gap longer than CoalesceWindowMs — each of those starts a fresh checkpoint node.
-    private const int CoalesceWindowMs = 4000;
+    // dozens of near-identical entries). A burst is broken by navigating/undo/redo, by pressing
+    // Enter or pasting (when enabled), or by an idle gap longer than the configured coalesce window
+    // — each of those starts a fresh checkpoint node. Per-character mode disables coalescing.
     private UndoNode? _typingNode;         // the leaf node the current burst is being folded into
     private DateTime _lastEditTime;        // when the last edit was committed/coalesced
 
@@ -65,6 +65,9 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
 
         _debounce = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(DebounceMs) };
         _debounce.Tick += Debounce_Tick;
+
+        // Isolate pastes as their own undo step when the user has that enabled.
+        DataObject.AddPastingHandler(Editor, Editor_Pasting);
 
         _autosave.Tick += (_, _) => WriteRecovery();
 
@@ -162,6 +165,14 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
     {
         if (_suppressTextChange)
             return;
+        if (AppSettings.Current.UndoPerCharacter)
+        {
+            // Every keystroke is its own undo step — commit right away instead of debouncing.
+            _debounce.Stop();
+            CommitPending();
+            RaiseAll();
+            return;
+        }
         _debounce.Stop();
         _debounce.Start();
         RaiseAll();
@@ -188,9 +199,12 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
                 return;   // nothing changed since the last commit
 
             // Fold this edit into the current burst's node when it's still the open typing leaf and
-            // the pause was short; otherwise start a fresh checkpoint node.
-            bool canCoalesce = ReferenceEquals(_tree.Current, _typingNode)
-                               && (DateTime.Now - _lastEditTime).TotalMilliseconds <= CoalesceWindowMs;
+            // the pause was short; otherwise start a fresh checkpoint node. Per-character mode never
+            // coalesces (every edit is its own node).
+            double windowMs = AppSettings.Current.UndoCoalesceSeconds * 1000.0;
+            bool canCoalesce = !AppSettings.Current.UndoPerCharacter
+                               && ReferenceEquals(_tree.Current, _typingNode)
+                               && (DateTime.Now - _lastEditTime).TotalMilliseconds <= windowMs;
 
             if (canCoalesce && _tree.Coalesce(_currentText, Editor.Text, Editor.CaretIndex))
             {
@@ -625,6 +639,31 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
             Redo();
             e.Handled = true;
         }
+        else if (e.Key == Key.Enter && (Keyboard.Modifiers & ModifierKeys.Control) == 0
+                 && AppSettings.Current.UndoBreakOnEnter && !AppSettings.Current.UndoPerCharacter)
+        {
+            // Let the newline get inserted first, then close this line's burst so the next line
+            // becomes a fresh undo step. (Per-character mode already splits every keystroke.)
+            Dispatcher.BeginInvoke(new Action(EndBurst), DispatcherPriority.Background);
+        }
+    }
+
+    /// <summary>Commit whatever is pending and end the current typing burst so the next edit
+    /// starts a brand-new history node.</summary>
+    private void EndBurst()
+    {
+        CommitPending();
+        _typingNode = null;
+    }
+
+    /// <summary>Isolate a paste as its own history node: close the burst before the paste lands
+    /// and again afterwards, so the pasted text is separate from the typing around it.</summary>
+    private void Editor_Pasting(object sender, DataObjectPastingEventArgs e)
+    {
+        if (!AppSettings.Current.UndoBreakOnPaste)
+            return;
+        EndBurst();
+        Dispatcher.BeginInvoke(new Action(EndBurst), DispatcherPriority.Background);
     }
 
     private void RaiseAll()

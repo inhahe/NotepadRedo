@@ -81,6 +81,24 @@
                     <MenuItem x:Name="Auto60"   Header="Every minute"     IsCheckable="True" Tag="60"  Click="AutosaveInterval_Click"/>
                     <MenuItem x:Name="Auto300"  Header="Every 5 minutes"  IsCheckable="True" Tag="300" Click="AutosaveInterval_Click"/>
                 </MenuItem>
+                <Separator/>
+                <MenuItem Header="_Undo grouping">
+                    <MenuItem x:Name="UndoBreakEnter" Header="New step on each _line (Enter)"
+                              IsCheckable="True" Click="UndoBreakEnter_Click"/>
+                    <MenuItem x:Name="UndoBreakPaste" Header="New step on each _paste"
+                              IsCheckable="True" Click="UndoBreakPaste_Click"/>
+                    <MenuItem x:Name="UndoPerChar" Header="New step on each _character"
+                              IsCheckable="True" Click="UndoPerChar_Click"/>
+                    <Separator/>
+                    <MenuItem Header="New step after a typing pause of...">
+                        <MenuItem x:Name="UndoPause1"  Header="1 second"  IsCheckable="True" Tag="1" Click="UndoPause_Click"/>
+                        <MenuItem x:Name="UndoPause2"  Header="2 seconds" IsCheckable="True" Tag="2" Click="UndoPause_Click"/>
+                        <MenuItem x:Name="UndoPause4"  Header="4 seconds" IsCheckable="True" Tag="4" Click="UndoPause_Click"/>
+                        <MenuItem x:Name="UndoPause8"  Header="8 seconds" IsCheckable="True" Tag="8" Click="UndoPause_Click"/>
+                        <Separator/>
+                        <MenuItem x:Name="UndoPauseCustom" Header="Custom..." IsCheckable="True" Click="UndoPauseCustom_Click"/>
+                    </MenuItem>
+                </MenuItem>
             </MenuItem>
         </Menu>
 

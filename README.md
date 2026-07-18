@@ -15,6 +15,7 @@ Built with WPF on .NET 8.
 - The current node is highlighted; each node shows a text preview and metadata.
 - Preview text can either show a **fixed number of characters** (adjustable with a slider) or **fit to the pane width** with a trailing ellipsis (toggleable).
 - The history pane is resizable (drag the divider) and can be hidden entirely.
+- **Configurable undo grouping** (Options → Undo grouping) controls how typing is chunked into history nodes: start a new step on each **line** (Enter), each **paste**, or each **character**, and/or after a configurable **typing pause** (1/2/4/8 seconds or a custom value).
 
 ### Tabs
 - Multiple documents open as tabs in a single window.
@@ -104,7 +105,7 @@ Everything is stored under `%LOCALAPPDATA%\TreeNotepad\`:
 
 | File | Purpose |
 |---|---|
-| `settings.json` | Persisted preferences (autosave interval, word wrap, tree visibility, preview mode, editor font, open-in behavior, close-button behavior). |
+| `settings.json` | Persisted preferences (autosave interval, word wrap, tree visibility, preview mode, editor font, undo grouping, open-in behavior, close-button behavior). |
 | `crash.log` | Timestamped exception log with full stack traces. |
 | recovery files | Autosaved copies of in-progress documents, restored on next launch. |
 

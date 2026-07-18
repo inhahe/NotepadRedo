@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Text.Json;
@@ -528,6 +529,98 @@ public partial class MainWindow : Window
                     v.ApplyAutosaveInterval(seconds);
     }
 
+    // ----- Undo grouping -----
+
+    private void UndoBreakEnter_Click(object sender, RoutedEventArgs e)
+    {
+        AppSettings.Current.UndoBreakOnEnter = UndoBreakEnter.IsChecked;
+        SaveAndSyncOptions();
+    }
+
+    private void UndoBreakPaste_Click(object sender, RoutedEventArgs e)
+    {
+        AppSettings.Current.UndoBreakOnPaste = UndoBreakPaste.IsChecked;
+        SaveAndSyncOptions();
+    }
+
+    private void UndoPerChar_Click(object sender, RoutedEventArgs e)
+    {
+        AppSettings.Current.UndoPerCharacter = UndoPerChar.IsChecked;
+        SaveAndSyncOptions();
+    }
+
+    private void UndoPause_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not MenuItem mi || mi.Tag is not string tag ||
+            !double.TryParse(tag, out double seconds))
+            return;
+        AppSettings.Current.UndoCoalesceSeconds = seconds;
+        SaveAndSyncOptions();
+    }
+
+    private void UndoPauseCustom_Click(object sender, RoutedEventArgs e)
+    {
+        double current = AppSettings.Current.UndoCoalesceSeconds;
+        if (PromptForSeconds(current, out double seconds))
+            AppSettings.Current.UndoCoalesceSeconds = seconds;
+        SaveAndSyncOptions();   // re-sync either way so the checkmarks reflect the real value
+    }
+
+    /// <summary>Persist settings and refresh every window's Options-menu checkmarks.</summary>
+    private static void SaveAndSyncOptions()
+    {
+        AppSettings.Current.Save();
+        foreach (Window w in Application.Current.Windows)
+            if (w is MainWindow mw)
+                mw.SyncOptionMenus();
+    }
+
+    /// <summary>Modal prompt for a positive number of seconds. Returns false if cancelled or invalid.</summary>
+    private bool PromptForSeconds(double current, out double seconds)
+    {
+        seconds = current;
+        var dlg = new Window
+        {
+            Title = "Typing-pause length",
+            Width = 300, Height = 140,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            Owner = this, ResizeMode = ResizeMode.NoResize, ShowInTaskbar = false
+        };
+        var panel = new StackPanel { Margin = new Thickness(12) };
+        panel.Children.Add(new TextBlock
+        {
+            Text = "New undo step after a pause of (seconds):",
+            Margin = new Thickness(0, 0, 0, 6)
+        });
+        var box = new TextBox { Text = current.ToString(CultureInfo.CurrentCulture) };
+        box.SelectAll();
+        panel.Children.Add(box);
+        var buttons = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            Margin = new Thickness(0, 12, 0, 0)
+        };
+        var ok = new Button { Content = "OK", Width = 74, Margin = new Thickness(0, 0, 8, 0), IsDefault = true };
+        var cancel = new Button { Content = "Cancel", Width = 74, IsCancel = true };
+        ok.Click += (_, _) => dlg.DialogResult = true;
+        buttons.Children.Add(ok);
+        buttons.Children.Add(cancel);
+        panel.Children.Add(buttons);
+        dlg.Content = panel;
+        dlg.Loaded += (_, _) => { box.Focus(); box.SelectAll(); };
+
+        if (dlg.ShowDialog() != true)
+            return false;
+        if (double.TryParse(box.Text.Trim(), NumberStyles.Float, CultureInfo.CurrentCulture, out double v)
+            && v >= 0 && v <= 3600)
+        {
+            seconds = v;
+            return true;
+        }
+        return false;
+    }
+
     private void CloseBehavior_Click(object sender, RoutedEventArgs e)
     {
         if (sender is not MenuItem mi || mi.Tag is not string tag ||
@@ -564,6 +657,15 @@ public partial class MainWindow : Window
         ItalicItem.IsChecked = s.FontItalic;
         foreach (var item in FontSizeMenu.Items.OfType<MenuItem>())
             item.IsChecked = item.Tag is string t && double.TryParse(t, out double pt) && pt == s.FontSize;
+
+        UndoBreakEnter.IsChecked = s.UndoBreakOnEnter;
+        UndoBreakPaste.IsChecked = s.UndoBreakOnPaste;
+        UndoPerChar.IsChecked    = s.UndoPerCharacter;
+        UndoPause1.IsChecked = s.UndoCoalesceSeconds == 1;
+        UndoPause2.IsChecked = s.UndoCoalesceSeconds == 2;
+        UndoPause4.IsChecked = s.UndoCoalesceSeconds == 4;
+        UndoPause8.IsChecked = s.UndoCoalesceSeconds == 8;
+        UndoPauseCustom.IsChecked = s.UndoCoalesceSeconds is not (1 or 2 or 4 or 8);
     }
 
     private IEnumerable<EditorView> AllViews() =>
