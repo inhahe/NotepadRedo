@@ -20,6 +20,12 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
     private UndoTree _tree = new();
     private readonly DispatcherTimer _debounce;
 
+    // The history pane is a *flattened* view of the branching tree: a straight run of edits is
+    // listed flush-left as a plain sequence, and only genuine fork points (a node with more than
+    // one child) push the following branch rows further right. This collection is the flattened,
+    // pre-order projection the ListBox binds to; it is rebuilt whenever the tree's shape changes.
+    private readonly System.Collections.ObjectModel.ObservableCollection<UndoNode> _historyRows = new();
+
     private bool _suppressTextChange;      // ignore programmatic edits
     private bool _suppressTreeSelection;   // ignore programmatic tree selection
     private bool _navigating;              // a commit/navigate is in flight — block reentrancy
@@ -93,10 +99,10 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
         _watchDebounce = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(350) };
         _watchDebounce.Tick += (_, _) => { _watchDebounce.Stop(); HandleExternalChange(); };
 
-        // Empty-root fix: bind to the root's children so the blank starting state is not
-        // shown as a node. Each first edit becomes a top-level item; sibling branches stay
-        // as separate top-level items rather than nesting under one another.
-        Tree.ItemsSource = _tree.Root.Children;
+        // The blank starting state (root) is not shown as a row; each committed edit becomes a
+        // row in this flattened list.
+        Tree.ItemsSource = _historyRows;
+        RebuildHistoryRows();
 
         ApplyAutosaveInterval(AppSettings.Current.AutosaveSeconds);
         ApplyWordWrap(AppSettings.Current.WordWrap);
@@ -127,7 +133,18 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
         ? (_lastAutosave is DateTime t ? $"Not saved \u00b7 autosaved {t:HH:mm:ss}" : "Not saved")
         : "Saved";
 
-    public void FocusEditor() => Editor.Focus();
+    public void FocusEditor()
+    {
+        // At startup the window is shown and this runs before activation is fully settled, so a
+        // synchronous Editor.Focus() only takes *logical* focus — the caret appears but keystrokes
+        // don't land until the user clicks. Deferring to Input priority lets the window finish
+        // activating first, then Keyboard.Focus forces real keyboard focus so typing works at once.
+        Dispatcher.BeginInvoke(new Action(() =>
+        {
+            Editor.Focus();
+            Keyboard.Focus(Editor);
+        }), DispatcherPriority.Input);
+    }
 
     /// <summary>Load a file's contents into this (blank) view.</summary>
     public void LoadFile(string path)
@@ -147,7 +164,7 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
     public DocDto SerializeDocument()
     {
         CommitPending();
-        return new DocDto(_currentPath, _savedText, Editor.Text, _tree.Serialize(_currentText));
+        return new DocDto(_currentPath, _savedText, Editor.Text, _tree.Serialize());
     }
 
     /// <summary>Rebuild a document (moved here from another process) into this blank view.</summary>
@@ -158,7 +175,7 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
         _tree = UndoTree.Deserialize(dto.Tree);
         _currentText = dto.CurrentText;
         _typingNode = null;
-        Tree.ItemsSource = _tree.Root.Children;
+        RebuildHistoryRows();
 
         _suppressTextChange = true;
         Editor.Text = dto.CurrentText;
@@ -237,7 +254,7 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
                                && ReferenceEquals(_tree.Current, _typingNode)
                                && (DateTime.Now - _lastEditTime).TotalMilliseconds <= windowMs;
 
-            if (canCoalesce && _tree.Coalesce(_currentText, Editor.Text, Editor.CaretIndex))
+            if (canCoalesce && _tree.Coalesce(Editor.Text, Editor.CaretIndex))
             {
                 _currentText = Editor.Text;
                 _lastEditTime = DateTime.Now;
@@ -251,6 +268,7 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
                 _currentText = Editor.Text;
                 _typingNode = node;
                 _lastEditTime = DateTime.Now;
+                RebuildHistoryRows();   // a node was added — reflect the new shape in the list
                 SetCurrent(node);
                 RaiseAll();
             }
@@ -267,15 +285,18 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
 
     private void NavigateTo(UndoNode target)
     {
-        // Non-reentrant: programmatically selecting the target below can fire tree-selection
-        // events that would otherwise re-enter this while _currentText is half-updated,
-        // desyncing the model and (previously) crashing text reconstruction.
+        // Non-reentrant: programmatically selecting the target below fires list-selection events
+        // that must not re-enter this mid-jump and start a second navigation.
         if (_navigating)
             return;
         _navigating = true;
         try
         {
-            string text = UndoTree.Reconstruct(_tree.Current, _currentText, target);
+            // Reconstruct the target's text from the immutable root, replaying forward edits down
+            // to it. This depends on nothing we currently hold materialised, so a stale or
+            // corrupted _currentText can't derail the jump or lose the document — clicking any
+            // node always restores that node's exact text.
+            string text = _tree.Materialize(target);
             _tree.SetCurrent(target);
             _currentText = text;
             _typingNode = null;   // a jump ends the current typing burst — next edit starts anew
@@ -284,35 +305,11 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
         }
         catch (Exception ex)
         {
-            // Reconstruction should never fail, but if the model ever desyncs, log a full
-            // traceback and recover by re-anchoring on the target instead of crashing.
-            CrashLog.Log("NavigateTo failed — resyncing to target node", ex);
-            ResyncTo(target);
+            CrashLog.Log("NavigateTo failed", ex);
         }
         finally
         {
             _navigating = false;
-        }
-    }
-
-    /// <summary>
-    /// Recovery path: adopt <paramref name="target"/> as the current node using the editor's
-    /// live text as ground truth, without attempting delta reconstruction. Keeps the app usable
-    /// even if the history model ever gets into an inconsistent state.
-    /// </summary>
-    private void ResyncTo(UndoNode target)
-    {
-        try
-        {
-            _tree.SetCurrent(target);
-            _currentText = Editor.Text;
-            _typingNode = null;
-            SetCurrent(target);
-            RaiseAll();
-        }
-        catch (Exception ex)
-        {
-            CrashLog.Log("ResyncTo failed", ex);
         }
     }
 
@@ -328,7 +325,7 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
         Editor.Focus();
     }
 
-    /// <summary>Highlight, expand to and select the given node in the tree view.</summary>
+    /// <summary>Highlight and select the given node in the history list.</summary>
     private void SetCurrent(UndoNode node)
     {
         // Clear both flags across the tree so stale highlights (IsCurrent) and stale selection
@@ -344,12 +341,37 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
             }
         }
         node.IsCurrent = true;
-
-        var p = node.Parent;
-        while (p is not null) { p.IsExpanded = true; p = p.Parent; }
-
         node.IsSelected = true;
+
+        // The root isn't shown as a row; only scroll to nodes that are actually in the list.
+        if (_historyRows.Contains(node))
+            Tree.ScrollIntoView(node);
         _suppressTreeSelection = false;
+    }
+
+    /// <summary>
+    /// Rebuild the flattened history list from the current tree shape. Pre-order walk: the first
+    /// child continues its parent's indent (so a straight-line edit history stays flat), while each
+    /// additional child of a fork — the points where redo is ambiguous — steps one level deeper.
+    /// The root is not listed (it's the blank/initial state).
+    /// </summary>
+    private void RebuildHistoryRows()
+    {
+        _suppressTreeSelection = true;
+        _historyRows.Clear();
+        var kids = _tree.Root.Children;
+        for (int i = 0; i < kids.Count; i++)
+            AppendRows(kids[i], i == 0 ? 0 : 1);
+        _suppressTreeSelection = false;
+    }
+
+    private void AppendRows(UndoNode node, int level)
+    {
+        node.IndentLevel = level;
+        _historyRows.Add(node);
+        var kids = node.Children;
+        for (int i = 0; i < kids.Count; i++)
+            AppendRows(kids[i], i == 0 ? level : level + 1);
     }
 
     // ===================== Undo / Redo =====================
@@ -380,11 +402,11 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
             NavigateTo(child);
     }
 
-    private void Tree_SelectedItemChanged(object sender, RoutedPropertyChangedEventArgs<object> e)
+    private void Tree_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (_suppressTreeSelection || _navigating)
             return;
-        if (e.NewValue is UndoNode node && node != _tree.Current)
+        if (Tree.SelectedItem is UndoNode node && node != _tree.Current)
         {
             CommitPending();
             if (node != _tree.Current)
@@ -455,7 +477,7 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
         _tree = new UndoTree(text);
         _currentText = text;
         _typingNode = null;
-        Tree.ItemsSource = _tree.Root.Children;
+        RebuildHistoryRows();
 
         _suppressTextChange = true;
         Editor.Text = text;

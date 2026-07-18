@@ -86,8 +86,6 @@ public sealed class UndoNode : INotifyPropertyChanged
 
     public int Id { get; }
 
-    /// <summary>Depth below the root (root = 0), used to size the width-trimmed preview per indent.</summary>
-    public int Depth { get; }
     public TextEdit? Edit { get; private set; }   // null only for the root
     public int CaretIndex { get; private set; }
     public int Length { get; private set; }       // full text length at this node
@@ -104,7 +102,6 @@ public sealed class UndoNode : INotifyPropertyChanged
         CaretIndex = caretIndex;
         Length = fullText.Length;
         Parent = parent;
-        Depth = parent is null ? 0 : parent.Depth + 1;
         Timestamp = DateTime.Now;
         _previewPrefix = fullText.Length <= PreviewCache
             ? fullText
@@ -165,18 +162,24 @@ public sealed class UndoNode : INotifyPropertyChanged
         set { if (_isCurrent != value) { _isCurrent = value; OnPropertyChanged(); } }
     }
 
-    private bool _isExpanded = true;
-    public bool IsExpanded
-    {
-        get => _isExpanded;
-        set { if (_isExpanded != value) { _isExpanded = value; OnPropertyChanged(); } }
-    }
-
     private bool _isSelected;
     public bool IsSelected
     {
         get => _isSelected;
         set { if (_isSelected != value) { _isSelected = value; OnPropertyChanged(); } }
+    }
+
+    /// <summary>
+    /// How far this row is indented in the flattened history list. A straight-line run of edits
+    /// (each node with a single child) stays at the same level, so ordinary linear history reads
+    /// as a flat list; indentation only steps in at genuine fork points where redo is ambiguous.
+    /// Recomputed by the view whenever the tree's shape changes.
+    /// </summary>
+    private int _indentLevel;
+    public int IndentLevel
+    {
+        get => _indentLevel;
+        set { if (_indentLevel != value) { _indentLevel = value; OnPropertyChanged(); } }
     }
 
     /// <summary>Re-raise the preview/meta bindings (used when preview length changes).</summary>
@@ -216,8 +219,16 @@ public sealed class UndoTree
     public UndoNode Root { get; }
     public UndoNode Current { get; private set; }
 
+    /// <summary>
+    /// The full text of the root node. The root carries no edit and is never mutated, so this is a
+    /// stable anchor from which any node's text can be reconstructed by replaying forward edits —
+    /// independent of whatever the caller currently holds materialised. See <see cref="Materialize"/>.
+    /// </summary>
+    public string RootText { get; }
+
     public UndoTree(string initialText = "")
     {
+        RootText = initialText;
         Root = new UndoNode(_nextId++, null, initialText, initialText.Length, null);
         Current = Root;
         Current.IsCurrent = true;
@@ -249,12 +260,12 @@ public sealed class UndoTree
     /// materialised text of <see cref="Current"/>. Returns false when coalescing doesn't apply
     /// (caller should <see cref="Commit"/> a new node instead).
     /// </summary>
-    public bool Coalesce(string currentText, string newText, int caretIndex)
+    public bool Coalesce(string newText, int caretIndex)
     {
         if (Current.Parent is null || Current.Children.Count > 0)
             return false;
 
-        string parentText = Reconstruct(Current, currentText, Current.Parent);
+        string parentText = Materialize(Current.Parent);
         var edit = TextEdit.Diff(parentText, newText);
         if (edit is null)
             return false;   // typing came back to exactly the parent's text — let the caller decide
@@ -277,41 +288,22 @@ public sealed class UndoTree
     public void SetCurrent(UndoNode node) => Current = node;
 
     /// <summary>
-    /// Reconstruct the text of <paramref name="target"/> given that <paramref name="from"/>
-    /// currently materialises to <paramref name="fromText"/>. Walks up to the lowest common
-    /// ancestor applying reverse edits, then down to the target applying forward edits.
+    /// Reconstruct the text of <paramref name="target"/> from the immutable <see cref="RootText"/>,
+    /// replaying every forward edit on the path root → target. This depends on nothing the caller
+    /// holds, so it can never be derailed by a stale or corrupted "current text" — making tree
+    /// navigation loss-proof: jumping to any node always yields that node's exact text.
     /// </summary>
-    public static string Reconstruct(UndoNode from, string fromText, UndoNode target)
+    public string Materialize(UndoNode target)
     {
-        if (ReferenceEquals(from, target))
-            return fromText;
+        var path = new List<UndoNode>();
+        for (var n = target; n.Parent is not null; n = n.Parent)
+            path.Add(n);
+        path.Reverse();
 
-        UndoNode lca = LowestCommonAncestor(from, target);
-        var sb = new StringBuilder(fromText);
-
-        for (var n = from; !ReferenceEquals(n, lca); n = n.Parent!)
-            n.Edit!.ApplyReverse(sb);
-
-        var down = new List<UndoNode>();
-        for (var n = target; !ReferenceEquals(n, lca); n = n.Parent!)
-            down.Add(n);
-        down.Reverse();
-
-        foreach (var n in down)
+        var sb = new StringBuilder(RootText);
+        foreach (var n in path)
             n.Edit!.ApplyForward(sb);
-
         return sb.ToString();
-    }
-
-    private static UndoNode LowestCommonAncestor(UndoNode a, UndoNode b)
-    {
-        var ancestors = new HashSet<UndoNode>();
-        for (UndoNode? n = a; n is not null; n = n.Parent)
-            ancestors.Add(n);
-        for (UndoNode? n = b; n is not null; n = n.Parent)
-            if (ancestors.Contains(n))
-                return n;
-        throw new InvalidOperationException("Nodes are not in the same tree.");
     }
 
     public IEnumerable<UndoNode> AllNodes()
@@ -331,12 +323,11 @@ public sealed class UndoTree
 
     /// <summary>
     /// Capture the whole branching history as a flat DTO. Node texts are not stored — only the
-    /// per-edit deltas — so this stays small. <paramref name="currentText"/> must be the
-    /// materialised text of <see cref="Current"/>, from which the root text is reconstructed.
+    /// per-edit deltas plus the immutable root text — so this stays small.
     /// </summary>
-    public TreeDto Serialize(string currentText)
+    public TreeDto Serialize()
     {
-        string rootText = Reconstruct(Current, currentText, Root);
+        string rootText = RootText;
         var nodes = new List<NodeDto>();
         foreach (var n in AllNodes())
         {

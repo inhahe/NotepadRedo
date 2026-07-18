@@ -4,6 +4,7 @@
              xmlns:local="clr-namespace:NotepadRedo">
     <UserControl.Resources>
         <local:PreviewWidthConverter x:Key="PreviewWidth"/>
+        <local:IndentMarginConverter x:Key="IndentMargin"/>
     </UserControl.Resources>
     <Grid>
         <Grid.ColumnDefinitions>
@@ -63,29 +64,32 @@
                 </StackPanel>
             </Border>
 
-            <TreeView x:Name="Tree"
-                      SelectedItemChanged="Tree_SelectedItemChanged"
-                      Background="{DynamicResource Theme.TreeBg}"
-                      BorderBrush="{DynamicResource Theme.PanelBorder}" BorderThickness="1"
-                      ScrollViewer.HorizontalScrollBarVisibility="Disabled">
-                <!-- Neutralise the default TreeViewItem selection highlight, which paints the
-                     header blue and whites-out the label. Selection is shown by our own
-                     IsCurrent / IsSelected border styling instead. -->
-                <TreeView.Resources>
+            <!-- Flattened history list: a straight run of edits shows as a flat column; only real
+                 fork points (a node with more than one child — i.e. an ambiguous redo) step the
+                 following branch rows further right via the per-row indent margin. Selection is
+                 shown by our own IsCurrent / IsSelected border styling, not the default highlight. -->
+            <ListBox x:Name="Tree"
+                     SelectionChanged="Tree_SelectionChanged"
+                     Background="{DynamicResource Theme.TreeBg}"
+                     BorderBrush="{DynamicResource Theme.PanelBorder}" BorderThickness="1"
+                     HorizontalContentAlignment="Stretch"
+                     ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                <ListBox.Resources>
                     <SolidColorBrush x:Key="{x:Static SystemColors.HighlightBrushKey}" Color="Transparent"/>
                     <SolidColorBrush x:Key="{x:Static SystemColors.HighlightTextBrushKey}" Color="#222222"/>
                     <SolidColorBrush x:Key="{x:Static SystemColors.InactiveSelectionHighlightBrushKey}" Color="Transparent"/>
                     <SolidColorBrush x:Key="{x:Static SystemColors.InactiveSelectionHighlightTextBrushKey}" Color="#222222"/>
-                </TreeView.Resources>
-                <TreeView.ItemContainerStyle>
-                    <Style TargetType="TreeViewItem">
-                        <Setter Property="IsExpanded" Value="{Binding IsExpanded, Mode=TwoWay}"/>
+                </ListBox.Resources>
+                <ListBox.ItemContainerStyle>
+                    <Style TargetType="ListBoxItem">
                         <Setter Property="IsSelected" Value="{Binding IsSelected, Mode=TwoWay}"/>
+                        <Setter Property="Padding" Value="0"/>
+                        <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
                     </Style>
-                </TreeView.ItemContainerStyle>
-                <TreeView.ItemTemplate>
-                    <HierarchicalDataTemplate ItemsSource="{Binding Children}">
-                        <Border CornerRadius="3" Padding="6,3" Margin="0,1">
+                </ListBox.ItemContainerStyle>
+                <ListBox.ItemTemplate>
+                    <DataTemplate>
+                        <Border CornerRadius="3" Padding="6,3" Margin="{Binding IndentLevel, Converter={StaticResource IndentMargin}}">
                             <Border.Style>
                                 <Style TargetType="Border">
                                     <Setter Property="Background" Value="Transparent"/>
@@ -109,8 +113,8 @@
                                            TextWrapping="NoWrap" TextTrimming="CharacterEllipsis">
                                     <TextBlock.MaxWidth>
                                         <MultiBinding Converter="{StaticResource PreviewWidth}">
-                                            <Binding Path="ActualWidth" RelativeSource="{RelativeSource AncestorType=TreeView}"/>
-                                            <Binding Path="Depth"/>
+                                            <Binding Path="ActualWidth" RelativeSource="{RelativeSource AncestorType=ListBox}"/>
+                                            <Binding Path="IndentLevel"/>
                                         </MultiBinding>
                                     </TextBlock.MaxWidth>
                                 </TextBlock>
@@ -118,9 +122,9 @@
                                            TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"/>
                             </StackPanel>
                         </Border>
-                    </HierarchicalDataTemplate>
-                </TreeView.ItemTemplate>
-            </TreeView>
+                    </DataTemplate>
+                </ListBox.ItemTemplate>
+            </ListBox>
         </DockPanel>
 
         <!-- ===================== Search pane (far right, toggled by Ctrl+F) ===================== -->
