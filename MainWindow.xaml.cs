@@ -517,8 +517,35 @@ public partial class MainWindow : Window
 
     private void Tab_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
+        // These are Preview (tunneling) handlers on the TabItem, but the selected tab's *content*
+        // (editor, history tree, divider, scrollbars) routes its mouse events through the TabItem
+        // too. Only arm a tab drag when the press is genuinely on the tab HEADER — otherwise any
+        // press-drag inside the editor area would launch a phantom DoDragDrop that steals the mouse
+        // capture and breaks every slider/scrollbar/divider drag (and text selection).
+        if (sender is not TabItem ti || !IsOnTabHeader(ti, e.OriginalSource as DependencyObject))
+        {
+            _dragArmed = false;
+            return;
+        }
         _dragStart = e.GetPosition(null);
         _dragArmed = true;
+    }
+
+    /// <summary>True when <paramref name="source"/> lies within the tab's header chrome (a visual
+    /// descendant of the TabItem) rather than in its hosted content. The content reaches the
+    /// TabItem only through logical/routed links, never as a visual descendant, so a pure visual
+    /// walk cleanly tells the two apart.</summary>
+    private static bool IsOnTabHeader(TabItem ti, DependencyObject? source)
+    {
+        while (source is not null)
+        {
+            if (ReferenceEquals(source, ti))
+                return true;
+            source = source is Visual or System.Windows.Media.Media3D.Visual3D
+                ? VisualTreeHelper.GetParent(source)
+                : LogicalTreeHelper.GetParent(source);
+        }
+        return false;
     }
 
     private void Tab_MouseDown(object sender, MouseButtonEventArgs e)
@@ -531,6 +558,12 @@ public partial class MainWindow : Window
     {
         if (!_dragArmed || e.LeftButton != MouseButtonState.Pressed || sender is not TabItem ti)
             return;
+        // Belt-and-braces: never start a drag from a press that wandered in from the content.
+        if (!IsOnTabHeader(ti, e.OriginalSource as DependencyObject))
+        {
+            _dragArmed = false;
+            return;
+        }
 
         var pos = e.GetPosition(null);
         if (Math.Abs(pos.X - _dragStart.X) < SystemParameters.MinimumHorizontalDragDistance &&
