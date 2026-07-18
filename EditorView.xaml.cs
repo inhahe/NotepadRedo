@@ -71,6 +71,21 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
     private bool _suppressResultNav;       // ignore the SelectionChanged fired while we repopulate
     private const double SearchPaneWidth = 320;
 
+    // ----- Drag-select auto-scroll -----
+    // WPF's built-in auto-scroll while drag-selecting past the top/bottom edge lurches in big
+    // line/page steps, so it's almost impossible to stop at the right place — a tiny extra mouse
+    // move rockets the selection way too far. We take the drag over once the cursor leaves the text
+    // viewport and drive a smooth, velocity-controlled scroll instead: speed grows with how far past
+    // the edge the cursor is, so just past the edge crawls (fine control) and pushing further speeds
+    // up, capped so it never races away.
+    private DispatcherTimer? _dragScrollTimer;
+    private bool _dragScrollActive;        // took the drag over (cursor crossed an edge this drag)
+    private int _dragScrollAnchor;         // fixed end of the selection (the mouse-down point)
+    private double _dragScrollVelocity;    // px per tick, signed (+ down / − up); 0 while in view
+    private double _dragScrollMouseX;      // last cursor X (Editor coords) for edge hit-testing
+    private const double DragScrollIntervalMs = 16;
+    private const double DragScrollMaxPxPerTick = 28;
+
     /// <summary>Unique id for this document's recovery file.</summary>
     public string RecoveryId { get; private set; } = Guid.NewGuid().ToString("N");
 
@@ -96,6 +111,11 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
 
         // Isolate pastes as their own undo step when the user has that enabled.
         DataObject.AddPastingHandler(Editor, Editor_Pasting);
+
+        // Smooth auto-scroll while drag-selecting beyond the viewport (replaces WPF's lurching one).
+        Editor.PreviewMouseMove += Editor_PreviewMouseMove;
+        Editor.PreviewMouseLeftButtonUp += (_, _) => EndDragScroll();
+        Editor.LostMouseCapture += (_, _) => EndDragScroll();
 
         _autosave.Tick += (_, _) => WriteRecovery();
 
@@ -1603,6 +1623,120 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
             else if (rect.X > Editor.ViewportWidth - margin)
                 Editor.ScrollToHorizontalOffset(contentX - Editor.ViewportWidth + margin);
         }
+    }
+
+    // ===================== Drag-select auto-scroll =====================
+
+    /// <summary>While the left button is held (a text selection is in progress), take the drag over
+    /// once the cursor passes above/below the text viewport and drive the scroll smoothly instead of
+    /// letting WPF lurch. Once taken over, we keep driving the whole drag (even back inside the view)
+    /// so the selection always pivots on the original mouse-down point.</summary>
+    private void Editor_PreviewMouseMove(object sender, MouseEventArgs e)
+    {
+        if (e.LeftButton != MouseButtonState.Pressed)
+        {
+            EndDragScroll();
+            return;
+        }
+
+        var pos = e.GetPosition(Editor);
+        double top = Editor.Padding.Top;
+        double bottom = top + Editor.ViewportHeight;
+        bool beyond = pos.Y < top || pos.Y > bottom;
+
+        // Normal in-view selection that hasn't triggered auto-scroll yet: leave it to WPF.
+        if (!_dragScrollActive && !beyond)
+            return;
+
+        if (!_dragScrollActive)
+        {
+            _dragScrollActive = true;
+            // Fix the end opposite the drag direction — that's the original mouse-down point:
+            // dragging down keeps the top (SelectionStart), dragging up keeps the bottom.
+            _dragScrollAnchor = pos.Y > bottom
+                ? Editor.SelectionStart
+                : Editor.SelectionStart + Editor.SelectionLength;
+        }
+
+        _dragScrollMouseX = pos.X;
+        _dragScrollVelocity = pos.Y < top ? -EdgeSpeed(top - pos.Y)
+                            : pos.Y > bottom ? EdgeSpeed(pos.Y - bottom)
+                            : 0;
+
+        if (_dragScrollVelocity != 0)
+            EnsureDragScrollTimer();     // beyond the edge — keep scrolling on a timer
+        else
+            StopDragScrollTimer();       // back inside — no scroll, but we still drive selection
+
+        // Extend selection to the cursor (clamped into the viewport for the hit-test).
+        ExtendDragSelection(
+            Math.Clamp(pos.X, Editor.Padding.Left, Editor.Padding.Left + Editor.ViewportWidth - 1),
+            Math.Clamp(pos.Y, top, bottom - 1));
+        e.Handled = true;                // suppress WPF's own (lurching) auto-scroll + selection
+    }
+
+    /// <summary>Pixels-per-tick for a given overshoot past the edge: a gentle floor so just-past-edge
+    /// crawls, growing linearly, capped so it never races away.</summary>
+    private static double EdgeSpeed(double overshootPx) =>
+        Math.Min(DragScrollMaxPxPerTick, 1.5 + overshootPx * 0.14);
+
+    private void EnsureDragScrollTimer()
+    {
+        if (_dragScrollTimer is not null) return;
+        _dragScrollTimer = new DispatcherTimer(DispatcherPriority.Input)
+        {
+            Interval = TimeSpan.FromMilliseconds(DragScrollIntervalMs),
+        };
+        _dragScrollTimer.Tick += (_, _) => DragScrollTick();
+        _dragScrollTimer.Start();
+    }
+
+    private void StopDragScrollTimer()
+    {
+        _dragScrollTimer?.Stop();
+        _dragScrollTimer = null;
+    }
+
+    /// <summary>End of the drag: stop scrolling and hand control back to WPF for the next gesture.</summary>
+    private void EndDragScroll()
+    {
+        _dragScrollActive = false;
+        StopDragScrollTimer();
+    }
+
+    private void DragScrollTick()
+    {
+        // The button may have been released past the edge without another mouse-move — stop then.
+        if (Mouse.LeftButton != MouseButtonState.Pressed)
+        {
+            EndDragScroll();
+            return;
+        }
+
+        double max = Math.Max(0, Editor.ExtentHeight - Editor.ViewportHeight);
+        double target = Math.Clamp(Editor.VerticalOffset + _dragScrollVelocity, 0, max);
+        Editor.ScrollToVerticalOffset(target);
+
+        // Extend the selection to the character under a point pinned just inside the edge we're
+        // scrolling toward (at the cursor's X). As the text scrolls under that fixed point, the
+        // covered character advances, growing the selection smoothly.
+        double edgeY = _dragScrollVelocity > 0
+            ? Editor.Padding.Top + Editor.ViewportHeight - 1
+            : Editor.Padding.Top + 1;
+        double x = Math.Clamp(_dragScrollMouseX,
+                              Editor.Padding.Left,
+                              Editor.Padding.Left + Editor.ViewportWidth - 1);
+        ExtendDragSelection(x, edgeY);
+    }
+
+    /// <summary>Select from the fixed anchor to the character under the given Editor-space point.</summary>
+    private void ExtendDragSelection(double x, double y)
+    {
+        int idx = Editor.GetCharacterIndexFromPoint(new Point(x, y), snapToText: true);
+        if (idx < 0) return;
+        int start = Math.Min(_dragScrollAnchor, idx);
+        int len = Math.Abs(idx - _dragScrollAnchor);
+        Editor.Select(start, len);
     }
 
     /// <summary>Logical (newline-based) line number of a character index.</summary>
