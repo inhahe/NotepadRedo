@@ -66,6 +66,7 @@ Choose what the window's **X** button does:
 ### Other
 - Word wrap toggle.
 - Standard editing: cut / copy / paste.
+- **`.txt` file association**: on launch NotepadRedo registers itself (per-user, no admin) as a program *capable* of opening `.txt` files, so it appears in **Open with** with an **"Always use this app"** option and in **Settings → Default apps**. It never hijacks the association — it only makes itself selectable, so you can set it as your default text editor if you want. The optional `associate-txt.bat` helper *asks first*, then registers and opens Default Apps to help you finish (Windows guards the final `.txt` default with a hashed key, so the last click is always yours).
 
 ---
 

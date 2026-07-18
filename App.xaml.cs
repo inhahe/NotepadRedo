@@ -89,6 +89,11 @@ public partial class App : Application
         _ipc = new IpcServer();
         _ipc.Start();
 
+        // Declare ourselves a .txt handler for the current user (idempotent, no admin), so Windows
+        // offers "Always use this app" and lists us in Settings > Default apps. Doesn't force the
+        // default — the user still picks it. Only runs on a real UI launch, not the --quit* modes.
+        FileAssociation.EnsureTxtRegistered();
+
         var window = new MainWindow();
         window.Show();
         window.Initialize(files, blankRequested);
