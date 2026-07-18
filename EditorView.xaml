@@ -20,6 +20,7 @@
                  FontFamily="Consolas" FontSize="14"
                  IsUndoEnabled="False"
                  Padding="6"
+                 PreviewKeyDown="Editor_PreviewKeyDown"
                  TextChanged="Editor_TextChanged"
                  SelectionChanged="Editor_SelectionChanged"/>
 

@@ -3,6 +3,7 @@ using System.IO;
 using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Input;
 using System.Windows.Threading;
 using Microsoft.Win32;
 
@@ -604,6 +605,27 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
     // ===================== Status =====================
 
     private void Editor_SelectionChanged(object sender, RoutedEventArgs e) => RaiseAll();
+
+    /// <summary>
+    /// Route Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z to the history tree ourselves. The editor's built-in
+    /// undo is off (IsUndoEnabled=False), but the TextBox still swallows these gestures before the
+    /// window-level KeyBindings can fire — so we catch them here, on the tunneling PreviewKeyDown,
+    /// and handle them before the TextBox sees them.
+    /// </summary>
+    private void Editor_PreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        if (Keyboard.Modifiers == ModifierKeys.Control && e.Key == Key.Z)
+        {
+            Undo();
+            e.Handled = true;
+        }
+        else if ((Keyboard.Modifiers == ModifierKeys.Control && e.Key == Key.Y)
+                 || (Keyboard.Modifiers == (ModifierKeys.Control | ModifierKeys.Shift) && e.Key == Key.Z))
+        {
+            Redo();
+            e.Handled = true;
+        }
+    }
 
     private void RaiseAll()
     {
