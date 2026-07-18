@@ -55,6 +55,9 @@ public partial class FontPickerWindow : Window
         _ready = true;
         FamilyList.ScrollIntoView(FamilyList.SelectedItem);
         UpdatePreview();
+
+        // Land the caret in the filter box so the user can type a font name immediately.
+        Loaded += (_, _) => { FilterBox.Focus(); FilterBox.SelectAll(); };
     }
 
     private static string FormatSize(double pt) =>
