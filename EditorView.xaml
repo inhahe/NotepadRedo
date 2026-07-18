@@ -155,9 +155,35 @@
                              Foreground="{DynamicResource Theme.EditorFg}"
                              CaretBrush="{DynamicResource Theme.EditorFg}"
                              Padding="4,3"
-                             ToolTip="Type words/strings to find. Use &quot;quotes&quot; for phrases."
+                             ToolTip="Type text to find — matched exactly as typed."
                              TextChanged="SearchInput_Changed"
                              PreviewKeyDown="SearchBox_PreviewKeyDown"/>
+
+                    <!-- Proximity item-list mode: shown only while the "near each other" box is checked.
+                         The search box above becomes the entry field — press Enter to add each item;
+                         every added item shows here with an X to remove it and stays editable. -->
+                    <StackPanel x:Name="TermListPanel" Visibility="Collapsed">
+                        <TextBlock x:Name="AddTermHint" Margin="0,4,0,0" FontSize="11"
+                                   TextWrapping="Wrap" Foreground="{DynamicResource Theme.TreeMetaFg}"
+                                   Text="Press Enter to add each item to match near the others."/>
+                        <ItemsControl x:Name="TermsList" Margin="0,4,0,0">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <DockPanel Margin="0,2,0,0" LastChildFill="True">
+                                        <Button DockPanel.Dock="Right" Content="&#x2715;"
+                                                Width="20" Height="20" Padding="0" Margin="4,0,0,0"
+                                                Click="RemoveTerm_Click" ToolTip="Remove this item"/>
+                                        <TextBox Text="{Binding Text, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                 Background="{DynamicResource Theme.EditorBg}"
+                                                 Foreground="{DynamicResource Theme.EditorFg}"
+                                                 CaretBrush="{DynamicResource Theme.EditorFg}"
+                                                 Padding="4,2"
+                                                 TextChanged="TermEdit_Changed"/>
+                                    </DockPanel>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </StackPanel>
 
                     <CheckBox x:Name="CaseSensitiveCheck" Content="Case sensitive" Margin="0,6,0,0"
                               Foreground="{DynamicResource Theme.TreePreviewFg}"
@@ -170,11 +196,11 @@
 
                     <CheckBox x:Name="ProximityCheck" Margin="0,6,0,0"
                               Foreground="{DynamicResource Theme.TreePreviewFg}"
-                              Content="Only where all terms are near each other"
-                              Checked="SearchOption_Changed" Unchecked="SearchOption_Changed"/>
+                              Content="Only where all items are near each other"
+                              Checked="Proximity_Changed" Unchecked="Proximity_Changed"/>
 
                     <DockPanel x:Name="ProximityRow" Margin="16,4,0,0" LastChildFill="False"
-                               IsEnabled="{Binding IsChecked, ElementName=ProximityCheck}">
+                               Visibility="Collapsed">
                         <TextBlock Text="within" VerticalAlignment="Center" DockPanel.Dock="Left"
                                    Foreground="{DynamicResource Theme.TreePreviewFg}"/>
                         <TextBox x:Name="ProximityN" Text="40" Width="40" Margin="6,0"

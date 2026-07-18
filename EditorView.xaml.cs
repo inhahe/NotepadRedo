@@ -64,6 +64,9 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
 
     // ----- Search pane -----
     private readonly System.Collections.ObjectModel.ObservableCollection<SearchResultVM> _searchResults = new();
+    // Proximity mode's explicit term list (each an editable, removable item). Only used when the
+    // "near each other" checkbox is on; plain search ignores it and matches the box text literally.
+    private readonly System.Collections.ObjectModel.ObservableCollection<SearchTermVM> _searchTerms = new();
     private DispatcherTimer? _searchDebounce;
     private bool _suppressResultNav;       // ignore the SelectionChanged fired while we repopulate
     private const double SearchPaneWidth = 320;
@@ -113,6 +116,7 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
                   AppSettings.Current.FontBold, AppSettings.Current.FontItalic);
 
         ResultsList.ItemsSource = _searchResults;
+        TermsList.ItemsSource = _searchTerms;
 
         Loaded += (_, _) => RaiseAll();
     }
@@ -1283,9 +1287,22 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
 
     private void SearchInput_Changed(object sender, TextChangedEventArgs e) => QueueSearch();
 
-    // Checkboxes (case-sensitive / proximity).
+    // Checkboxes (case-sensitive / whole-word).
     private void SearchOption_Changed(object sender, RoutedEventArgs e)
     {
+        if (IsLoaded) RunSearch();
+    }
+
+    // The "near each other" checkbox switches between plain literal search and the multi-item
+    // proximity list. Show/hide the item-list UI and the "within N" row, then re-search.
+    private void Proximity_Changed(object sender, RoutedEventArgs e)
+    {
+        bool prox = ProximityCheck.IsChecked == true;
+        TermListPanel.Visibility = prox ? Visibility.Visible : Visibility.Collapsed;
+        ProximityRow.Visibility = prox ? Visibility.Visible : Visibility.Collapsed;
+        SearchBox.ToolTip = prox
+            ? "Type an item and press Enter to add it; results match where all items appear near each other."
+            : "Type text to find — matched exactly as typed.";
         if (IsLoaded) RunSearch();
     }
 
@@ -1294,6 +1311,31 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
     {
         if (IsLoaded) RunSearch();
     }
+
+    /// <summary>Add the search box's current text as a new proximity item, then clear the box for
+    /// the next one. No-op if the box is empty.</summary>
+    private void AddTermFromBox()
+    {
+        string t = SearchBox.Text;
+        if (string.IsNullOrEmpty(t))
+            return;
+        _searchTerms.Add(new SearchTermVM { Text = t });
+        SearchBox.Clear();
+        SearchBox.Focus();
+        RunSearch();
+    }
+
+    private void RemoveTerm_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is FrameworkElement fe && fe.DataContext is SearchTermVM vm)
+        {
+            _searchTerms.Remove(vm);
+            RunSearch();
+        }
+    }
+
+    // An item was edited in place — re-run (debounced) so results track the change.
+    private void TermEdit_Changed(object sender, TextChangedEventArgs e) => QueueSearch();
 
     private void SearchBox_PreviewKeyDown(object sender, KeyEventArgs e)
     {
@@ -1304,8 +1346,18 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
         }
         else if (e.Key == Key.Enter)
         {
-            // Enter runs the search now and steps to the next result (wrapping).
             _searchDebounce?.Stop();
+
+            // In proximity mode, Enter commits the typed text as a new item (when non-empty) instead
+            // of stepping results — that's how you build up the list to match near each other.
+            if (ProximityCheck.IsChecked == true && !string.IsNullOrEmpty(SearchBox.Text))
+            {
+                AddTermFromBox();
+                e.Handled = true;
+                return;
+            }
+
+            // Otherwise Enter runs the search now and steps to the next result (wrapping).
             RunSearch();
             if (_searchResults.Count > 0)
             {
@@ -1347,27 +1399,49 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
         _searchResults.Clear();
         _suppressResultNav = false;
 
-        string query = SearchBox.Text;
-        if (string.IsNullOrEmpty(query))
-        {
-            SearchStatus.Text = "";
-            return;
-        }
-
         bool caseSensitive = CaseSensitiveCheck.IsChecked == true;
         bool wholeWord = WholeWordCheck.IsChecked == true;
         bool proximity = ProximityCheck.IsChecked == true;
-        ProximityUnit unit = ProximityUnitBox.SelectedIndex switch
-        {
-            1 => ProximityUnit.Words,
-            2 => ProximityUnit.Lines,
-            _ => ProximityUnit.Characters,
-        };
-        if (!int.TryParse(ProximityN.Text, out int n) || n < 0)
-            n = 0;
 
         string text = Editor.Text;
-        var matches = SearchEngine.Run(text, query, caseSensitive, proximity, unit, n, wholeWord);
+        List<SearchMatch> matches;
+
+        if (proximity)
+        {
+            // Match near-each-other over the explicit item list, plus whatever's currently typed in
+            // the box as a provisional item so results narrow live before you press Enter to add it.
+            var terms = _searchTerms.Select(t => t.Text).Where(s => s.Length > 0).ToList();
+            if (!string.IsNullOrEmpty(SearchBox.Text))
+                terms.Add(SearchBox.Text);
+
+            if (terms.Count == 0)
+            {
+                SearchStatus.Text = "";
+                return;
+            }
+
+            ProximityUnit unit = ProximityUnitBox.SelectedIndex switch
+            {
+                1 => ProximityUnit.Words,
+                2 => ProximityUnit.Lines,
+                _ => ProximityUnit.Characters,
+            };
+            if (!int.TryParse(ProximityN.Text, out int n) || n < 0)
+                n = 0;
+
+            matches = SearchEngine.FindProximity(text, terms, caseSensitive, unit, n, wholeWord);
+        }
+        else
+        {
+            // Plain mode: match the box text exactly as typed (spaces, quotes, and all).
+            string query = SearchBox.Text;
+            if (string.IsNullOrEmpty(query))
+            {
+                SearchStatus.Text = "";
+                return;
+            }
+            matches = SearchEngine.FindAll(text, query, caseSensitive, wholeWord);
+        }
 
         foreach (var m in matches)
         {
@@ -1424,6 +1498,23 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
         public string Location { get; init; } = "";
         public int Start { get; init; }
         public int Length { get; init; }
+    }
+
+    /// <summary>One editable term in proximity mode's item list.</summary>
+    public sealed class SearchTermVM : INotifyPropertyChanged
+    {
+        private string _text = "";
+        public string Text
+        {
+            get => _text;
+            set
+            {
+                if (_text == value) return;
+                _text = value;
+                PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(Text)));
+            }
+        }
+        public event PropertyChangedEventHandler? PropertyChanged;
     }
 
     public event PropertyChangedEventHandler? PropertyChanged;

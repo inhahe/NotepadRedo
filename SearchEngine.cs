@@ -13,52 +13,16 @@ public readonly record struct SearchMatch(int Start, int Length)
 
 /// <summary>
 /// Pure text-search logic (no UI), so it can be unit-tested directly. Two modes:
-///  • plain — every occurrence of the whole query string;
-///  • proximity — every place where all query terms occur within N characters/words/lines
-///    of each other (the smallest window that covers every term, span measured in the chosen unit).
+///  • plain — every occurrence of the query, matched <b>literally</b> (exactly the characters typed,
+///    including spaces and quotes — no tokenising or special syntax);
+///  • proximity — every place where all of an explicit list of terms occur within N characters/words/
+///    lines of each other (the smallest window that covers every term, span measured in the unit).
+/// The two modes take their input differently: plain from one query string, proximity from a caller-
+/// supplied list of terms (the UI collects those as discrete items), so neither relies on parsing
+/// magic characters out of a single string.
 /// </summary>
 public static class SearchEngine
 {
-    /// <summary>
-    /// Split a query into terms. Whitespace separates terms; a "quoted phrase" is kept as one
-    /// term (so multi-word strings can be searched). Empty terms are dropped.
-    /// </summary>
-    public static List<string> ParseTerms(string query)
-    {
-        var terms = new List<string>();
-        if (string.IsNullOrEmpty(query))
-            return terms;
-
-        int i = 0;
-        while (i < query.Length)
-        {
-            char c = query[i];
-            if (char.IsWhiteSpace(c)) { i++; continue; }
-
-            if (c == '"')
-            {
-                int close = query.IndexOf('"', i + 1);
-                if (close < 0)
-                {
-                    // Unterminated quote — take the rest verbatim.
-                    string rest = query.Substring(i + 1);
-                    if (rest.Length > 0) terms.Add(rest);
-                    break;
-                }
-                string phrase = query.Substring(i + 1, close - i - 1);
-                if (phrase.Length > 0) terms.Add(phrase);
-                i = close + 1;
-            }
-            else
-            {
-                int start = i;
-                while (i < query.Length && !char.IsWhiteSpace(query[i]) && query[i] != '"') i++;
-                terms.Add(query.Substring(start, i - start));
-            }
-        }
-        return terms;
-    }
-
     /// <summary>All (possibly overlapping) occurrences of <paramref name="needle"/> in the text.
     /// When <paramref name="wholeWord"/> is set, an occurrence only counts if it isn't flanked by a
     /// word character on either side (so "os" won't match inside "composition").</summary>
@@ -179,31 +143,6 @@ public static class SearchEngine
             }
         }
         return results;
-    }
-
-    /// <summary>
-    /// Run a search from raw inputs. With proximity off (or a single term) it finds the whole query
-    /// string verbatim; with proximity on and multiple terms it finds proximity clusters.
-    /// </summary>
-    public static List<SearchMatch> Run(string text, string query, bool caseSensitive,
-                                        bool proximity, ProximityUnit unit, int n,
-                                        bool wholeWord = false)
-    {
-        if (string.IsNullOrEmpty(query))
-            return new List<SearchMatch>();
-
-        var terms = ParseTerms(query);
-        if (proximity && terms.Count > 1)
-            return FindProximity(text, terms, caseSensitive, unit, n, wholeWord);
-
-        // Plain find: search the query verbatim so spaces are significant — typing " os " (with
-        // surrounding spaces) looks for a standalone "os", not the "os" inside "composition". The
-        // only rewrite is stripping the wrapping quotes off a single "quoted phrase" (quotes group
-        // the text; they aren't part of what you're looking for). An unquoted query — even one that
-        // tokenises down to a single term — is used exactly as typed, spaces and all.
-        bool singleQuotedPhrase = terms.Count == 1 && query.Contains('"');
-        string needle = singleQuotedPhrase ? terms[0] : query;
-        return FindAll(text, needle, caseSensitive, wholeWord);
     }
 
     /// <summary>Ordinal of the word that contains each character index (0-based, monotonic).</summary>
