@@ -427,11 +427,13 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
     public void ApplyWordWrap(bool wrap) =>
         Editor.TextWrapping = wrap ? TextWrapping.Wrap : TextWrapping.NoWrap;
 
-    /// <summary>Apply the shared editor-font preference to this document's text area.</summary>
-    public void ApplyFont(string family, double size, bool bold, bool italic)
+    /// <summary>Apply the shared editor-font preference to this document's text area. The size is
+    /// given in points (as stored/picked) and converted to WPF's device-independent pixels here so
+    /// callers never have to remember the conversion.</summary>
+    public void ApplyFont(string family, double sizePoints, bool bold, bool italic)
     {
         Editor.FontFamily = new System.Windows.Media.FontFamily(family);
-        Editor.FontSize = size;
+        Editor.FontSize = sizePoints * (96.0 / 72.0);
         Editor.FontWeight = bold ? FontWeights.Bold : FontWeights.Normal;
         Editor.FontStyle = italic ? FontStyles.Italic : FontStyles.Normal;
     }

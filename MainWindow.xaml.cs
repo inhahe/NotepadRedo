@@ -400,9 +400,6 @@ public partial class MainWindow : Window
 
     // ===================== Menu: Format (editor font) =====================
 
-    /// <summary>Font sizes are stored/picked in points; WPF's FontSize is in 1/96" pixels.</summary>
-    private const double PointsToPixels = 96.0 / 72.0;
-
     /// <summary>Open the live font picker: the editor previews the selection as the user browses,
     /// and the choice is committed on OK or reverted on Cancel.</summary>
     private void Font_Click(object sender, RoutedEventArgs e)
@@ -435,9 +432,8 @@ public partial class MainWindow : Window
     /// <summary>Apply a font to every open editor for preview only (no persistence).</summary>
     private static void PreviewFont(string family, double sizePt, bool bold, bool italic)
     {
-        double px = sizePt * PointsToPixels;
         foreach (var v in AllOpenViews())
-            v.ApplyFont(family, px, bold, italic);
+            v.ApplyFont(family, sizePt, bold, italic);
     }
 
     /// <summary>Every open document across every window.</summary>
@@ -477,14 +473,13 @@ public partial class MainWindow : Window
     {
         var s = AppSettings.Current;
         s.Save();
-        double px = s.FontSize * PointsToPixels;
         foreach (Window w in Application.Current.Windows)
         {
             if (w is not MainWindow mw)
                 continue;
             mw.SyncOptionMenus();
             foreach (var v in mw.AllViews())
-                v.ApplyFont(s.FontFamily, px, s.FontBold, s.FontItalic);
+                v.ApplyFont(s.FontFamily, s.FontSize, s.FontBold, s.FontItalic);
         }
     }
 
