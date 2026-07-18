@@ -1563,14 +1563,46 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
         int selLen = Math.Clamp(r.Length, 0, len - start);
 
         Editor.Focus();
+        // Select() highlights the match and leaves the caret at its end. (Don't set
+        // CaretIndex afterwards — doing so collapses the selection, hiding the match.)
         Editor.Select(start, selLen);
-        Editor.CaretIndex = start + selLen;   // caret lands inside the match
 
-        int line = Editor.GetLineIndexFromCharacterIndex(start);
+        // Defer the scroll to Background priority so the TextBox runs a layout pass
+        // after being focused/selected first. Queried before that pass,
+        // GetLineIndexFromCharacterIndex / ScrollToLine / GetRectFromCharacterIndex
+        // return stale positions and the match is left off-screen — which is why the
+        // cursor "couldn't be found" after clicking a result.
+        Dispatcher.BeginInvoke(new Action(() => BringIntoView(start)),
+                               DispatcherPriority.Background);
+
+        RaiseAll();
+    }
+
+    /// <summary>Scroll the editor so the character at <paramref name="index"/> is visible,
+    /// both vertically (its line) and horizontally. The horizontal pass matters when
+    /// word-wrap is off and the match sits far to the right: <see cref="System.Windows.Controls.Primitives.TextBoxBase.ScrollToLine"/>
+    /// only moves vertically, so the caret would otherwise stay scrolled off the right edge.</summary>
+    private void BringIntoView(int index)
+    {
+        int len = Editor.Text.Length;
+        index = Math.Clamp(index, 0, len);
+
+        int line = Editor.GetLineIndexFromCharacterIndex(index);
         if (line >= 0)
             Editor.ScrollToLine(line);
 
-        RaiseAll();
+        // GetRectFromCharacterIndex is viewport-relative, so an X outside
+        // [0, ViewportWidth] means the character is scrolled off-screen horizontally.
+        Rect rect = Editor.GetRectFromCharacterIndex(index);
+        if (!rect.IsEmpty && Editor.ViewportWidth > 0)
+        {
+            const double margin = 24;
+            double contentX = rect.X + Editor.HorizontalOffset;
+            if (rect.X < margin)
+                Editor.ScrollToHorizontalOffset(Math.Max(0, contentX - margin));
+            else if (rect.X > Editor.ViewportWidth - margin)
+                Editor.ScrollToHorizontalOffset(contentX - Editor.ViewportWidth + margin);
+        }
     }
 
     /// <summary>Logical (newline-based) line number of a character index.</summary>
