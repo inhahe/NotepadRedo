@@ -32,6 +32,8 @@ Built with WPF on .NET 8.
 ### Search
 - Open the search pane with `Ctrl+F` (or **Edit → Find…**); it slides in on the right.
 - **Case-sensitivity** toggle.
+- **Match whole word only** toggle: restricts matches to places where the term stands alone as a word (bounded by non-word characters), so searching `os` won't match inside `composition`. Applies to plain and proximity searches alike.
+- The plain query is matched **verbatim, spaces included** — typing ` os ` (with surrounding spaces) finds a standalone `os` rather than the `os` inside `composition`. (Wrap text in `"quotes"` only to group a phrase; the quotes themselves aren't searched.)
 - **Proximity mode**: instead of matching the whole query, find only the places where *all* the entered terms occur **within N characters, words, or lines of each other** (N and the unit are configurable). Wrap several words in `"quotes"` to treat them as one term.
 - Results are listed with a one/two-line preview ending in an ellipsis when truncated; **clicking a result moves the caret and selection to that match** and scrolls it into view. `Enter` in the search box steps through matches.
 

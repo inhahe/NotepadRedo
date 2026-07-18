@@ -59,8 +59,11 @@ public static class SearchEngine
         return terms;
     }
 
-    /// <summary>All (possibly overlapping) occurrences of <paramref name="needle"/> in the text.</summary>
-    public static List<SearchMatch> FindAll(string text, string needle, bool caseSensitive)
+    /// <summary>All (possibly overlapping) occurrences of <paramref name="needle"/> in the text.
+    /// When <paramref name="wholeWord"/> is set, an occurrence only counts if it isn't flanked by a
+    /// word character on either side (so "os" won't match inside "composition").</summary>
+    public static List<SearchMatch> FindAll(string text, string needle, bool caseSensitive,
+                                            bool wholeWord = false)
     {
         var results = new List<SearchMatch>();
         if (string.IsNullOrEmpty(text) || string.IsNullOrEmpty(needle))
@@ -72,11 +75,25 @@ public static class SearchEngine
         {
             int f = text.IndexOf(needle, idx, cmp);
             if (f < 0) break;
-            results.Add(new SearchMatch(f, needle.Length));
+            if (!wholeWord || IsWholeWord(text, f, f + needle.Length))
+                results.Add(new SearchMatch(f, needle.Length));
             idx = f + 1;   // allow overlapping matches
         }
         return results;
     }
+
+    /// <summary>True when the char just before <paramref name="start"/> and the char at
+    /// <paramref name="end"/> are both non-word characters (or the text edge) — i.e. the range
+    /// [start, end) stands alone as a word rather than sitting inside a longer run of letters/digits.
+    /// Word characters are letters, digits, and underscore.</summary>
+    private static bool IsWholeWord(string text, int start, int end)
+    {
+        bool leftOk = start <= 0 || !IsWordChar(text[start - 1]);
+        bool rightOk = end >= text.Length || !IsWordChar(text[end]);
+        return leftOk && rightOk;
+    }
+
+    private static bool IsWordChar(char c) => char.IsLetterOrDigit(c) || c == '_';
 
     /// <summary>
     /// Every cluster where all <paramref name="terms"/> appear within <paramref name="n"/> of each
@@ -84,7 +101,8 @@ public static class SearchEngine
     /// end within the smallest covering window; results don't overlap.
     /// </summary>
     public static List<SearchMatch> FindProximity(string text, IReadOnlyList<string> terms,
-                                                  bool caseSensitive, ProximityUnit unit, int n)
+                                                  bool caseSensitive, ProximityUnit unit, int n,
+                                                  bool wholeWord = false)
     {
         var results = new List<SearchMatch>();
         if (string.IsNullOrEmpty(text) || terms.Count == 0)
@@ -103,7 +121,8 @@ public static class SearchEngine
             {
                 int f = text.IndexOf(term, idx, cmp);
                 if (f < 0) break;
-                occ.Add((f, f + term.Length, t));
+                if (!wholeWord || IsWholeWord(text, f, f + term.Length))
+                    occ.Add((f, f + term.Length, t));
                 idx = f + 1;
             }
         }
@@ -167,18 +186,24 @@ public static class SearchEngine
     /// string verbatim; with proximity on and multiple terms it finds proximity clusters.
     /// </summary>
     public static List<SearchMatch> Run(string text, string query, bool caseSensitive,
-                                        bool proximity, ProximityUnit unit, int n)
+                                        bool proximity, ProximityUnit unit, int n,
+                                        bool wholeWord = false)
     {
         if (string.IsNullOrEmpty(query))
             return new List<SearchMatch>();
 
         var terms = ParseTerms(query);
         if (proximity && terms.Count > 1)
-            return FindProximity(text, terms, caseSensitive, unit, n);
+            return FindProximity(text, terms, caseSensitive, unit, n, wholeWord);
 
-        // Plain find: a single quoted phrase searches that phrase; otherwise the raw query text.
-        string needle = terms.Count == 1 ? terms[0] : query;
-        return FindAll(text, needle, caseSensitive);
+        // Plain find: search the query verbatim so spaces are significant — typing " os " (with
+        // surrounding spaces) looks for a standalone "os", not the "os" inside "composition". The
+        // only rewrite is stripping the wrapping quotes off a single "quoted phrase" (quotes group
+        // the text; they aren't part of what you're looking for). An unquoted query — even one that
+        // tokenises down to a single term — is used exactly as typed, spaces and all.
+        bool singleQuotedPhrase = terms.Count == 1 && query.Contains('"');
+        string needle = singleQuotedPhrase ? terms[0] : query;
+        return FindAll(text, needle, caseSensitive, wholeWord);
     }
 
     /// <summary>Ordinal of the word that contains each character index (0-based, monotonic).</summary>

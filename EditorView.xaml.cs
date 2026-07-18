@@ -1355,6 +1355,7 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
         }
 
         bool caseSensitive = CaseSensitiveCheck.IsChecked == true;
+        bool wholeWord = WholeWordCheck.IsChecked == true;
         bool proximity = ProximityCheck.IsChecked == true;
         ProximityUnit unit = ProximityUnitBox.SelectedIndex switch
         {
@@ -1366,7 +1367,7 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
             n = 0;
 
         string text = Editor.Text;
-        var matches = SearchEngine.Run(text, query, caseSensitive, proximity, unit, n);
+        var matches = SearchEngine.Run(text, query, caseSensitive, proximity, unit, n, wholeWord);
 
         foreach (var m in matches)
         {

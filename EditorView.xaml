@@ -163,6 +163,11 @@
                               Foreground="{DynamicResource Theme.TreePreviewFg}"
                               Checked="SearchOption_Changed" Unchecked="SearchOption_Changed"/>
 
+                    <CheckBox x:Name="WholeWordCheck" Content="Match whole word only" Margin="0,6,0,0"
+                              Foreground="{DynamicResource Theme.TreePreviewFg}"
+                              ToolTip="Only match when the term stands alone as a word (not inside a longer word)"
+                              Checked="SearchOption_Changed" Unchecked="SearchOption_Changed"/>
+
                     <CheckBox x:Name="ProximityCheck" Margin="0,6,0,0"
                               Foreground="{DynamicResource Theme.TreePreviewFg}"
                               Content="Only where all terms are near each other"
