@@ -53,7 +53,7 @@ Built with WPF on .NET 8.
 
 ### Close-button behavior
 Choose what the window's **X** button does:
-- **Close** the window (prompting to save unsaved work) — the default.
+- **Close** the window (prompting to save unsaved work) — the default. With several unsaved tabs you're asked about each in turn, and a **Save All** button on each prompt saves the rest without further asking.
 - **Minimize to tray** — hide to the notification area and keep running.
 - **Minimize to taskbar** — minimize instead of closing.
 
@@ -95,7 +95,7 @@ NotepadRedo.exe [files...] [--new] [--quit-prompt] [--quit] [--quit-save]
 
 - `files...` — open one or more files. Files already open elsewhere are focused rather than reopened; otherwise they open as a new tab or new instance per your settings.
 - `--new` — start with a blank document even if files are passed.
-- `--quit-prompt` — signal every running instance to close **interactively**: each prompts to save its unsaved work (Yes/No/Cancel). This call **blocks** until the user has answered every prompt and each instance has exited, and reports exit code `2` if the user cancels (leaving an instance open). Used by `build.bat` before redeploying, so a redeploy can't overwrite the exe until you've decided the fate of your unsaved work.
+- `--quit-prompt` — signal every running instance to close **interactively**: each prompts to save its unsaved work (Save / Save All / Don't Save / Cancel). With multiple unsaved documents you're asked about each one in turn; **Save All** saves the current document and every remaining one without further prompts. This call **blocks** until the user has answered every prompt and each instance has exited, and reports exit code `2` if the user cancels (leaving an instance open). Used by `build.bat` before redeploying, so a redeploy can't overwrite the exe until you've decided the fate of your unsaved work.
 - `--quit-save` — signal every running instance to save silently (titled docs to disk, untitled parked in recovery) and exit, then exit. Non-interactive alternative to `--quit-prompt`.
 - `--quit` — signal every running instance to park all work in crash recovery and exit.
 

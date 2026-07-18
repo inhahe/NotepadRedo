@@ -134,6 +134,100 @@ internal static class ThemedDialog
     }
 
     /// <summary>
+    /// A themed "save changes?" prompt offering four choices as a horizontal button row:
+    /// Save / Save All / Don't Save / Cancel. Returns 0=Save, 1=Save All, 2=Don't Save, 3=Cancel
+    /// (Esc also yields 3). Used when quitting/closing with several unsaved documents, so the user
+    /// can answer each one — or hit "Save All" to save the rest without further prompts.
+    /// </summary>
+    public static int ShowSaveAll(Window? owner, string message, string title)
+    {
+        var dlg = new Window
+        {
+            Title = title,
+            SizeToContent = SizeToContent.WidthAndHeight,
+            MinWidth = 380,
+            MaxWidth = 560,
+            ResizeMode = ResizeMode.NoResize,
+            ShowInTaskbar = false,
+            WindowStartupLocation = owner is null
+                ? WindowStartupLocation.CenterScreen
+                : WindowStartupLocation.CenterOwner,
+            Owner = owner,
+            Background = Brush("Theme.WindowBg", Brushes.White),
+        };
+
+        var root = new DockPanel();
+
+        var footer = new Border
+        {
+            Background = Brush("Theme.PanelBg", Brushes.WhiteSmoke),
+            BorderBrush = Brush("Theme.PanelBorder", Brushes.Gainsboro),
+            BorderThickness = new Thickness(0, 1, 0, 0),
+            Padding = new Thickness(14, 10, 14, 12),
+        };
+        DockPanel.SetDock(footer, Dock.Bottom);
+        var btnRow = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            HorizontalAlignment = HorizontalAlignment.Right,
+        };
+        footer.Child = btnRow;
+
+        var content = new Grid { Margin = new Thickness(18, 18, 18, 16) };
+        content.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        content.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        var glyph = MakeIcon(MessageBoxImage.Warning);
+        if (glyph is not null)
+        {
+            glyph.Margin = new Thickness(0, 0, 16, 0);
+            glyph.VerticalAlignment = VerticalAlignment.Top;
+            Grid.SetColumn(glyph, 0);
+            content.Children.Add(glyph);
+        }
+        var text = new TextBlock
+        {
+            Text = message,
+            TextWrapping = TextWrapping.Wrap,
+            Foreground = Brush("Theme.EditorFg", Brushes.Black),
+            VerticalAlignment = VerticalAlignment.Center,
+            FontSize = 13,
+            MaxWidth = 460,
+        };
+        Grid.SetColumn(text, 1);
+        content.Children.Add(text);
+
+        root.Children.Add(footer);
+        root.Children.Add(content);
+        dlg.Content = root;
+
+        int result = 3;   // default / Esc → Cancel
+
+        void Add(string label, int r, bool isDefault = false)
+        {
+            var b = new Button
+            {
+                Content = label,
+                MinWidth = 82,
+                Margin = new Thickness(8, 0, 0, 0),
+                IsDefault = isDefault,
+            };
+            b.Click += (_, _) => { result = r; dlg.Close(); };
+            btnRow.Children.Add(b);
+        }
+        Add("Save", 0, isDefault: true);
+        Add("Save All", 1);
+        Add("Don't Save", 2);
+        Add("Cancel", 3);
+
+        dlg.PreviewKeyDown += (_, e) =>
+        {
+            if (e.Key == Key.Escape) { result = 3; dlg.Close(); }
+        };
+        dlg.ShowDialog();
+        return result;
+    }
+
+    /// <summary>
     /// A themed modal offering an arbitrary vertical list of choices (each a full-width button).
     /// Returns the 0-based index of the chosen option, or -1 if the dialog was dismissed (Esc /
     /// window close). Used for the external-change and mid-merge conflict prompts, which need more

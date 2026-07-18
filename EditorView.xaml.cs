@@ -471,6 +471,39 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
         };
     }
 
+    /// <summary>Outcome of a multi-document save prompt (see <see cref="ConfirmDiscardForQuit"/>).</summary>
+    public enum SavePromptResult
+    {
+        /// <summary>This document was saved or discarded; keep prompting for the rest.</summary>
+        Handled,
+        /// <summary>Save this document and every remaining dirty one without further prompts.</summary>
+        SaveRemaining,
+        /// <summary>The user cancelled; abort the close/quit and keep everything open.</summary>
+        Cancel,
+    }
+
+    /// <summary>
+    /// Prompt to save this document when it's dirty, offering a "Save All" shortcut that saves the
+    /// remaining dirty documents without prompting. Returns <see cref="SavePromptResult.Handled"/>
+    /// when the document was saved or discarded, <see cref="SavePromptResult.SaveRemaining"/> when
+    /// the user chose Save All, or <see cref="SavePromptResult.Cancel"/> on cancel (or a failed save).
+    /// </summary>
+    public SavePromptResult ConfirmDiscardForQuit()
+    {
+        if (!IsDirty)
+            return SavePromptResult.Handled;
+        string name = string.IsNullOrEmpty(_currentPath) ? "Untitled" : Path.GetFileName(_currentPath);
+        int choice = ThemedDialog.ShowSaveAll(Window.GetWindow(this),
+            $"Save changes to {name}?", "NotepadRedo");
+        return choice switch
+        {
+            0 => Save(false) ? SavePromptResult.Handled : SavePromptResult.Cancel,       // Save
+            1 => Save(false) ? SavePromptResult.SaveRemaining : SavePromptResult.Cancel, // Save All
+            2 => SavePromptResult.Handled,                                               // Don't Save
+            _ => SavePromptResult.Cancel,                                                // Cancel / Esc
+        };
+    }
+
     /// <summary>Start a fresh history tree seeded with the given text.</summary>
     private void ResetTree(string text)
     {

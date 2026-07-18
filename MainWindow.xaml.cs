@@ -1222,27 +1222,34 @@ public partial class MainWindow : Window
     {
         var windows = Application.Current.Windows.OfType<MainWindow>().ToList();
 
-        // First pass: prompt for every dirty document. A single Cancel aborts the entire quit.
+        // First pass: prompt for every dirty document across every window. Each prompt offers a
+        // "Save All" shortcut that saves the remaining ones silently; a single Cancel aborts.
+        var docs = new List<(Action, EditorView)>();
         foreach (var mw in windows)
         {
-            // A window hidden in the tray (or minimised) must be brought forward so its prompt is
-            // actually visible before we ask about its documents.
-            if (mw.Visibility != Visibility.Visible)
-                mw.Show();
-            mw.ShowInTaskbar = true;
-            if (mw.WindowState == WindowState.Minimized)
-                mw.WindowState = WindowState.Normal;
-            mw.Activate();
-
+            var win = mw;
             foreach (var ti in mw.Tabs.Items.OfType<TabItem>().ToList())
             {
                 if (ti.Content is not EditorView view)
                     continue;
-                mw.Tabs.SelectedItem = ti;
-                if (!view.ConfirmDiscardIfDirty())
-                    return false;   // user cancelled — keep everything open, don't quit
+                var tab = ti;
+                docs.Add((() =>
+                {
+                    // Bring a tray-hidden / minimised window forward so its prompt is visible, then
+                    // select the document being asked about.
+                    if (win.Visibility != Visibility.Visible)
+                        win.Show();
+                    win.ShowInTaskbar = true;
+                    if (win.WindowState == WindowState.Minimized)
+                        win.WindowState = WindowState.Normal;
+                    win.Activate();
+                    win.Tabs.SelectedItem = tab;
+                }, view));
             }
         }
+
+        if (!PromptSaveEach(docs))
+            return false;   // user cancelled — keep everything open, don't quit
 
         // Everyone confirmed (saved or chose to discard). Tear each document down cleanly (clearing
         // its recovery snapshot and releasing any file lock), then shut the whole app down.
@@ -1253,6 +1260,43 @@ public partial class MainWindow : Window
 
         // Shut down after this returns so the IPC "OK" reply reaches the caller before we tear down.
         Application.Current.Dispatcher.BeginInvoke(new Action(() => Application.Current.Shutdown()));
+        return true;
+    }
+
+    /// <summary>
+    /// Prompt to save each dirty document in <paramref name="docs"/> in turn. Each prompt offers a
+    /// "Save All" shortcut: once chosen, every remaining dirty document is saved silently without
+    /// further prompting. <paramref name="bringForward"/> is invoked before a document's own prompt
+    /// so its window/tab is visible and selected first. Returns false if the user cancelled (in which
+    /// case the caller should abort the close/quit and leave everything open).
+    /// </summary>
+    private static bool PromptSaveEach(IEnumerable<(Action bringForward, EditorView view)> docs)
+    {
+        bool saveAll = false;
+        foreach (var (bringForward, view) in docs)
+        {
+            if (!view.IsDirty)
+                continue;
+
+            if (saveAll)
+            {
+                if (!view.Save(false))
+                    return false;   // a silent save failed (error already shown) — abort
+                continue;
+            }
+
+            bringForward();
+            switch (view.ConfirmDiscardForQuit())
+            {
+                case EditorView.SavePromptResult.Handled:
+                    break;
+                case EditorView.SavePromptResult.SaveRemaining:
+                    saveAll = true;   // this one is already saved; save the rest silently
+                    break;
+                default:
+                    return false;     // cancelled
+            }
+        }
         return true;
     }
 
@@ -1292,17 +1336,15 @@ public partial class MainWindow : Window
             }
         }
 
-        foreach (var ti in Tabs.Items.OfType<TabItem>().ToList())
+        var docs = Tabs.Items.OfType<TabItem>()
+            .Where(ti => ti.Content is EditorView)
+            .Select(ti => ((Action)(() => Tabs.SelectedItem = ti), (EditorView)ti.Content))
+            .ToList();
+        if (!PromptSaveEach(docs))
         {
-            if (ti.Content is not EditorView view)
-                continue;
-            Tabs.SelectedItem = ti;
-            if (!view.ConfirmDiscardIfDirty())
-            {
-                e.Cancel = true;
-                base.OnClosing(e);
-                return;
-            }
+            e.Cancel = true;
+            base.OnClosing(e);
+            return;
         }
 
         // Clean shutdown for this window's documents.
