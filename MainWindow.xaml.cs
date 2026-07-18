@@ -403,35 +403,50 @@ public partial class MainWindow : Window
     /// <summary>Font sizes are stored/picked in points; WPF's FontSize is in 1/96" pixels.</summary>
     private const double PointsToPixels = 96.0 / 72.0;
 
-    /// <summary>Open the native font picker and apply the chosen family/size/style everywhere.</summary>
+    /// <summary>Open the live font picker: the editor previews the selection as the user browses,
+    /// and the choice is committed on OK or reverted on Cancel.</summary>
     private void Font_Click(object sender, RoutedEventArgs e)
     {
         var s = AppSettings.Current;
-        var style = System.Drawing.FontStyle.Regular;
-        if (s.FontBold)   style |= System.Drawing.FontStyle.Bold;
-        if (s.FontItalic) style |= System.Drawing.FontStyle.Italic;
+        // Remember the current font so Cancel can restore it after live previewing.
+        string origFamily = s.FontFamily;
+        double origSize = s.FontSize;
+        bool origBold = s.FontBold, origItalic = s.FontItalic;
 
-        using var dlg = new System.Windows.Forms.FontDialog
+        var dlg = new FontPickerWindow(origFamily, origSize, origBold, origItalic) { Owner = this };
+        dlg.SelectionChanged += () =>
+            PreviewFont(dlg.SelectedFamily, dlg.SelectedSize, dlg.Bold, dlg.Italic);
+
+        if (dlg.ShowDialog() == true)
         {
-            // We only model family/size/bold/italic, so hide colour and underline/strikeout effects.
-            ShowColor = false,
-            ShowEffects = false,
-            FontMustExist = true,
-            MinSize = 6,
-            MaxSize = 400,
-        };
-        try { dlg.Font = new System.Drawing.Font(s.FontFamily, (float)s.FontSize, style); }
-        catch { /* stored family unavailable — let the dialog open on its own default */ }
+            s.FontFamily = dlg.SelectedFamily;
+            s.FontSize   = dlg.SelectedSize;
+            s.FontBold   = dlg.Bold;
+            s.FontItalic = dlg.Italic;
+            ApplyFontEverywhere();
+        }
+        else
+        {
+            // Cancelled — undo the live preview without persisting anything.
+            PreviewFont(origFamily, origSize, origBold, origItalic);
+        }
+    }
 
-        if (dlg.ShowDialog() != System.Windows.Forms.DialogResult.OK)
-            return;
+    /// <summary>Apply a font to every open editor for preview only (no persistence).</summary>
+    private static void PreviewFont(string family, double sizePt, bool bold, bool italic)
+    {
+        double px = sizePt * PointsToPixels;
+        foreach (var v in AllOpenViews())
+            v.ApplyFont(family, px, bold, italic);
+    }
 
-        var f = dlg.Font;
-        s.FontFamily = f.Name;
-        s.FontSize   = f.SizeInPoints;
-        s.FontBold   = f.Bold;
-        s.FontItalic = f.Italic;
-        ApplyFontEverywhere();
+    /// <summary>Every open document across every window.</summary>
+    private static IEnumerable<EditorView> AllOpenViews()
+    {
+        foreach (Window w in Application.Current.Windows)
+            if (w is MainWindow mw)
+                foreach (var v in mw.AllViews())
+                    yield return v;
     }
 
     private void Bold_Click(object sender, RoutedEventArgs e)   => ToggleBold();

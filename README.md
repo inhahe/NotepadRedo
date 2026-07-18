@@ -39,7 +39,7 @@ Choose what the window's **X** button does:
 - **Minimize to taskbar** — minimize instead of closing.
 
 ### Font & formatting
-- **Format** menu with a native **Font…** picker (family, size, and style in one dialog).
+- **Format** menu with a **Font…** picker (family, size, and style in one dialog) that **previews live in the editor as you browse** — the text updates instantly as you change family/size/bold/italic, and reverts if you cancel.
 - Quick toggles for **Bold** (`Ctrl+B`) and **Italic** (`Ctrl+I`).
 - A **Size** submenu for common point sizes.
 - The chosen font is a shared, persisted preference applied to the editor in every tab and window.
