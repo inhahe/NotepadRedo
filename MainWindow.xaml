@@ -85,6 +85,20 @@
                     <MenuItem x:Name="Auto300"  Header="Every 5 minutes"  IsCheckable="True" Tag="300" Click="AutosaveInterval_Click"/>
                 </MenuItem>
                 <Separator/>
+                <MenuItem Header="Reopen last _session's files at startup">
+                    <MenuItem x:Name="RestorePrompt" Header="_Ask me first"       IsCheckable="True"
+                              Click="RestoreMode_Click" Tag="Prompt"/>
+                    <MenuItem x:Name="RestoreAlways" Header="_Always reopen"       IsCheckable="True"
+                              Click="RestoreMode_Click" Tag="Always"/>
+                    <MenuItem x:Name="RestoreNever"  Header="_Never reopen"        IsCheckable="True"
+                              Click="RestoreMode_Click" Tag="Never"/>
+                </MenuItem>
+                <Separator/>
+                <MenuItem x:Name="WatchChangesItem" Header="_Watch for changes made by other programs"
+                          IsCheckable="True" Click="WatchChanges_Click"/>
+                <MenuItem x:Name="LockFileItem" Header="_Lock open files from outside changes"
+                          IsCheckable="True" Click="LockFile_Click"/>
+                <Separator/>
                 <MenuItem Header="_Undo grouping">
                     <MenuItem x:Name="UndoBreakEnter" Header="New step on each _line (Enter)"
                               IsCheckable="True" Click="UndoBreakEnter_Click"/>

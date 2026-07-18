@@ -75,11 +75,37 @@ public partial class MainWindow : Window
         ActiveView?.FocusEditor();
     }
 
-    /// <summary>Reopen the files that were open in the previous session (skipping any already open).</summary>
+    /// <summary>
+    /// Reopen the files that were open in the previous session, honouring the restore-mode
+    /// preference: Never skips it, Always reopens silently, and Prompt (the default) lists the
+    /// files and asks first — so a stale session can't silently clobber edits made elsewhere.
+    /// Already-open files are skipped (TryFocusDocument de-dupes against recovered tabs).
+    /// </summary>
     private void RestoreSession()
     {
-        foreach (var path in SessionStore.Load())
-            RequestOpenFile(path);   // TryFocusDocument inside de-dupes against recovered tabs
+        if (AppSettings.Current.RestoreSession == SessionRestoreMode.Never)
+            return;
+
+        var files = SessionStore.Load();
+        if (files.Count == 0)
+            return;
+
+        if (AppSettings.Current.RestoreSession == SessionRestoreMode.Prompt)
+        {
+            const int shown = 12;
+            string list = string.Join("\n", files.Take(shown).Select(f => "  \u2022 " + f));
+            if (files.Count > shown)
+                list += $"\n  \u2026 and {files.Count - shown} more";
+            var result = ThemedDialog.Show(this,
+                $"Reopen {files.Count} file(s) from your last session?\n\n{list}",
+                "NotepadRedo \u2014 Restore session",
+                MessageBoxButton.YesNo, MessageBoxImage.Question);
+            if (result != MessageBoxResult.Yes)
+                return;
+        }
+
+        foreach (var path in files)
+            RequestOpenFile(path);
     }
 
     /// <summary>
@@ -732,6 +758,33 @@ public partial class MainWindow : Window
                 mw.SyncOptionMenus();
     }
 
+    private void RestoreMode_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not MenuItem mi || mi.Tag is not string tag ||
+            !Enum.TryParse<SessionRestoreMode>(tag, out var mode))
+            return;
+        AppSettings.Current.RestoreSession = mode;
+        SaveAndSyncOptions();
+    }
+
+    private void WatchChanges_Click(object sender, RoutedEventArgs e)
+    {
+        AppSettings.Current.WatchExternalChanges = WatchChangesItem.IsChecked;
+        AppSettings.Current.Save();
+        foreach (var v in AllOpenViews())
+            v.ApplyWatchSetting();
+        SaveAndSyncOptions();
+    }
+
+    private void LockFile_Click(object sender, RoutedEventArgs e)
+    {
+        AppSettings.Current.LockFileWhileOpen = LockFileItem.IsChecked;
+        AppSettings.Current.Save();
+        foreach (var v in AllOpenViews())
+            v.ApplyLockSetting();
+        SaveAndSyncOptions();
+    }
+
     private void SyncOptionMenus()
     {
         var s = AppSettings.Current;
@@ -750,6 +803,13 @@ public partial class MainWindow : Window
         CloseCloses.IsChecked    = s.CloseButton == CloseButtonBehavior.Close;
         CloseToTray.IsChecked    = s.CloseButton == CloseButtonBehavior.MinimizeToTray;
         CloseToTaskbar.IsChecked = s.CloseButton == CloseButtonBehavior.MinimizeToTaskbar;
+
+        RestorePrompt.IsChecked = s.RestoreSession == SessionRestoreMode.Prompt;
+        RestoreAlways.IsChecked = s.RestoreSession == SessionRestoreMode.Always;
+        RestoreNever.IsChecked  = s.RestoreSession == SessionRestoreMode.Never;
+
+        WatchChangesItem.IsChecked = s.WatchExternalChanges;
+        LockFileItem.IsChecked     = s.LockFileWhileOpen;
 
         BoldItem.IsChecked   = s.FontBold;
         ItalicItem.IsChecked = s.FontItalic;

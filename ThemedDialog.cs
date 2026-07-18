@@ -133,6 +133,82 @@ internal static class ThemedDialog
         return result;
     }
 
+    /// <summary>
+    /// A themed modal offering an arbitrary vertical list of choices (each a full-width button).
+    /// Returns the 0-based index of the chosen option, or -1 if the dialog was dismissed (Esc /
+    /// window close). Used for the external-change and mid-merge conflict prompts, which need more
+    /// than the fixed Yes/No/Cancel sets. <paramref name="defaultIndex"/> is the Enter default.
+    /// </summary>
+    public static int ShowChoices(Window? owner, string message, string title,
+                                  IReadOnlyList<string> choices, MessageBoxImage icon = MessageBoxImage.Question,
+                                  int defaultIndex = 0)
+    {
+        var dlg = new Window
+        {
+            Title = title,
+            SizeToContent = SizeToContent.WidthAndHeight,
+            MinWidth = 420,
+            MaxWidth = 620,
+            ResizeMode = ResizeMode.NoResize,
+            ShowInTaskbar = false,
+            WindowStartupLocation = owner is null ? WindowStartupLocation.CenterScreen : WindowStartupLocation.CenterOwner,
+            Owner = owner,
+            Background = Brush("Theme.WindowBg", Brushes.White),
+        };
+
+        int result = -1;
+
+        var outer = new StackPanel { Margin = new Thickness(18, 18, 18, 14) };
+
+        // Header: optional icon + message.
+        var header = new Grid();
+        header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        header.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        var glyph = MakeIcon(icon);
+        if (glyph is not null)
+        {
+            glyph.Margin = new Thickness(0, 0, 16, 0);
+            glyph.VerticalAlignment = VerticalAlignment.Top;
+            Grid.SetColumn(glyph, 0);
+            header.Children.Add(glyph);
+        }
+        var text = new TextBlock
+        {
+            Text = message,
+            TextWrapping = TextWrapping.Wrap,
+            Foreground = Brush("Theme.EditorFg", Brushes.Black),
+            FontSize = 13,
+            MaxWidth = 520,
+        };
+        Grid.SetColumn(text, 1);
+        header.Children.Add(text);
+        outer.Children.Add(header);
+
+        // One full-width button per choice, stacked vertically.
+        for (int i = 0; i < choices.Count; i++)
+        {
+            int idx = i;
+            var b = new Button
+            {
+                Content = choices[i],
+                Margin = new Thickness(0, i == 0 ? 16 : 6, 0, 0),
+                Padding = new Thickness(12, 7, 12, 7),
+                HorizontalContentAlignment = HorizontalAlignment.Left,
+                IsDefault = i == defaultIndex,
+            };
+            b.Click += (_, _) => { result = idx; dlg.Close(); };
+            outer.Children.Add(b);
+        }
+
+        dlg.Content = outer;
+        dlg.PreviewKeyDown += (_, e) =>
+        {
+            if (e.Key == Key.Escape) { result = -1; dlg.Close(); }
+        };
+        dlg.ShowDialog();
+        return result;
+    }
+
     private static Brush Brush(string key, Brush fallback)
         => Application.Current?.TryFindResource(key) as Brush ?? fallback;
 

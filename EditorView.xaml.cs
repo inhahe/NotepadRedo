@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.IO;
+using System.Text;
 using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
@@ -43,6 +44,18 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
     private string _lastRecoveryText = "";
     private DateTime? _lastAutosave;
 
+    // ----- External-change detection / file lock (per titled document) -----
+    private FileSystemWatcher? _watcher;
+    private readonly DispatcherTimer _watchDebounce;   // coalesce bursts of FS events
+    private DateTime _diskWriteTimeUtc;                // last disk mtime we consider "ours"
+    private long _diskLength = -1;                     // last disk size we consider "ours"
+    private DateTime _suppressUntil;                   // ignore watcher events until this time (our own writes)
+    private bool _resolving;                           // an external-change prompt is on screen
+    private string? _pendingWhileResolving;            // a newer disk version that arrived mid-prompt
+    private DiffMergeWindow? _mergeWindow;             // open merge viewer (so re-changes route to it)
+    private FileStream? _lockStream;                   // deny-write lock held while open (optional)
+    private string? _lockedPath;                       // path _lockStream currently holds
+
     // ----- Search pane -----
     private readonly System.Collections.ObjectModel.ObservableCollection<SearchResultVM> _searchResults = new();
     private DispatcherTimer? _searchDebounce;
@@ -76,6 +89,9 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
         DataObject.AddPastingHandler(Editor, Editor_Pasting);
 
         _autosave.Tick += (_, _) => WriteRecovery();
+
+        _watchDebounce = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(350) };
+        _watchDebounce.Tick += (_, _) => { _watchDebounce.Stop(); HandleExternalChange(); };
 
         // Empty-root fix: bind to the root's children so the blank starting state is not
         // shown as a node. Each first edit becomes a top-level item; sibling branches stay
@@ -116,11 +132,12 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
     /// <summary>Load a file's contents into this (blank) view.</summary>
     public void LoadFile(string path)
     {
-        var text = File.ReadAllText(path);
+        var text = ReadAllTextShared(path);
         _currentPath = path;
         _savedText = text;
         DeleteRecovery();
         ResetTree(text);
+        OnPathEstablished();
     }
 
     /// <summary>Full document snapshot (path + saved/current text + entire history) for tab transfer.</summary>
@@ -154,6 +171,7 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
         SetCurrent(_tree.Current);
         RaiseAll();
         WriteRecovery();   // this instance now owns crash recovery for the moved document
+        OnPathEstablished();
         Editor.Focus();
     }
 
@@ -165,6 +183,7 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
         _savedText = data.SavedText;
         ResetTree(data.Text);
         WriteRecovery();   // re-establish the recovery file immediately
+        OnPathEstablished();
     }
 
     // ===================== Editing / commits =====================
@@ -394,11 +413,13 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
 
         try
         {
-            File.WriteAllText(path, Editor.Text);
+            BeginSelfWrite();          // stop the watcher mistaking our own write for an external one
+            WriteTextToFile(path, Editor.Text);
             _currentPath = path;
             _savedText = Editor.Text;
             _lastAutosave = null;
             DeleteRecovery();
+            OnPathEstablished();       // (re)start the watcher, capture the new disk stamp, (re)apply the lock
             RaiseAll();
             return true;
         }
@@ -748,6 +769,7 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
         _debounce.Stop();
         _autosave.Stop();
         _searchDebounce?.Stop();
+        _watchDebounce.Stop();
     }
 
     /// <summary>
@@ -760,6 +782,8 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
     public void Dispose()
     {
         StopTimers();
+        StopWatching();
+        ReleaseFileLock();
         DeleteRecovery();
     }
 
@@ -787,6 +811,308 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
                     try { File.Delete(f); } catch { }
         }
         catch { }
+    }
+
+    // ===================== External-change detection / file lock =====================
+
+    /// <summary>
+    /// Called whenever this document acquires or changes its on-disk path (open / save / transfer /
+    /// recover): capture the current disk timestamp so our own write isn't mistaken for an external
+    /// change, (re)start the file-system watcher, and apply (or release) the deny-write lock.
+    /// </summary>
+    private void OnPathEstablished()
+    {
+        CaptureDiskStamp();
+        ApplyFileLock();
+        StartWatching();
+    }
+
+    /// <summary>Record the file's current modified-time and size as the "known" (ours) disk state.</summary>
+    private void CaptureDiskStamp()
+    {
+        try
+        {
+            var fi = new FileInfo(_currentPath!);
+            if (fi.Exists) { _diskWriteTimeUtc = fi.LastWriteTimeUtc; _diskLength = fi.Length; }
+        }
+        catch { /* stamp stays as-is; a spurious prompt is better than a crash */ }
+    }
+
+    /// <summary>Mark a short window during which watcher events are treated as our own write.</summary>
+    private void BeginSelfWrite() => _suppressUntil = DateTime.UtcNow + TimeSpan.FromSeconds(1.5);
+
+    private void StartWatching()
+    {
+        StopWatching();
+        if (string.IsNullOrEmpty(_currentPath) || !AppSettings.Current.WatchExternalChanges)
+            return;
+        try
+        {
+            var dir = Path.GetDirectoryName(_currentPath);
+            if (string.IsNullOrEmpty(dir))
+                return;
+            _watcher = new FileSystemWatcher(dir, Path.GetFileName(_currentPath))
+            {
+                NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.Size
+                             | NotifyFilters.FileName | NotifyFilters.CreationTime,
+            };
+            _watcher.Changed += Watcher_Event;
+            _watcher.Created += Watcher_Event;
+            _watcher.Renamed += Watcher_Event;
+            _watcher.EnableRaisingEvents = true;
+        }
+        catch { _watcher = null; }
+    }
+
+    private void StopWatching()
+    {
+        if (_watcher is null)
+            return;
+        try { _watcher.EnableRaisingEvents = false; _watcher.Dispose(); }
+        catch { }
+        _watcher = null;
+    }
+
+    // FS events arrive on a threadpool thread — marshal onto the UI thread and debounce the burst.
+    private void Watcher_Event(object sender, FileSystemEventArgs e)
+    {
+        try { Dispatcher.BeginInvoke(new Action(() => { _watchDebounce.Stop(); _watchDebounce.Start(); })); }
+        catch { }
+    }
+
+    /// <summary>
+    /// After a settled burst of watcher events, decide whether the file genuinely changed under us
+    /// and, if so, surface the resolution prompt (or route the change to an open merge viewer).
+    /// </summary>
+    private void HandleExternalChange()
+    {
+        if (string.IsNullOrEmpty(_currentPath))
+            return;
+
+        FileInfo fi;
+        try { fi = new FileInfo(_currentPath); } catch { return; }
+        if (!fi.Exists)
+            return;   // deleted/renamed away — keep our buffer; a Save re-creates it
+
+        DateTime wt; long len;
+        try { wt = fi.LastWriteTimeUtc; len = fi.Length; } catch { return; }
+
+        if (wt == _diskWriteTimeUtc && len == _diskLength)
+            return;   // no real change since we last looked
+        if (DateTime.UtcNow < _suppressUntil)
+        {
+            _diskWriteTimeUtc = wt; _diskLength = len;   // our own save — adopt the new stamp
+            return;
+        }
+
+        string diskText;
+        try { diskText = ReadAllTextShared(_currentPath); }
+        catch { return; }   // mid-write by the other program; the next event will settle
+
+        if (diskText == Editor.Text)
+        {
+            _diskWriteTimeUtc = wt; _diskLength = len;   // content identical (e.g. touched) — nothing to do
+            return;
+        }
+
+        // A merge viewer is already open for this document — fold the new version into it.
+        if (_mergeWindow is not null)
+        {
+            _diskWriteTimeUtc = wt; _diskLength = len;
+            _mergeWindow.NotifyDiskChanged(diskText);
+            return;
+        }
+
+        // A prompt is already up — stash the newest content and re-check once it closes.
+        if (_resolving)
+        {
+            _pendingWhileResolving = diskText;
+            return;
+        }
+
+        _diskWriteTimeUtc = wt; _diskLength = len;
+        ResolveExternalChange(diskText);
+    }
+
+    /// <summary>The five-way "the file changed on disk" resolution prompt.</summary>
+    private void ResolveExternalChange(string diskText)
+    {
+        _resolving = true;
+        try
+        {
+            string name = string.IsNullOrEmpty(_currentPath) ? "This file" : Path.GetFileName(_currentPath!);
+            bool dirty = IsDirty;
+            var choices = new List<string>
+            {
+                dirty ? "Reload from disk (discard my unsaved edits)" : "Reload from disk",
+                "Keep my version (ignore the change; overwrites on next save)",
+                "Save my version to another file, then reload from disk",
+                "Save the disk version to another file, then keep mine",
+                "Show a diff and merge\u2026",
+            };
+            var owner = Window.GetWindow(this);
+            int choice = ThemedDialog.ShowChoices(owner,
+                $"\u201c{name}\u201d was changed by another program.",
+                "File changed on disk", choices, MessageBoxImage.Warning, defaultIndex: dirty ? 4 : 0);
+
+            switch (choice)
+            {
+                case 0: ReloadFromDisk(diskText); break;
+                case 1: break;   // keep mine — the advanced stamp stops us re-prompting
+                case 2: if (SaveSnapshot("mine", Editor.Text) is not null) ReloadFromDisk(diskText); break;
+                case 3: SaveSnapshot("disk", diskText); break;
+                case 4: OpenMerge(diskText); break;
+                default: break;  // dismissed — keep mine
+            }
+        }
+        finally { _resolving = false; }
+
+        // A newer version landed while the prompt was up — re-evaluate against it.
+        if (_pendingWhileResolving is not null)
+        {
+            _pendingWhileResolving = null;
+            Dispatcher.BeginInvoke(new Action(HandleExternalChange), DispatcherPriority.Background);
+        }
+    }
+
+    /// <summary>Open the side-by-side merge viewer and apply its outcome.</summary>
+    private void OpenMerge(string diskText)
+    {
+        var owner = Window.GetWindow(this);
+        var win = new DiffMergeWindow(owner, _currentPath ?? "", Editor.Text, diskText);
+        _mergeWindow = win;
+        try { win.ShowDialog(); }
+        finally { _mergeWindow = null; }
+
+        if (win.Saved && win.ResultText is string merged)
+        {
+            SetEditorText(merged);   // land the merged text as an edit…
+            Save(false);             // …and write it straight to disk
+        }
+        else if (win.ExitAndReload)
+        {
+            // Both versions were saved to sibling files; reload the current on-disk version fresh.
+            try { ReloadFromDisk(ReadAllTextShared(_currentPath!)); } catch { }
+        }
+    }
+
+    /// <summary>Replace the editor's text with disk content and re-anchor the history/dirty state.</summary>
+    private void ReloadFromDisk(string diskText)
+    {
+        _savedText = diskText;
+        DeleteRecovery();
+        ResetTree(diskText);
+        CaptureDiskStamp();
+    }
+
+    /// <summary>Programmatically set the editor text and commit it as a single history node.</summary>
+    private void SetEditorText(string text)
+    {
+        _suppressTextChange = true;
+        Editor.Text = text;
+        Editor.CaretIndex = Math.Clamp(Editor.CaretIndex, 0, text.Length);
+        _suppressTextChange = false;
+        _typingNode = null;
+        CommitPending();
+    }
+
+    /// <summary>Write a snapshot next to the original file with a timestamped suffix; report where.</summary>
+    private string? SaveSnapshot(string suffix, string text)
+    {
+        try
+        {
+            string basePath = string.IsNullOrEmpty(_currentPath) ? "untitled.txt" : _currentPath!;
+            string dir = Path.GetDirectoryName(basePath) ?? Environment.CurrentDirectory;
+            string stem = Path.GetFileNameWithoutExtension(basePath);
+            string ext = Path.GetExtension(basePath);
+            if (string.IsNullOrEmpty(stem)) stem = "untitled";
+            string stamp = DateTime.Now.ToString("yyyyMMdd-HHmmss");
+            string path = Path.Combine(dir, $"{stem}.{suffix}-{stamp}{ext}");
+            File.WriteAllText(path, text);
+            ThemedDialog.Show(Window.GetWindow(this), $"Saved to:\n{path}", "Saved",
+                MessageBoxButton.OK, MessageBoxImage.Information);
+            return path;
+        }
+        catch (Exception ex)
+        {
+            ThemedDialog.Show(Window.GetWindow(this), ex.Message, "Save failed",
+                MessageBoxButton.OK, MessageBoxImage.Error);
+            return null;
+        }
+    }
+
+    /// <summary>Re-evaluate the external-change watcher for this view after the setting changed.</summary>
+    public void ApplyWatchSetting() => StartWatching();
+
+    /// <summary>Re-evaluate the deny-write lock for this view after the setting changed.</summary>
+    public void ApplyLockSetting() => ApplyFileLock();
+
+    // ----- file lock -----
+
+    private void ApplyFileLock()
+    {
+        // Drop a stale lock when the setting was turned off or the path changed.
+        if (_lockStream is not null &&
+            (!AppSettings.Current.LockFileWhileOpen || !PathsEqual(_lockedPath, _currentPath)))
+            ReleaseFileLock();
+
+        if (!AppSettings.Current.LockFileWhileOpen || _lockStream is not null
+            || string.IsNullOrEmpty(_currentPath) || !File.Exists(_currentPath))
+            return;
+
+        try
+        {
+            // Hold the file open for our own read/write while denying other writers (they may read).
+            _lockStream = new FileStream(_currentPath, FileMode.Open, FileAccess.ReadWrite, FileShare.Read);
+            _lockedPath = _currentPath;
+        }
+        catch
+        {
+            // Already open for writing elsewhere, etc. — proceed unlocked rather than failing to open.
+            _lockStream = null;
+            _lockedPath = null;
+        }
+    }
+
+    private void ReleaseFileLock()
+    {
+        try { _lockStream?.Dispose(); } catch { }
+        _lockStream = null;
+        _lockedPath = null;
+    }
+
+    /// <summary>Write text to a path, going through the held lock handle when it owns that path.</summary>
+    private void WriteTextToFile(string path, string text)
+    {
+        if (_lockStream is not null && PathsEqual(_lockedPath, path))
+        {
+            _lockStream.Position = 0;
+            _lockStream.SetLength(0);
+            var bytes = new UTF8Encoding(false).GetBytes(text);
+            _lockStream.Write(bytes, 0, bytes.Length);
+            _lockStream.Flush(flushToDisk: true);
+        }
+        else
+        {
+            File.WriteAllText(path, text);
+        }
+    }
+
+    /// <summary>Read a file without locking out other readers/writers (tolerant of concurrent access).</summary>
+    private static string ReadAllTextShared(string path)
+    {
+        using var fs = new FileStream(path, FileMode.Open, FileAccess.Read,
+            FileShare.ReadWrite | FileShare.Delete);
+        using var sr = new StreamReader(fs, detectEncodingFromByteOrderMarks: true);
+        return sr.ReadToEnd();
+    }
+
+    private static bool PathsEqual(string? a, string? b)
+    {
+        if (a is null || b is null)
+            return a is null && b is null;
+        try { return string.Equals(Path.GetFullPath(a), Path.GetFullPath(b), StringComparison.OrdinalIgnoreCase); }
+        catch { return string.Equals(a, b, StringComparison.OrdinalIgnoreCase); }
     }
 
     // ===================== Search =====================

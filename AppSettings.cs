@@ -14,6 +14,17 @@ public enum CloseButtonBehavior
     MinimizeToTaskbar,
 }
 
+/// <summary>How the previous session's open files are handled at startup.</summary>
+public enum SessionRestoreMode
+{
+    /// <summary>Ask (listing the files) before reopening anything — the default, safest choice.</summary>
+    Prompt,
+    /// <summary>Silently reopen every file from the last session.</summary>
+    Always,
+    /// <summary>Never reopen; always start with a blank document.</summary>
+    Never,
+}
+
 /// <summary>
 /// Process-wide, persisted user preferences. Stored as JSON under LocalAppData so the
 /// choice survives restarts and is shared by every window/instance.
@@ -37,6 +48,16 @@ public sealed class AppSettings
 
     /// <summary>What the window's X (close) button does.</summary>
     public CloseButtonBehavior CloseButton { get; set; } = CloseButtonBehavior.Close;
+
+    /// <summary>How the previous session's open files are handled at startup.</summary>
+    public SessionRestoreMode RestoreSession { get; set; } = SessionRestoreMode.Prompt;
+
+    /// <summary>When true, watch open files for external modification and offer to reconcile.</summary>
+    public bool WatchExternalChanges { get; set; } = true;
+
+    /// <summary>When true, an opened file is held with a deny-write share lock so other programs
+    /// can read but not modify or delete it while it is open in NotepadRedo.</summary>
+    public bool LockFileWhileOpen { get; set; }
 
     // ----- Editor font (applied to the text area of every document) -----
 
@@ -120,6 +141,9 @@ public sealed class AppSettings
             ShowTree            = fresh.ShowTree;
             PreviewFitToWidth   = fresh.PreviewFitToWidth;
             CloseButton         = fresh.CloseButton;
+            RestoreSession      = fresh.RestoreSession;
+            WatchExternalChanges = fresh.WatchExternalChanges;
+            LockFileWhileOpen   = fresh.LockFileWhileOpen;
             FontFamily          = fresh.FontFamily;
             FontSize            = fresh.FontSize;
             FontBold            = fresh.FontBold;

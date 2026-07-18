@@ -37,8 +37,19 @@ Built with WPF on .NET 8.
 ### Autosave, crash recovery & session restore
 - Periodic background autosave (configurable interval, or off) parks in-progress work so an unexpected crash or forced quit doesn't lose unsaved changes.
 - Unsaved/recovered work is offered for restoration on the next launch.
-- **Session restore**: the set of open files is remembered between runs, so relaunching reopens the same tabs where you left off. (Files opened from the command line, or `--new`, start fresh instead of restoring.)
+- **Session restore**: the set of open files is remembered between runs, so relaunching can reopen the same tabs where you left off. The behaviour is configurable (Options → *Reopen last session's files at startup*): **Ask me first** (the default — lists the files and prompts, so a stale session can't silently clobber edits you made elsewhere), **Always reopen**, or **Never reopen**. (Files opened from the command line, or `--new`, start fresh instead of restoring.)
 - All unhandled exceptions are logged with full stack traces; UI-thread glitches are caught and swallowed to keep your documents alive rather than crashing.
+
+### External-change detection & diff/merge
+- When enabled (Options → *Watch for changes made by other programs*, on by default), NotepadRedo watches every open file and notices when another program modifies it on disk. It then asks what to do:
+  - **Reload from disk** (dropping your unsaved edits),
+  - **Keep my version** (ignore the change; your next save overwrites it),
+  - **Save my version to another file**, then reload the disk version,
+  - **Save the disk version to another file**, then keep yours, or
+  - **Show a diff and merge…** — open a side-by-side merge viewer.
+- The **merge viewer** shows the two versions with changed/added/removed lines tinted and the differing words painted red (styled after the diff view in the companion *orchestrator2* tool). You pick which side to **keep** — it's outlined and freely editable (copy/paste enabled) — and pull individual red lines across from the other side by **double-clicking** them (or via the right-click menu, which can also replace/insert/remove a line). You can flip which side is kept at any time, re-diff after hand-editing, then save the assembled result back to the file.
+- If the file changes on disk **again** while you're merging, a banner appears and you can fold the new version into the viewer, ignore it, stash it to a file, or save both versions off and bail out.
+- **Lock open files** (Options → *Lock open files from outside changes*, off by default): while a file is open, hold it with a deny-write lock so other programs can read it but can't modify or delete it. Saving writes through the held handle.
 
 ### Close-button behavior
 Choose what the window's **X** button does:
@@ -113,7 +124,7 @@ Everything is stored under `%LOCALAPPDATA%\NotepadRedo\`:
 
 | File | Purpose |
 |---|---|
-| `settings.json` | Persisted preferences (autosave interval, word wrap, tree visibility, preview mode, editor font, undo grouping, open-in behavior, close-button behavior). |
+| `settings.json` | Persisted preferences (autosave interval, word wrap, tree visibility, preview mode, editor font, undo grouping, open-in behavior, close-button behavior, session-restore mode, external-change watching, file locking). |
 | `crash.log` | Timestamped exception log with full stack traces. |
 | `session.json` | The set of files open at last exit, reopened on next launch (session restore). |
 | recovery files | Autosaved copies of in-progress documents, restored on next launch. |
@@ -128,12 +139,15 @@ On first launch, if a `%LOCALAPPDATA%\TreeNotepad\` folder exists (from before t
 |---|---|
 | `App.xaml(.cs)` | Application entry point, single-instance startup, command-line handling, global exception logging. |
 | `MainWindow.xaml(.cs)` | Shell window: tab control, menu, toolbar, status bar, tab tear-off/reattach, keyboard shortcuts, tray/close behavior. |
-| `EditorView.xaml(.cs)` | A single document: text editor, history-tree pane, splitter, autosave. |
+| `EditorView.xaml(.cs)` | A single document: text editor, history-tree pane, splitter, autosave, external-change watching and file locking. |
 | `UndoTree.cs` | The branching undo/redo model (`UndoTree` / `UndoNode`). |
 | `Ipc.cs` | Named-pipe IPC for cross-instance coordination. |
 | `SearchEngine.cs` | Pure, testable text-search logic (plain find + proximity clustering). |
+| `DiffEngine.cs` | Pure, testable line + inline diff logic used by the merge viewer. |
+| `DiffMergeWindow.xaml(.cs)` | Side-by-side diff/merge viewer for reconciling external changes. |
 | `SessionStore.cs` | Reads/writes `session.json` for reopening last session's files. |
 | `AppSettings.cs` | Persisted user preferences. |
+| `ThemedDialog.cs` | Themed replacements for `MessageBox` (incl. the multi-choice resolution prompts). |
 | `Converters.cs` | XAML value converters (e.g. preview width). |
 | `CrashLog.cs` | Best-effort exception logging. |
 
