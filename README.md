@@ -12,6 +12,7 @@ Built with WPF on .NET 8.
 - Every edit becomes a node in a visual history tree shown in a side pane.
 - Undo/redo walks the tree; making a new edit after undoing starts a **new branch** instead of discarding the future you undid.
 - Click any node to instantly jump the document to that state.
+- **Condensed by default**: to keep a long typing session from burying the pane in one row per keystroke, the tree shows only the *interesting* nodes — **branch points, tips, and your current position** — collapsing each straight run of edits into a single row. Undo/redo stay fully granular (every keystroke group is still its own step); only the *display* condenses. An in-pane **Show all edits** toggle (top-right of the history pane) reveals every edit as its own row; the choice is shared across all windows and persisted.
 - The current node is highlighted; each node shows a text preview and metadata.
 - Preview text can either show a **fixed number of characters** (adjustable with a slider) or **fit to the pane width** with a trailing ellipsis (toggleable).
 - The history pane is resizable (drag the divider) and can be hidden entirely.
@@ -126,7 +127,7 @@ Everything is stored under `%LOCALAPPDATA%\NotepadRedo\`:
 
 | File | Purpose |
 |---|---|
-| `settings.json` | Persisted preferences (autosave interval, word wrap, tree visibility, preview mode, editor font, undo grouping, open-in behavior, close-button behavior, session-restore mode, external-change watching, file locking). |
+| `settings.json` | Persisted preferences (autosave interval, word wrap, tree visibility, preview mode, history condensing (branches-only), editor font, undo grouping, open-in behavior, close-button behavior, session-restore mode, external-change watching, file locking). |
 | `crash.log` | Timestamped exception log with full stack traces. |
 | `session.json` | The set of files open at last exit, reopened on next launch (session restore). |
 | recovery files | Autosaved copies of in-progress documents, restored on next launch. |

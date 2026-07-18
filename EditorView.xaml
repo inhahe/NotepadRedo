@@ -44,7 +44,17 @@
             <Border DockPanel.Dock="Top" Background="{DynamicResource Theme.PanelBg}" Padding="6" Margin="0,0,0,4"
                     BorderBrush="{DynamicResource Theme.PanelBorder}" BorderThickness="1">
                 <StackPanel>
-                    <TextBlock Text="History Tree" FontWeight="Bold" Foreground="{DynamicResource Theme.TreePreviewFg}"/>
+                    <DockPanel LastChildFill="False">
+                        <TextBlock Text="History Tree" FontWeight="Bold" VerticalAlignment="Center"
+                                   Foreground="{DynamicResource Theme.TreePreviewFg}" DockPanel.Dock="Left"/>
+                        <!-- Condense long straight typing runs to branch points/tips/current (default),
+                             or check to reveal one row per edit. Shared, persisted across all views. -->
+                        <ToggleButton x:Name="ShowAllEditsToggle" Content="Show all edits"
+                                      Style="{StaticResource {x:Static ToolBar.ToggleButtonStyleKey}}"
+                                      DockPanel.Dock="Right" Padding="6,1" VerticalAlignment="Center"
+                                      ToolTip="Show every edit as its own row instead of condensing straight runs to branch points"
+                                      Checked="ShowAllEdits_Changed" Unchecked="ShowAllEdits_Changed"/>
+                    </DockPanel>
                     <CheckBox x:Name="FitWidthCheck" Content="Fit preview to width"
                               Margin="0,4,0,0" VerticalAlignment="Center"
                               Checked="FitWidth_Changed" Unchecked="FitWidth_Changed"/>

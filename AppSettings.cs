@@ -46,6 +46,14 @@ public sealed class AppSettings
     /// </summary>
     public bool PreviewFitToWidth { get; set; }
 
+    /// <summary>
+    /// When true (the default), the history-tree pane condenses each straight run of edits down to
+    /// just its branch points, tips, and the current node — so long linear typing sessions don't
+    /// bury the tree in one row per keystroke. Undo/redo stay granular regardless; only the display
+    /// collapses. When false, every edit is shown as its own row.
+    /// </summary>
+    public bool HistoryBranchesOnly { get; set; } = true;
+
     /// <summary>What the window's X (close) button does.</summary>
     public CloseButtonBehavior CloseButton { get; set; } = CloseButtonBehavior.Close;
 
@@ -140,6 +148,7 @@ public sealed class AppSettings
             WordWrap            = fresh.WordWrap;
             ShowTree            = fresh.ShowTree;
             PreviewFitToWidth   = fresh.PreviewFitToWidth;
+            HistoryBranchesOnly = fresh.HistoryBranchesOnly;
             CloseButton         = fresh.CloseButton;
             RestoreSession      = fresh.RestoreSession;
             WatchExternalChanges = fresh.WatchExternalChanges;

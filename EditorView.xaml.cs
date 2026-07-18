@@ -108,6 +108,7 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
         ApplyWordWrap(AppSettings.Current.WordWrap);
         ApplyTreeVisible(AppSettings.Current.ShowTree);
         ApplyPreviewFit(AppSettings.Current.PreviewFitToWidth);
+        ApplyHistoryMode(AppSettings.Current.HistoryBranchesOnly);
         ApplyFont(AppSettings.Current.FontFamily, AppSettings.Current.FontSize,
                   AppSettings.Current.FontBold, AppSettings.Current.FontItalic);
 
@@ -332,46 +333,96 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
         // rows (IsSelected — the TwoWay binding otherwise leaves earlier nodes marked selected)
         // don't linger and make it look like several nodes are active at once.
         _suppressTreeSelection = true;
-        foreach (var n in _tree.AllNodes())
+        try
         {
-            if (!ReferenceEquals(n, node))
-            {
-                n.IsCurrent = false;
-                n.IsSelected = false;
-            }
-        }
-        node.IsCurrent = true;
-        node.IsSelected = true;
+            // In condensed (branches-only) mode a plain mid-run node is hidden until it becomes the
+            // current position, and a node that *was* current collapses away once we move off it.
+            // Rebuild so the new current shows as a row and the old one disappears before we
+            // highlight and scroll. (In show-all mode every node is always listed, so no rebuild.)
+            if (AppSettings.Current.HistoryBranchesOnly)
+                RebuildRowsCore();
 
-        // The root isn't shown as a row; only scroll to nodes that are actually in the list.
-        if (_historyRows.Contains(node))
-            Tree.ScrollIntoView(node);
-        _suppressTreeSelection = false;
+            foreach (var n in _tree.AllNodes())
+            {
+                if (!ReferenceEquals(n, node))
+                {
+                    n.IsCurrent = false;
+                    n.IsSelected = false;
+                }
+            }
+            node.IsCurrent = true;
+            node.IsSelected = true;
+
+            // The root isn't shown as a row; only scroll to nodes that are actually in the list.
+            if (_historyRows.Contains(node))
+                Tree.ScrollIntoView(node);
+        }
+        finally
+        {
+            _suppressTreeSelection = false;
+        }
     }
 
     /// <summary>
-    /// Rebuild the flattened history list from the current tree shape. Pre-order walk: the first
-    /// child continues its parent's indent (so a straight-line edit history stays flat), while each
-    /// additional child of a fork — the points where redo is ambiguous — steps one level deeper.
-    /// The root is not listed (it's the blank/initial state).
+    /// Rebuild the flattened history list from the current tree shape. Pre-order walk; each row's
+    /// indent is its <see cref="BranchDepth"/> so a straight-line edit history stays flat and only
+    /// the extra children of a fork — where redo is ambiguous — step further right. The root is not
+    /// listed (it's the blank/initial state).
+    ///
+    /// When <see cref="AppSettings.HistoryBranchesOnly"/> is on (the default), a straight run of
+    /// edits collapses to just its fork points, tips, and the current node, so a long typing session
+    /// doesn't bury the pane in one row per keystroke. Undo/redo stay granular either way — only the
+    /// display condenses.
     /// </summary>
     private void RebuildHistoryRows()
     {
         _suppressTreeSelection = true;
-        _historyRows.Clear();
-        var kids = _tree.Root.Children;
-        for (int i = 0; i < kids.Count; i++)
-            AppendRows(kids[i], i == 0 ? 0 : 1);
+        RebuildRowsCore();
         _suppressTreeSelection = false;
     }
 
-    private void AppendRows(UndoNode node, int level)
+    /// <summary>The list-clearing rebuild itself, without touching selection suppression — callers
+    /// that already hold <c>_suppressTreeSelection</c> (e.g. <see cref="SetCurrent"/>) use this.</summary>
+    private void RebuildRowsCore()
     {
-        node.IndentLevel = level;
-        _historyRows.Add(node);
+        _historyRows.Clear();
+        bool branchesOnly = AppSettings.Current.HistoryBranchesOnly;
+        var kids = _tree.Root.Children;
+        for (int i = 0; i < kids.Count; i++)
+            AppendRows(kids[i], branchesOnly);
+    }
+
+    private void AppendRows(UndoNode node, bool branchesOnly)
+    {
+        if (!branchesOnly || IsBranchRow(node))
+        {
+            node.IndentLevel = BranchDepth(node);
+            _historyRows.Add(node);
+        }
         var kids = node.Children;
         for (int i = 0; i < kids.Count; i++)
-            AppendRows(kids[i], i == 0 ? level : level + 1);
+            AppendRows(kids[i], branchesOnly);
+    }
+
+    /// <summary>In condensed mode, a node earns its own row only if it's a fork (2+ children), a tip
+    /// (no children), or the current position — the interesting points of the history graph.</summary>
+    private bool IsBranchRow(UndoNode node) =>
+        node.Children.Count != 1 || ReferenceEquals(node, _tree.Current);
+
+    /// <summary>How far right a node sits: the number of steps on its root path that took a
+    /// non-first (i.e. forked) child. A straight-line history is depth 0; each additional branch of
+    /// a fork is one level deeper. Independent of which rows are shown, so both display modes share
+    /// the same indentation.</summary>
+    private static int BranchDepth(UndoNode node)
+    {
+        int depth = 0;
+        for (var n = node; n?.Parent is not null; n = n.Parent)
+        {
+            var siblings = n.Parent!.Children;
+            if (siblings.Count > 0 && !ReferenceEquals(siblings[0], n))
+                depth++;
+        }
+        return depth;
     }
 
     // ===================== Undo / Redo =====================
@@ -685,6 +736,39 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
             if (w is MainWindow mw)
                 foreach (var v in mw.AllEditorViews())
                     v.ApplyPreviewFit(fit);
+    }
+
+    private bool _suppressHistoryModeEvent;
+
+    private void ShowAllEdits_Changed(object sender, RoutedEventArgs e)
+    {
+        if (_suppressHistoryModeEvent)
+            return;
+        // The toggle reads "Show all edits", so checked = branches-only OFF.
+        bool branchesOnly = ShowAllEditsToggle.IsChecked != true;
+        AppSettings.Current.HistoryBranchesOnly = branchesOnly;
+        AppSettings.Current.Save();
+        // Apply to every open document so the choice is process-wide.
+        foreach (Window w in Application.Current.Windows)
+            if (w is MainWindow mw)
+                foreach (var v in mw.AllEditorViews())
+                    v.ApplyHistoryMode(branchesOnly);
+    }
+
+    /// <summary>Reflect the branches-only / show-all-edits preference in this view's toggle and
+    /// rebuild its history list, keeping the current node highlighted and scrolled into view.</summary>
+    public void ApplyHistoryMode(bool branchesOnly)
+    {
+        bool showAll = !branchesOnly;
+        if ((ShowAllEditsToggle.IsChecked == true) != showAll)
+        {
+            _suppressHistoryModeEvent = true;
+            ShowAllEditsToggle.IsChecked = showAll;
+            _suppressHistoryModeEvent = false;
+        }
+        RebuildHistoryRows();
+        // Re-highlight the current node (and, in branches-only, make sure it's listed).
+        SetCurrent(_tree.Current);
     }
 
     /// <summary>Reflect the fit-to-width preference in this view's UI and repaint its previews.</summary>
