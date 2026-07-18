@@ -53,12 +53,10 @@ Choose what the window's **X** button does:
 | `Ctrl+O` | Open… |
 | `Ctrl+S` | Save |
 | `Ctrl+Shift+S` | Save As… |
-| `Ctrl+W` | Close current tab |
-| `Ctrl+C` | Close current tab (prompts to save if there are unsaved changes) |
+| `Ctrl+W` / `Ctrl+F4` | Close current tab (prompts to save if there are unsaved changes) |
 | `Ctrl+Z` | Undo (walk up the history tree) |
 | `Ctrl+Y` / `Ctrl+Shift+Z` | Redo (walk down the history tree) |
-
-> **Note:** `Ctrl+C` is bound to *close tab*, not copy — use the **Edit** menu or right-click for copy.
+| `Ctrl+X` / `Ctrl+C` / `Ctrl+V` | Cut / copy / paste |
 
 ---
 

@@ -495,22 +495,7 @@ public partial class MainWindow : Window
         Bind(Key.S, ModifierKeys.Control, () => ActiveView?.Save(false));
         Bind(Key.S, ModifierKeys.Control | ModifierKeys.Shift, () => ActiveView?.Save(true));
         Bind(Key.W, ModifierKeys.Control, () => CloseTab(Tabs.SelectedItem as TabItem));
-    }
-
-    /// <summary>
-    /// Ctrl+C closes the current tab (prompting to save unsaved changes). We intercept it on the
-    /// tunnelling preview pass because the editor TextBox binds Ctrl+C to Copy on the bubbling pass;
-    /// handling it here fires first and suppresses the copy so the close reliably wins.
-    /// </summary>
-    protected override void OnPreviewKeyDown(KeyEventArgs e)
-    {
-        if (e.Key == Key.C && Keyboard.Modifiers == ModifierKeys.Control && !e.IsRepeat)
-        {
-            CloseTab(Tabs.SelectedItem as TabItem);
-            e.Handled = true;
-            return;
-        }
-        base.OnPreviewKeyDown(e);
+        Bind(Key.F4, ModifierKeys.Control, () => CloseTab(Tabs.SelectedItem as TabItem));
     }
 
     // ===================== Tab drag: tear-off & reattach =====================
