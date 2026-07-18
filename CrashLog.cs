@@ -1,7 +1,7 @@
 using System.IO;
 using System.Text;
 
-namespace TreeNotepad;
+namespace NotepadRedo;
 
 /// <summary>
 /// Best-effort crash / error logging. Every unhandled exception (and any caught-but-notable
@@ -13,7 +13,7 @@ public static class CrashLog
     private static readonly object Gate = new();
 
     private static readonly string Dir = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "TreeNotepad");
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "NotepadRedo");
 
     /// <summary>Full path of the crash log (exposed so the UI can point the user at it).</summary>
     public static string FilePath { get; } = Path.Combine(Dir, "crash.log");

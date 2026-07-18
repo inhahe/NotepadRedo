@@ -4,7 +4,7 @@ using System.Runtime.InteropServices;
 using System.Text;
 using System.Windows;
 
-namespace TreeNotepad;
+namespace NotepadRedo;
 
 /// <summary>
 /// Cross-instance coordination. Each process runs a tiny named-pipe server; other processes
@@ -22,7 +22,7 @@ namespace TreeNotepad;
 public sealed class IpcServer : IDisposable
 {
     /// <summary>Well-known pipe name for a process, derived from its id.</summary>
-    private static string PipeNameFor(int pid) => $"TreeNotepad.{pid}";
+    private static string PipeNameFor(int pid) => $"NotepadRedo.{pid}";
 
     private readonly CancellationTokenSource _cts = new();
 
@@ -78,7 +78,7 @@ public sealed class IpcServer : IDisposable
     public void Dispose() => _cts.Cancel();
 
     /// <summary>
-    /// Ask every other TreeNotepad process whether it already has <paramref name="path"/> open;
+    /// Ask every other NotepadRedo process whether it already has <paramref name="path"/> open;
     /// the first that does is brought to the foreground with that tab selected. Returns true
     /// when a sibling took ownership.
     /// </summary>
@@ -94,7 +94,7 @@ public sealed class IpcServer : IDisposable
     public static bool CloseTabInProcess(int pid, string token) => Send(pid, "CLOSE", token, steal: false);
 
     /// <summary>
-    /// Ask every other TreeNotepad process to autosave to crash recovery and exit. Returns the
+    /// Ask every other NotepadRedo process to autosave to crash recovery and exit. Returns the
     /// number of siblings that acknowledged. Used before a redeploy overwrites the exe.
     /// </summary>
     public static int QuitAllSiblings()
@@ -119,7 +119,7 @@ public sealed class IpcServer : IDisposable
     }
 
     /// <summary>
-    /// Ask every other TreeNotepad process to save its work (titled documents to disk, untitled
+    /// Ask every other NotepadRedo process to save its work (titled documents to disk, untitled
     /// ones to crash recovery) and exit. Returns the number of siblings that acknowledged. Used
     /// before a redeploy overwrites the exe when unsaved work should be persisted, not just parked.
     /// </summary>

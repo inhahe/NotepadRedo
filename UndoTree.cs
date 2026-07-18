@@ -3,7 +3,7 @@ using System.ComponentModel;
 using System.Runtime.CompilerServices;
 using System.Text;
 
-namespace TreeNotepad;
+namespace NotepadRedo;
 
 /// <summary>
 /// A minimal single-span text diff: everything before <see cref="Pos"/> and after the

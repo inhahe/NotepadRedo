@@ -4,7 +4,7 @@ using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Shapes;
 
-namespace TreeNotepad;
+namespace NotepadRedo;
 
 /// <summary>
 /// A drop-in, themed replacement for <see cref="MessageBox.Show(Window, string, string,

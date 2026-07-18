@@ -3,7 +3,7 @@ using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Threading;
 
-namespace TreeNotepad;
+namespace NotepadRedo;
 
 public partial class App : Application
 {
@@ -14,8 +14,8 @@ public partial class App : Application
         base.OnStartup(e);
 
         // Pick a visual theme from the executable's own filename, so a single build can be shipped
-        // under several names (TreeNotepad-Graphite.exe, -Sunset.exe) to compare looks. The plain
-        // "TreeNotepad.exe" gets the Fluent theme by default.
+        // under several names (NotepadRedo-Graphite.exe, -Sunset.exe) to compare looks. The plain
+        // "NotepadRedo.exe" gets the Fluent theme by default.
         ApplyThemeFromExeName();
 
         // Log a full traceback for every unhandled exception. UI-thread exceptions are logged
@@ -86,7 +86,7 @@ public partial class App : Application
 
     /// <summary>
     /// Merge a palette (overriding the base colours) plus the themed control styles. The palette is
-    /// chosen from this executable's filename; an unmatched name (plain TreeNotepad.exe) uses Fluent.
+    /// chosen from this executable's filename; an unmatched name (plain NotepadRedo.exe) uses Fluent.
     /// </summary>
     private void ApplyThemeFromExeName()
     {
@@ -102,7 +102,7 @@ public partial class App : Application
         else if (name.Contains("Sunset", StringComparison.OrdinalIgnoreCase))
             palette = "Themes/Palette.Sunset.xaml";
 
-        // Default look for the plain "TreeNotepad.exe": Fluent. The named variant exes still pick
+        // Default look for the plain "NotepadRedo.exe": Fluent. The named variant exes still pick
         // their own palette above; only an unmatched name falls through to this default.
         palette ??= "Themes/Palette.Fluent.xaml";
 

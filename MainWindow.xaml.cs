@@ -11,7 +11,7 @@ using System.Windows.Interop;
 using System.Windows.Media;
 using Microsoft.Win32;
 
-namespace TreeNotepad;
+namespace NotepadRedo;
 
 /// <summary>
 /// Shell window: hosts a TabControl of <see cref="EditorView"/> documents, the menu, and a
@@ -20,10 +20,10 @@ namespace TreeNotepad;
 /// </summary>
 public partial class MainWindow : Window
 {
-    private const string TabDragFormat = "TreeNotepadTab";     // marker: this drag is a tab
-    private const string DocFormat = "TreeNotepadDoc";         // JSON DocDto for cross-process moves
-    private const string PidFormat = "TreeNotepadPid";         // origin process id
-    private const string TokenFormat = "TreeNotepadToken";     // origin document RecoveryId
+    private const string TabDragFormat = "NotepadRedoTab";     // marker: this drag is a tab
+    private const string DocFormat = "NotepadRedoDoc";         // JSON DocDto for cross-process moves
+    private const string PidFormat = "NotepadRedoPid";         // origin process id
+    private const string TokenFormat = "NotepadRedoToken";     // origin document RecoveryId
 
     /// <summary>In-process handoff state for a tab drag (never serialised across processes).</summary>
     private static class TabDrag
@@ -42,6 +42,15 @@ public partial class MainWindow : Window
         SyncOptionMenus();
 
         Loaded += (_, _) => UpdateChrome();
+        // Re-fit the (possibly left-truncated) title whenever the window width changes.
+        SizeChanged += (_, e) => { if (e.WidthChanged) UpdateChrome(); };
+        Activated += (_, _) =>
+        {
+            // Re-read settings from disk so changes made by other instances are picked up
+            // as soon as this window gets focus.
+            AppSettings.Current.Reload();
+            SyncOptionMenus();
+        };
     }
 
     /// <summary>Seed a freshly-shown window: open the given files, or offer recovery when there are none.</summary>
@@ -69,7 +78,7 @@ public partial class MainWindow : Window
 
         var result = ThemedDialog.Show(this,
             $"{snaps.Count} unsaved document(s) from a previous session were found.\n\nRecover them?",
-            "TreeNotepad \u2014 Recover unsaved work",
+            "NotepadRedo \u2014 Recover unsaved work",
             MessageBoxButton.YesNo, MessageBoxImage.Question);
 
         if (result != MessageBoxResult.Yes)
@@ -104,15 +113,67 @@ public partial class MainWindow : Window
         var view = ActiveView;
         if (view is null)
         {
-            Title = "TreeNotepad";
+            Title = "NotepadRedo";
             return;
         }
-        Title = view.TabTitle + " - TreeNotepad";
+        Title = ComputeTitle(view);
         CaretStatus.Text = view.CaretText;
         CountStatus.Text = view.CountText;
         NodeStatus.Text = view.NodeText;
         SaveStatus.Text = view.SaveText;
         SaveStatus.Foreground = view.IsDirty ? Brushes.Firebrick : Brushes.ForestGreen;
+    }
+
+    private const string TitleSuffix = " - NotepadRedo";
+
+    /// <summary>
+    /// Build the window title. When the file path is too long to fit in the title bar, the path
+    /// portion is left-truncated with a leading ellipsis so the (more informative) rightmost part
+    /// of the path — the file name and its nearest folders — stays visible. The dirty marker and
+    /// the " - NotepadRedo" suffix are always preserved.
+    ///
+    /// WPF exposes a single <see cref="Window.Title"/> string that drives both the title bar and the
+    /// taskbar button, and the taskbar button's width can't be measured from WPF. We size the string
+    /// to the (measurable) title-bar width; the taskbar shows a prefix of the same string, so it will
+    /// likewise begin with the ellipsis and the visible tail when space is tight.
+    /// </summary>
+    private string ComputeTitle(EditorView view)
+    {
+        string path = string.IsNullOrEmpty(view.FilePath) ? "Untitled" : view.FilePath!;
+        string dirty = view.IsDirty ? " *" : "";
+        string full = path + dirty + TitleSuffix;
+
+        // Available width for the caption text: the window minus the icon and caption buttons.
+        // We reserve a generous fixed margin (icon + min/max/close ≈ 200 DIPs) so we err toward
+        // truncating a little early rather than letting the OS clip the tail we tried to keep.
+        double avail = ActualWidth - 200;
+        if (ActualWidth <= 0 || avail <= 0)
+            return full;
+
+        var typeface = new Typeface(SystemFonts.CaptionFontFamily, SystemFonts.CaptionFontStyle,
+                                    SystemFonts.CaptionFontWeight, FontStretches.Normal);
+        double dpi = VisualTreeHelper.GetDpi(this).PixelsPerDip;
+        double emSize = SystemFonts.CaptionFontSize;
+
+        double Measure(string s) => new FormattedText(
+            s, CultureInfo.CurrentCulture, FlowDirection.LeftToRight, typeface, emSize,
+            Brushes.Black, dpi).WidthIncludingTrailingWhitespace;
+
+        if (Measure(full) <= avail)
+            return full;
+
+        // The tail (dirty marker + app suffix) is always kept; only the path is shortened.
+        string tail = dirty + TitleSuffix;
+        // Binary-search the longest suffix of the path that still fits with a leading ellipsis.
+        int lo = 0, hi = path.Length;   // number of leading path chars to drop
+        while (lo < hi)
+        {
+            int mid = (lo + hi) / 2;
+            string candidate = "\u2026" + path.Substring(mid) + tail;
+            if (Measure(candidate) <= avail) hi = mid;   // fits — try dropping fewer
+            else lo = mid + 1;                            // too wide — drop more
+        }
+        return "\u2026" + path.Substring(Math.Min(lo, path.Length)) + tail;
     }
 
     private void View_Changed(object? sender, EventArgs e)
@@ -390,6 +451,7 @@ public partial class MainWindow : Window
 
     private void Undo_Click(object sender, RoutedEventArgs e) => ActiveView?.Undo();
     private void Redo_Click(object sender, RoutedEventArgs e) => ActiveView?.Redo();
+    private void Find_Click(object sender, RoutedEventArgs e) => ActiveView?.OpenSearch();
 
     private void WordWrap_Click(object sender, RoutedEventArgs e)
     {
@@ -692,6 +754,7 @@ public partial class MainWindow : Window
         Bind(Key.S, ModifierKeys.Control | ModifierKeys.Shift, () => ActiveView?.Save(true));
         Bind(Key.W, ModifierKeys.Control, () => CloseTab(Tabs.SelectedItem as TabItem));
         Bind(Key.F4, ModifierKeys.Control, () => CloseTab(Tabs.SelectedItem as TabItem));
+        Bind(Key.F, ModifierKeys.Control, () => ActiveView?.OpenSearch());
         Bind(Key.B, ModifierKeys.Control, ToggleBold);
         Bind(Key.I, ModifierKeys.Control, ToggleItalic);
     }
@@ -1156,7 +1219,7 @@ public partial class MainWindow : Window
         _tray = new System.Windows.Forms.NotifyIcon
         {
             Icon = TryLoadAppIcon(),
-            Text = "TreeNotepad",
+            Text = "NotepadRedo",
             ContextMenuStrip = menu,
         };
         // Double-click (or a plain left click) restores the window.

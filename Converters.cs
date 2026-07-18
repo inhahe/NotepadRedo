@@ -1,7 +1,7 @@
 using System.Globalization;
 using System.Windows.Data;
 
-namespace TreeNotepad;
+namespace NotepadRedo;
 
 /// <summary>
 /// Computes the maximum width a history-node preview may occupy so it trims to the visible tree

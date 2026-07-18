@@ -1,6 +1,6 @@
-# TreeNotepad
+# NotepadRedo
 
-A fast, lightweight Notepad-style text editor for Windows with one standout feature: a **branching undo/redo history tree**. Instead of a linear undo stack where redoing down a new path throws away everything you'd undone, TreeNotepad keeps *every* state you've ever visited as a node in a tree — so you can freely explore alternative edits and jump back to any earlier version, on any branch, at any time.
+A fast, lightweight Notepad-style text editor for Windows with one standout feature: a **branching undo/redo history tree**. Instead of a linear undo stack where redoing down a new path throws away everything you'd undone, NotepadRedo keeps *every* state you've ever visited as a node in a tree — so you can freely explore alternative edits and jump back to any earlier version, on any branch, at any time.
 
 Built with WPF on .NET 8.
 
@@ -71,7 +71,7 @@ Choose what the window's **X** button does:
 ## Command-line usage
 
 ```
-TreeNotepad.exe [files...] [--new] [--quit] [--quit-save]
+NotepadRedo.exe [files...] [--new] [--quit] [--quit-save]
 ```
 
 - `files...` — open one or more files. Files already open elsewhere are focused rather than reopened; otherwise they open as a new tab or new instance per your settings.
@@ -86,7 +86,7 @@ TreeNotepad.exe [files...] [--new] [--quit] [--quit-save]
 Requires the [.NET 8 SDK](https://dotnet.microsoft.com/download) on Windows.
 
 ```sh
-dotnet build TreeNotepad.csproj -c Release
+dotnet build NotepadRedo.csproj -c Release
 ```
 
 Or produce a single-file `win-x64` executable and deploy it via the helper script:
@@ -95,19 +95,21 @@ Or produce a single-file `win-x64` executable and deploy it via the helper scrip
 build.bat
 ```
 
-`build.bat` publishes a self-contained single-file `TreeNotepad.exe`, signals any running instance to save and exit first, then copies the new build into place.
+`build.bat` publishes a self-contained single-file `NotepadRedo.exe`, signals any running instance to save and exit first, then copies the new build into place.
 
 ---
 
 ## Where settings and data live
 
-Everything is stored under `%LOCALAPPDATA%\TreeNotepad\`:
+Everything is stored under `%LOCALAPPDATA%\NotepadRedo\`:
 
 | File | Purpose |
 |---|---|
 | `settings.json` | Persisted preferences (autosave interval, word wrap, tree visibility, preview mode, editor font, undo grouping, open-in behavior, close-button behavior). |
 | `crash.log` | Timestamped exception log with full stack traces. |
 | recovery files | Autosaved copies of in-progress documents, restored on next launch. |
+
+On first launch, if a `%LOCALAPPDATA%\TreeNotepad\` folder exists (from before the rename), it is automatically moved to `NotepadRedo\` so all settings and recovery data carry over.
 
 ---
 

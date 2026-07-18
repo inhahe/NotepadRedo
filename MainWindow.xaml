@@ -1,7 +1,7 @@
-<Window x:Class="TreeNotepad.MainWindow"
+<Window x:Class="NotepadRedo.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="TreeNotepad" Height="640" Width="1000"
+        Title="NotepadRedo" Height="640" Width="1000"
         WindowStartupLocation="CenterScreen"
         Background="{DynamicResource Theme.WindowBg}"
         AllowDrop="True">
@@ -26,6 +26,8 @@
                 <MenuItem Header="Cu_t"   Command="Cut"/>
                 <MenuItem Header="_Copy"  Command="Copy"/>
                 <MenuItem Header="_Paste" Command="Paste"/>
+                <Separator/>
+                <MenuItem Header="_Find..." Click="Find_Click" InputGestureText="Ctrl+F"/>
             </MenuItem>
             <MenuItem Header="F_ormat">
                 <MenuItem Header="_Font..." Click="Font_Click"/>

@@ -8,9 +8,9 @@
     <UseWPF>true</UseWPF>
     <!-- System.Windows.Forms.NotifyIcon powers the optional "minimise to tray" close behaviour. -->
     <UseWindowsForms>true</UseWindowsForms>
-    <AssemblyName>TreeNotepad</AssemblyName>
-    <RootNamespace>TreeNotepad</RootNamespace>
-    <ApplicationTitle>TreeNotepad</ApplicationTitle>
+    <AssemblyName>NotepadRedo</AssemblyName>
+    <RootNamespace>NotepadRedo</RootNamespace>
+    <ApplicationTitle>NotepadRedo</ApplicationTitle>
   </PropertyGroup>
 
   <!-- We reference WinForms only for NotifyIcon (all uses fully-qualified). Drop its implicit

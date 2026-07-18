@@ -1,7 +1,7 @@
 using System.IO;
 using System.Text.Json;
 
-namespace TreeNotepad;
+namespace NotepadRedo;
 
 /// <summary>What pressing the window's X (close) button should do.</summary>
 public enum CloseButtonBehavior
@@ -69,8 +69,24 @@ public sealed class AppSettings
     public double UndoCoalesceSeconds { get; set; } = 4;
 
     private static readonly string Dir = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "TreeNotepad");
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "NotepadRedo");
     private static readonly string FilePath = Path.Combine(Dir, "settings.json");
+
+    /// <summary>
+    /// One-time migration: if the old TreeNotepad data folder exists and the new NotepadRedo
+    /// folder does not, move it wholesale so settings, crash recovery, and logs carry over.
+    /// </summary>
+    static AppSettings()
+    {
+        try
+        {
+            var oldDir = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "TreeNotepad");
+            if (Directory.Exists(oldDir) && !Directory.Exists(Dir))
+                Directory.Move(oldDir, Dir);
+        }
+        catch { /* best-effort; if it fails the user just starts fresh */ }
+    }
 
     public static AppSettings Current { get; } = Load();
 
@@ -83,6 +99,37 @@ public sealed class AppSettings
         }
         catch { /* fall back to defaults */ }
         return new AppSettings();
+    }
+
+    /// <summary>
+    /// Re-read settings from disk into this singleton, picking up changes saved by other
+    /// instances. Called when a window is activated (brought to the foreground).
+    /// </summary>
+    public void Reload()
+    {
+        try
+        {
+            if (!File.Exists(FilePath))
+                return;
+            var fresh = JsonSerializer.Deserialize<AppSettings>(File.ReadAllText(FilePath));
+            if (fresh is null)
+                return;
+            AutosaveSeconds    = fresh.AutosaveSeconds;
+            OpenInNewInstance   = fresh.OpenInNewInstance;
+            WordWrap            = fresh.WordWrap;
+            ShowTree            = fresh.ShowTree;
+            PreviewFitToWidth   = fresh.PreviewFitToWidth;
+            CloseButton         = fresh.CloseButton;
+            FontFamily          = fresh.FontFamily;
+            FontSize            = fresh.FontSize;
+            FontBold            = fresh.FontBold;
+            FontItalic          = fresh.FontItalic;
+            UndoBreakOnEnter    = fresh.UndoBreakOnEnter;
+            UndoBreakOnPaste    = fresh.UndoBreakOnPaste;
+            UndoPerCharacter    = fresh.UndoPerCharacter;
+            UndoCoalesceSeconds = fresh.UndoCoalesceSeconds;
+        }
+        catch { /* best-effort */ }
     }
 
     public void Save()

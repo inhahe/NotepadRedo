@@ -7,7 +7,7 @@ using System.Windows.Input;
 using System.Windows.Threading;
 using Microsoft.Win32;
 
-namespace TreeNotepad;
+namespace NotepadRedo;
 
 /// <summary>
 /// A single self-contained document: text editor + branching history tree + all per-file
@@ -43,11 +43,17 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
     private string _lastRecoveryText = "";
     private DateTime? _lastAutosave;
 
+    // ----- Search pane -----
+    private readonly System.Collections.ObjectModel.ObservableCollection<SearchResultVM> _searchResults = new();
+    private DispatcherTimer? _searchDebounce;
+    private bool _suppressResultNav;       // ignore the SelectionChanged fired while we repopulate
+    private const double SearchPaneWidth = 320;
+
     /// <summary>Unique id for this document's recovery file.</summary>
     public string RecoveryId { get; private set; } = Guid.NewGuid().ToString("N");
 
     private static readonly string RecoveryDir = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "TreeNotepad", "recovery");
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "NotepadRedo", "recovery");
 
     private string RecoveryPath => Path.Combine(RecoveryDir, RecoveryId + ".json");
 
@@ -82,6 +88,8 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
         ApplyPreviewFit(AppSettings.Current.PreviewFitToWidth);
         ApplyFont(AppSettings.Current.FontFamily, AppSettings.Current.FontSize,
                   AppSettings.Current.FontBold, AppSettings.Current.FontItalic);
+
+        ResultsList.ItemsSource = _searchResults;
 
         Loaded += (_, _) => RaiseAll();
     }
@@ -176,6 +184,10 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
         _debounce.Stop();
         _debounce.Start();
         RaiseAll();
+
+        // Keep search results in sync with edits made while the pane is open.
+        if (SearchPanel.Visibility == Visibility.Visible)
+            QueueSearch();
     }
 
     private void Debounce_Tick(object? sender, EventArgs e)
@@ -406,7 +418,7 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
         string name = string.IsNullOrEmpty(_currentPath) ? "Untitled" : Path.GetFileName(_currentPath);
         var result = ThemedDialog.Show(Window.GetWindow(this),
             $"Save changes to {name}?",
-            "TreeNotepad",
+            "NotepadRedo",
             MessageBoxButton.YesNoCancel, MessageBoxImage.Warning);
         return result switch
         {
@@ -520,13 +532,17 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
         }
 
         double splitter = Splitter.ActualWidth;
-        // Cursor X within this control; the tree fills everything to the right of the cursor.
+        // The search pane (when open) sits to the right of the tree, so its width is reserved space
+        // the tree column must not include.
+        double rightExtra = SearchPanel.Visibility == Visibility.Visible ? SearchColumn.ActualWidth : 0;
+        // Cursor X within this control; the tree fills everything to the right of the cursor
+        // except the reserved search pane.
         double cursorX = e.GetPosition(this).X;
-        double target = ActualWidth - cursorX - splitter / 2;
+        double target = ActualWidth - cursorX - splitter / 2 - rightExtra;
 
         // Never crowd the editor out: cap the tree at the room left after the editor's minimum.
         double editorMin = 200;
-        double max = Math.Max(TreeMinWidth, ActualWidth - editorMin - splitter);
+        double max = Math.Max(TreeMinWidth, ActualWidth - editorMin - splitter - rightExtra);
         target = Math.Clamp(target, TreeMinWidth, max);
 
         TreeColumn.Width = new GridLength(target);
@@ -628,7 +644,12 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
     /// </summary>
     private void Editor_PreviewKeyDown(object sender, KeyEventArgs e)
     {
-        if (Keyboard.Modifiers == ModifierKeys.Control && e.Key == Key.Z)
+        if (Keyboard.Modifiers == ModifierKeys.Control && e.Key == Key.F)
+        {
+            ShowSearch(true);
+            e.Handled = true;
+        }
+        else if (Keyboard.Modifiers == ModifierKeys.Control && e.Key == Key.Z)
         {
             Undo();
             e.Handled = true;
@@ -726,6 +747,7 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
     {
         _debounce.Stop();
         _autosave.Stop();
+        _searchDebounce?.Stop();
     }
 
     /// <summary>
@@ -765,6 +787,177 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
                     try { File.Delete(f); } catch { }
         }
         catch { }
+    }
+
+    // ===================== Search =====================
+
+    /// <summary>Open the search pane and focus its input (called by Ctrl+F and the Edit menu).</summary>
+    public void OpenSearch() => ShowSearch(true);
+
+    private void ShowSearch(bool show)
+    {
+        if (show)
+        {
+            SearchPanel.Visibility = Visibility.Visible;
+            SearchColumn.MinWidth = 180;
+            SearchColumn.Width = new GridLength(SearchPaneWidth);
+            SearchBox.Focus();
+            SearchBox.SelectAll();
+            RunSearch();
+        }
+        else
+        {
+            SearchPanel.Visibility = Visibility.Collapsed;
+            SearchColumn.MinWidth = 0;
+            SearchColumn.Width = new GridLength(0);
+            Editor.Focus();
+        }
+    }
+
+    private void SearchClose_Click(object sender, RoutedEventArgs e) => ShowSearch(false);
+
+    private void SearchInput_Changed(object sender, TextChangedEventArgs e) => QueueSearch();
+
+    // Checkboxes (case-sensitive / proximity).
+    private void SearchOption_Changed(object sender, RoutedEventArgs e)
+    {
+        if (IsLoaded) RunSearch();
+    }
+
+    // Proximity unit dropdown (its own signature so the XAML delegate binds cleanly).
+    private void SearchUnit_Changed(object sender, SelectionChangedEventArgs e)
+    {
+        if (IsLoaded) RunSearch();
+    }
+
+    private void SearchBox_PreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key == Key.Escape)
+        {
+            ShowSearch(false);
+            e.Handled = true;
+        }
+        else if (e.Key == Key.Enter)
+        {
+            // Enter runs the search now and steps to the next result (wrapping).
+            _searchDebounce?.Stop();
+            RunSearch();
+            if (_searchResults.Count > 0)
+            {
+                int next = ResultsList.SelectedIndex + 1;
+                if (next >= _searchResults.Count) next = 0;
+                ResultsList.SelectedIndex = next;
+                ResultsList.ScrollIntoView(ResultsList.SelectedItem);
+            }
+            e.Handled = true;
+        }
+    }
+
+    private void Results_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_suppressResultNav)
+            return;
+        if (ResultsList.SelectedItem is SearchResultVM r)
+            NavigateToMatch(r);
+    }
+
+    /// <summary>Debounce rapid input so we don't re-scan the whole document on every keystroke.</summary>
+    private void QueueSearch()
+    {
+        if (_searchDebounce is null)
+        {
+            _searchDebounce = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(180) };
+            _searchDebounce.Tick += (_, _) => { _searchDebounce!.Stop(); RunSearch(); };
+        }
+        _searchDebounce.Stop();
+        _searchDebounce.Start();
+    }
+
+    private void RunSearch()
+    {
+        if (SearchPanel.Visibility != Visibility.Visible)
+            return;
+
+        _suppressResultNav = true;
+        _searchResults.Clear();
+        _suppressResultNav = false;
+
+        string query = SearchBox.Text;
+        if (string.IsNullOrEmpty(query))
+        {
+            SearchStatus.Text = "";
+            return;
+        }
+
+        bool caseSensitive = CaseSensitiveCheck.IsChecked == true;
+        bool proximity = ProximityCheck.IsChecked == true;
+        ProximityUnit unit = ProximityUnitBox.SelectedIndex switch
+        {
+            1 => ProximityUnit.Words,
+            2 => ProximityUnit.Lines,
+            _ => ProximityUnit.Characters,
+        };
+        if (!int.TryParse(ProximityN.Text, out int n) || n < 0)
+            n = 0;
+
+        string text = Editor.Text;
+        var matches = SearchEngine.Run(text, query, caseSensitive, proximity, unit, n);
+
+        foreach (var m in matches)
+        {
+            int line = LineOf(text, m.Start);
+            _searchResults.Add(new SearchResultVM
+            {
+                Start = m.Start,
+                Length = m.Length,
+                Preview = SearchEngine.Preview(text, m),
+                Location = $"Ln {line + 1}",
+            });
+        }
+
+        SearchStatus.Text = matches.Count switch
+        {
+            0 => "No results",
+            1 => "1 result",
+            _ => $"{matches.Count} results",
+        };
+    }
+
+    /// <summary>Move the caret/selection to a result and scroll it into view.</summary>
+    private void NavigateToMatch(SearchResultVM r)
+    {
+        int len = Editor.Text.Length;
+        int start = Math.Clamp(r.Start, 0, len);
+        int selLen = Math.Clamp(r.Length, 0, len - start);
+
+        Editor.Focus();
+        Editor.Select(start, selLen);
+        Editor.CaretIndex = start + selLen;   // caret lands inside the match
+
+        int line = Editor.GetLineIndexFromCharacterIndex(start);
+        if (line >= 0)
+            Editor.ScrollToLine(line);
+
+        RaiseAll();
+    }
+
+    /// <summary>Logical (newline-based) line number of a character index.</summary>
+    private static int LineOf(string text, int index)
+    {
+        int line = 0;
+        int end = Math.Clamp(index, 0, text.Length);
+        for (int i = 0; i < end; i++)
+            if (text[i] == '\n') line++;
+        return line;
+    }
+
+    /// <summary>One row in the results list: preview text plus the target character range.</summary>
+    public sealed class SearchResultVM
+    {
+        public string Preview { get; init; } = "";
+        public string Location { get; init; } = "";
+        public int Start { get; init; }
+        public int Length { get; init; }
     }
 
     public event PropertyChangedEventHandler? PropertyChanged;
