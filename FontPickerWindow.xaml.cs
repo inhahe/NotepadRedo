@@ -97,11 +97,18 @@ public partial class FontPickerWindow : Window
         if (!_ready)
             return;
         string q = FilterBox.Text.Trim();
-        FamilyList.ItemsSource = string.IsNullOrEmpty(q)
+        var filtered = string.IsNullOrEmpty(q)
             ? _allFamilies
             : _allFamilies.Where(n => n.Contains(q, StringComparison.CurrentCultureIgnoreCase)).ToList();
-        // Keep the current family highlighted if it's still in view.
-        SelectFamily(SelectedFamily);
+        FamilyList.ItemsSource = filtered;
+
+        // Keep the current family selected if it's still in the filtered view; otherwise
+        // auto-select the top match so simply typing a name (and hitting OK/Enter) commits it.
+        string? pick = filtered.FirstOrDefault(n => string.Equals(n, SelectedFamily, StringComparison.OrdinalIgnoreCase))
+                       ?? filtered.FirstOrDefault();
+        FamilyList.SelectedItem = pick;
+        if (pick is not null)
+            FamilyList.ScrollIntoView(pick);
     }
 
     private void Family_SelectionChanged(object sender, SelectionChangedEventArgs e)
