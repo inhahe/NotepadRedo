@@ -18,6 +18,9 @@ namespace NotepadRedo;
 ///                       script to close the app cleanly before overwriting the exe).
 ///   QUITSAVE &lt;any&gt;  — save titled docs to disk and untitled docs to crash recovery, then exit
 ///                       (save-first variant of QUIT).
+///   QUITASK &lt;any&gt;   — interactive quit: prompt to save each unsaved document (Yes/No/Cancel) and
+///                       exit; reply is OK when quitting, NO when the user cancelled. The reply is
+///                       only sent once the prompts are answered, so the caller blocks on the user.
 /// </summary>
 public sealed class IpcServer : IDisposable
 {
@@ -65,6 +68,7 @@ public sealed class IpcServer : IDisposable
                 "CLOSE" => MainWindow.CloseTabByToken(arg),
                 "QUIT"  => MainWindow.RequestQuitWithRecovery(),
                 "QUITSAVE" => MainWindow.RequestQuitWithSave(),
+                "QUITASK"  => MainWindow.RequestQuitWithPrompt(),
                 _       => false,
             });
         }
@@ -142,6 +146,62 @@ public sealed class IpcServer : IDisposable
             }
         }
         return acked;
+    }
+
+    /// <summary>Outcome of an interactive <see cref="QuitAllSiblingsInteractive"/> sweep.</summary>
+    public enum QuitResult { NoneRunning, AllClosed, Cancelled }
+
+    /// <summary>
+    /// Ask every other NotepadRedo process to close interactively — each one prompts to save its
+    /// unsaved work (Yes/No/Cancel) — and BLOCK until it has actually exited. Because a sibling
+    /// only replies once its prompts are answered, and we then wait for the process to exit, this
+    /// call does not return until the user has decided the fate of every open document. If the user
+    /// cancels a prompt (leaving that instance open) the sweep reports <see cref="QuitResult.Cancelled"/>
+    /// so the caller can abort the redeploy rather than force-killing unsaved work.
+    /// </summary>
+    public static QuitResult QuitAllSiblingsInteractive()
+    {
+        int self = Environment.ProcessId;
+        string procName;
+        try { procName = Process.GetCurrentProcess().ProcessName; }
+        catch { return QuitResult.NoneRunning; }
+
+        var siblings = SafeGetProcesses(procName).Where(p => p.Id != self).ToList();
+        if (siblings.Count == 0)
+            return QuitResult.NoneRunning;
+
+        bool cancelled = false;
+        foreach (var proc in siblings)
+        {
+            using (proc)
+            {
+                // Send blocks until the instance answers its Save? prompts (the reply is written
+                // only after the UI action returns), so this waits for the user with no polling.
+                bool quitting = Send(proc.Id, "QUITASK", "quit", steal: true);
+                if (quitting)
+                {
+                    // It acknowledged the quit (its work is already saved/discarded per the prompt),
+                    // so wait for it to exit. Cap the wait so a slow teardown can't block the deploy
+                    // forever; at that point its work is safe, so forcing it is fine.
+                    try
+                    {
+                        if (!proc.WaitForExit(15000))
+                        {
+                            try { proc.Kill(); } catch { }
+                            try { proc.WaitForExit(3000); } catch { }
+                        }
+                    }
+                    catch { /* already gone — nothing to wait for */ }
+                }
+                else
+                {
+                    // Reply was NO (user cancelled) or it wasn't reachable. If it's still alive,
+                    // treat that as a cancel so the deploy aborts instead of killing unsaved work.
+                    try { if (!proc.HasExited) cancelled = true; } catch { }
+                }
+            }
+        }
+        return cancelled ? QuitResult.Cancelled : QuitResult.AllClosed;
     }
 
     /// <summary>Run <paramref name="ask"/> against each sibling process; stop at the first true.</summary>

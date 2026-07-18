@@ -33,9 +33,19 @@ public partial class App : Application
 
         // Signalling launch: tell every running instance to save/park its work and exit, then exit
         // ourselves without ever showing a window. Used by build.bat before a redeploy.
-        //   --quit-save : titled docs saved to disk, untitled parked in crash recovery.
-        //   --quit      : everything parked in crash recovery (nothing written to its file).
-        // Check the more specific flag first so "--quit-save" isn't swallowed by the "--quit" case.
+        //   --quit-prompt : each instance prompts to save unsaved work (Yes/No/Cancel); we block
+        //                   until the user answers and every instance exits. Exit code 2 means the
+        //                   user cancelled (an instance was left open) so the caller can abort.
+        //   --quit-save   : titled docs saved to disk, untitled parked in crash recovery (silent).
+        //   --quit        : everything parked in crash recovery (nothing written to its file).
+        // Check the more specific flags first so "--quit-save"/"--quit-prompt" aren't swallowed by
+        // the "--quit" case.
+        if (e.Args.Contains("--quit-prompt"))
+        {
+            var result = IpcServer.QuitAllSiblingsInteractive();
+            Shutdown(result == IpcServer.QuitResult.Cancelled ? 2 : 0);
+            return;
+        }
         if (e.Args.Contains("--quit-save"))
         {
             IpcServer.QuitAllSiblingsAndSave();

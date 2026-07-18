@@ -10,16 +10,18 @@ if errorlevel 1 (
     exit /b 1
 )
 
-echo Closing any running NotepadRedo (saving work first)...
-REM Ask every running instance to save its work and exit cleanly: titled documents are written
-REM straight to their file, untitled ones are parked in crash recovery (restored on next launch).
-"%~dp0publish\NotepadRedo.exe" --quit-save
-REM Give graceful shutdown a moment to complete. (ping is used instead of timeout so the
-REM wait works even when stdin is redirected or a shadowing "timeout" is on PATH.)
-"%SystemRoot%\System32\ping.exe" -n 3 127.0.0.1 >nul
-REM Force-close any stragglers (their running exe would lock the copy targets below).
-REM Recovery was already flushed by --quit, so no unsaved work is lost.
-"%SystemRoot%\System32\taskkill.exe" /IM NotepadRedo.exe /F >nul 2>&1
+echo Closing any running NotepadRedo (you will be prompted to save each unsaved document)...
+REM Ask every running instance to close interactively: each prompts to save its unsaved work
+REM (Yes/No/Cancel). This call BLOCKS until the user has answered every prompt and each instance
+REM has actually exited, so we never overwrite the exe out from under a live process. Exit code 2
+REM means the user cancelled a save prompt (an instance is still open) — abort rather than kill it.
+"%~dp0publish\NotepadRedo.exe" --quit-prompt
+if errorlevel 2 (
+    echo.
+    echo Aborted: a save prompt was cancelled, so a running instance was left open.
+    echo Nothing was redeployed. Close NotepadRedo and re-run build.bat.
+    exit /b 1
+)
 REM Let the OS release the executable file locks before overwriting.
 "%SystemRoot%\System32\ping.exe" -n 2 127.0.0.1 >nul
 
@@ -39,5 +41,5 @@ if errorlevel 1 (
 )
 
 echo.
-echo Done. NotepadRedo.exe is in "%~dp0"
+echo Done. NotepadRedo.exe is in "%~dp0 and d:\utils"
 endlocal

@@ -1209,6 +1209,53 @@ public partial class MainWindow : Window
         return true;
     }
 
+    /// <summary>
+    /// Interactive "save-first" quit used by the redeploy script. Walks every open document across
+    /// every window and, for each with unsaved changes, shows the normal <c>Save changes?</c>
+    /// (Yes/No/Cancel) prompt. If the user cancels any prompt the whole quit is aborted — every
+    /// window is left open and this returns <c>false</c>, so the build script can bail out instead
+    /// of force-killing. Otherwise each document is disposed (persisted or discarded per the user's
+    /// choice, its recovery snapshot cleared) and the app is shut down; returns <c>true</c>.
+    /// Runs on the UI thread (invoked from the IPC handler), so the modal prompts pump normally.
+    /// </summary>
+    public static bool RequestQuitWithPrompt()
+    {
+        var windows = Application.Current.Windows.OfType<MainWindow>().ToList();
+
+        // First pass: prompt for every dirty document. A single Cancel aborts the entire quit.
+        foreach (var mw in windows)
+        {
+            // A window hidden in the tray (or minimised) must be brought forward so its prompt is
+            // actually visible before we ask about its documents.
+            if (mw.Visibility != Visibility.Visible)
+                mw.Show();
+            mw.ShowInTaskbar = true;
+            if (mw.WindowState == WindowState.Minimized)
+                mw.WindowState = WindowState.Normal;
+            mw.Activate();
+
+            foreach (var ti in mw.Tabs.Items.OfType<TabItem>().ToList())
+            {
+                if (ti.Content is not EditorView view)
+                    continue;
+                mw.Tabs.SelectedItem = ti;
+                if (!view.ConfirmDiscardIfDirty())
+                    return false;   // user cancelled — keep everything open, don't quit
+            }
+        }
+
+        // Everyone confirmed (saved or chose to discard). Tear each document down cleanly (clearing
+        // its recovery snapshot and releasing any file lock), then shut the whole app down.
+        _forceQuitting = true;   // OnClosing must not prompt a second time during shutdown
+        foreach (var mw in windows)
+            foreach (var v in mw.AllViews())
+                v.Dispose();
+
+        // Shut down after this returns so the IPC "OK" reply reaches the caller before we tear down.
+        Application.Current.Dispatcher.BeginInvoke(new Action(() => Application.Current.Shutdown()));
+        return true;
+    }
+
     /// <summary>Set when this window should really close, overriding the X-button behaviour.</summary>
     private bool _realClose;
 

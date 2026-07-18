@@ -90,12 +90,13 @@ Choose what the window's **X** button does:
 ## Command-line usage
 
 ```
-NotepadRedo.exe [files...] [--new] [--quit] [--quit-save]
+NotepadRedo.exe [files...] [--new] [--quit-prompt] [--quit] [--quit-save]
 ```
 
 - `files...` — open one or more files. Files already open elsewhere are focused rather than reopened; otherwise they open as a new tab or new instance per your settings.
 - `--new` — start with a blank document even if files are passed.
-- `--quit-save` — signal every running instance to save (titled docs to disk, untitled parked in recovery) and exit, then exit. Used by `build.bat` before redeploying.
+- `--quit-prompt` — signal every running instance to close **interactively**: each prompts to save its unsaved work (Yes/No/Cancel). This call **blocks** until the user has answered every prompt and each instance has exited, and reports exit code `2` if the user cancels (leaving an instance open). Used by `build.bat` before redeploying, so a redeploy can't overwrite the exe until you've decided the fate of your unsaved work.
+- `--quit-save` — signal every running instance to save silently (titled docs to disk, untitled parked in recovery) and exit, then exit. Non-interactive alternative to `--quit-prompt`.
 - `--quit` — signal every running instance to park all work in crash recovery and exit.
 
 ---
@@ -114,7 +115,7 @@ Or produce a single-file `win-x64` executable and deploy it via the helper scrip
 build.bat
 ```
 
-`build.bat` publishes a self-contained single-file `NotepadRedo.exe`, signals any running instance to save and exit first, then copies the new build into place.
+`build.bat` publishes a self-contained single-file `NotepadRedo.exe`, then signals every running instance to close (prompting you to save each unsaved document) and **waits** until they have all exited before copying the new build into place. If you cancel a save prompt the redeploy aborts, leaving that instance untouched.
 
 ---
 
