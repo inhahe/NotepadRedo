@@ -67,7 +67,7 @@ public partial class MainWindow : Window
         if (snaps.Count == 0)
             return false;
 
-        var result = MessageBox.Show(this,
+        var result = ThemedDialog.Show(this,
             $"{snaps.Count} unsaved document(s) from a previous session were found.\n\nRecover them?",
             "TreeNotepad \u2014 Recover unsaved work",
             MessageBoxButton.YesNo, MessageBoxImage.Question);
@@ -134,7 +134,7 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
-            MessageBox.Show(this, ex.Message, "Open failed", MessageBoxButton.OK, MessageBoxImage.Error);
+            ThemedDialog.Show(this, ex.Message, "Open failed", MessageBoxButton.OK, MessageBoxImage.Error);
             return;
         }
         AddView(view, select: true);
@@ -382,7 +382,7 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
-            MessageBox.Show(ex.Message, "Launch failed", MessageBoxButton.OK, MessageBoxImage.Error);
+            ThemedDialog.Show(null, ex.Message, "Launch failed", MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
 
@@ -669,7 +669,11 @@ public partial class MainWindow : Window
     }
 
     private IEnumerable<EditorView> AllViews() =>
-        Tabs.Items.OfType<TabItem>().Select(t => t.Content).OfType<EditorView>();
+        // Tabs can be null for a window that's registered in Application.Current.Windows but hasn't
+        // finished InitializeComponent yet (the WPF Window base ctor self-registers before the
+        // derived fields are wired up), so guard it — cross-window enumerators must not throw.
+        Tabs is null ? Enumerable.Empty<EditorView>()
+                     : Tabs.Items.OfType<TabItem>().Select(t => t.Content).OfType<EditorView>();
 
     /// <summary>Public view over this window's open documents (used for process-wide setting fan-out).</summary>
     public IEnumerable<EditorView> AllEditorViews() => AllViews();

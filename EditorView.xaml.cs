@@ -392,7 +392,7 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
         }
         catch (Exception ex)
         {
-            MessageBox.Show(Window.GetWindow(this), ex.Message, "Save failed",
+            ThemedDialog.Show(Window.GetWindow(this), ex.Message, "Save failed",
                 MessageBoxButton.OK, MessageBoxImage.Error);
             return false;
         }
@@ -404,7 +404,7 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
         if (!IsDirty)
             return true;
         string name = string.IsNullOrEmpty(_currentPath) ? "Untitled" : Path.GetFileName(_currentPath);
-        var result = MessageBox.Show(Window.GetWindow(this),
+        var result = ThemedDialog.Show(Window.GetWindow(this),
             $"Save changes to {name}?",
             "TreeNotepad",
             MessageBoxButton.YesNoCancel, MessageBoxImage.Warning);
