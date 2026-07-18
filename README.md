@@ -28,9 +28,16 @@ Built with WPF on .NET 8.
 - Opening a file that's already open just focuses the existing tab/window.
 - Configurable: new files open in **a new tab** (of the existing instance) or **a new instance** (separate process).
 
-### Autosave & crash recovery
+### Search
+- Open the search pane with `Ctrl+F` (or **Edit → Find…**); it slides in on the right.
+- **Case-sensitivity** toggle.
+- **Proximity mode**: instead of matching the whole query, find only the places where *all* the entered terms occur **within N characters, words, or lines of each other** (N and the unit are configurable). Wrap several words in `"quotes"` to treat them as one term.
+- Results are listed with a one/two-line preview ending in an ellipsis when truncated; **clicking a result moves the caret and selection to that match** and scrolls it into view. `Enter` in the search box steps through matches.
+
+### Autosave, crash recovery & session restore
 - Periodic background autosave (configurable interval, or off) parks in-progress work so an unexpected crash or forced quit doesn't lose unsaved changes.
-- Recovered work is restored on next launch.
+- Unsaved/recovered work is offered for restoration on the next launch.
+- **Session restore**: the set of open files is remembered between runs, so relaunching reopens the same tabs where you left off. (Files opened from the command line, or `--new`, start fresh instead of restoring.)
 - All unhandled exceptions are logged with full stack traces; UI-thread glitches are caught and swallowed to keep your documents alive rather than crashing.
 
 ### Close-button behavior
@@ -60,6 +67,7 @@ Choose what the window's **X** button does:
 | `Ctrl+S` | Save |
 | `Ctrl+Shift+S` | Save As… |
 | `Ctrl+W` / `Ctrl+F4` | Close current tab (prompts to save if there are unsaved changes) |
+| `Ctrl+F` | Find… (open the search pane) |
 | `Ctrl+Z` | Undo (walk up the history tree) |
 | `Ctrl+Y` / `Ctrl+Shift+Z` | Redo (walk down the history tree) |
 | `Ctrl+X` / `Ctrl+C` / `Ctrl+V` | Cut / copy / paste |
@@ -107,6 +115,7 @@ Everything is stored under `%LOCALAPPDATA%\NotepadRedo\`:
 |---|---|
 | `settings.json` | Persisted preferences (autosave interval, word wrap, tree visibility, preview mode, editor font, undo grouping, open-in behavior, close-button behavior). |
 | `crash.log` | Timestamped exception log with full stack traces. |
+| `session.json` | The set of files open at last exit, reopened on next launch (session restore). |
 | recovery files | Autosaved copies of in-progress documents, restored on next launch. |
 
 On first launch, if a `%LOCALAPPDATA%\TreeNotepad\` folder exists (from before the rename), it is automatically moved to `NotepadRedo\` so all settings and recovery data carry over.
@@ -122,6 +131,8 @@ On first launch, if a `%LOCALAPPDATA%\TreeNotepad\` folder exists (from before t
 | `EditorView.xaml(.cs)` | A single document: text editor, history-tree pane, splitter, autosave. |
 | `UndoTree.cs` | The branching undo/redo model (`UndoTree` / `UndoNode`). |
 | `Ipc.cs` | Named-pipe IPC for cross-instance coordination. |
+| `SearchEngine.cs` | Pure, testable text-search logic (plain find + proximity clustering). |
+| `SessionStore.cs` | Reads/writes `session.json` for reopening last session's files. |
 | `AppSettings.cs` | Persisted user preferences. |
 | `Converters.cs` | XAML value converters (e.g. preview width). |
 | `CrashLog.cs` | Best-effort exception logging. |

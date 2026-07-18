@@ -61,12 +61,44 @@ public partial class MainWindow : Window
             RequestOpenFile(f);   // focuses instead of duplicating if already open here
 
         if (Tabs.Items.Count == 0 && !blankRequested && list.Count == 0)
+        {
+            // Crash snapshots first (they carry unsaved edits, incl. for titled docs), then reopen
+            // the rest of last session's files. RestoreSession de-dupes against anything recovery
+            // already reopened, so a file that was dirty at exit keeps its recovered version.
             OfferRecovery();
+            RestoreSession();
+        }
 
         if (Tabs.Items.Count == 0)
             AddView(CreateBlankView(), select: true);
 
         ActiveView?.FocusEditor();
+    }
+
+    /// <summary>Reopen the files that were open in the previous session (skipping any already open).</summary>
+    private void RestoreSession()
+    {
+        foreach (var path in SessionStore.Load())
+            RequestOpenFile(path);   // TryFocusDocument inside de-dupes against recovered tabs
+    }
+
+    /// <summary>
+    /// Persist the set of open document files (across every window in this process) so the next
+    /// launch reopens the same tabs. Called at each structural change (open/close/save). Skipped
+    /// during a forced redeploy quit so the last good session list is preserved untouched.
+    /// </summary>
+    public static void SaveSession()
+    {
+        if (_forceQuitting)
+            return;
+        var paths = new List<string>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (Window w in Application.Current.Windows)
+            if (w is MainWindow mw)
+                foreach (var v in mw.AllViews())
+                    if (v.FilePath is string p && seen.Add(NormalizePath(p)))
+                        paths.Add(p);
+        SessionStore.Save(paths);
     }
 
     /// <summary>Prompt to restore snapshots left behind by a crashed session. Returns true if any restored.</summary>
@@ -311,6 +343,7 @@ public partial class MainWindow : Window
         if (select)
             Tabs.SelectedItem = ti;
         UpdateChrome();
+        SaveSession();
     }
 
     private FrameworkElement BuildHeader(EditorView view)
@@ -373,6 +406,7 @@ public partial class MainWindow : Window
         }
         Tabs.Items.Remove(ti);
         UpdateChrome();
+        SaveSession();
     }
 
     /// <summary>Re-host a live EditorView (moved from another window) in a fresh tab here.</summary>
@@ -423,8 +457,10 @@ public partial class MainWindow : Window
         }
     }
 
-    private void Save_Click(object sender, RoutedEventArgs e) => ActiveView?.Save(false);
-    private void SaveAs_Click(object sender, RoutedEventArgs e) => ActiveView?.Save(true);
+    // Save through the active view, then refresh the session list — Save As can turn an untitled
+    // buffer into a titled file (or change its path), which changes what should be reopened.
+    private void Save_Click(object sender, RoutedEventArgs e) { ActiveView?.Save(false); SaveSession(); }
+    private void SaveAs_Click(object sender, RoutedEventArgs e) { ActiveView?.Save(true); SaveSession(); }
     private void CloseTab_Click(object sender, RoutedEventArgs e) => CloseTab(Tabs.SelectedItem as TabItem);
 
     private void Exit_Click(object sender, RoutedEventArgs e)
