@@ -2,6 +2,19 @@
 setlocal
 cd /d "%~dp0"
 
+REM Refuse to redeploy while a pre-rename TreeNotepad.exe instance is still running. It listens on an
+REM incompatible pipe name, so the --quit-prompt sweep below can't reach it, and it would keep running
+REM the OLD code (no external-change watcher, old history/focus) — which looks like "nothing changed"
+REM after a rebuild. Make the user close it deliberately so unsaved work isn't lost.
+tasklist /FI "IMAGENAME eq TreeNotepad.exe" 2>nul | find /I "TreeNotepad.exe" >nul
+if not errorlevel 1 (
+    echo.
+    echo An old TreeNotepad.exe instance is still running. It predates the rename and cannot be
+    echo closed automatically ^(different pipe name^). Close it manually, saving your work, then
+    echo re-run build.bat.
+    exit /b 1
+)
+
 echo Building NotepadRedo (Release, single-file)...
 dotnet publish NotepadRedo.csproj -c Release -r win-x64 --self-contained false -p:PublishSingleFile=true -o "%~dp0publish"
 if errorlevel 1 (
@@ -39,6 +52,12 @@ if errorlevel 1 (
     echo Copy FAILED.
     exit /b 1
 )
+
+REM Remove the stale pre-rename exe from both deploy locations so it can't be launched by an old
+REM shortcut / taskbar pin and mistaken for the current build (it lacks every feature added since
+REM the rename). Ignore failures — it may simply not exist.
+if exist "%~dp0TreeNotepad.exe" del /q "%~dp0TreeNotepad.exe" >nul 2>&1
+if exist "d:\utils\TreeNotepad.exe" del /q "d:\utils\TreeNotepad.exe" >nul 2>&1
 
 echo.
 echo Done. NotepadRedo.exe is in "%~dp0 and d:\utils"

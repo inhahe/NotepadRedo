@@ -104,12 +104,8 @@ public sealed class IpcServer : IDisposable
     public static int QuitAllSiblings()
     {
         int self = Environment.ProcessId;
-        string procName;
-        try { procName = Process.GetCurrentProcess().ProcessName; }
-        catch { return 0; }
-
         int acked = 0;
-        foreach (var proc in SafeGetProcesses(procName))
+        foreach (var proc in AppProcesses())
         {
             using (proc)
             {
@@ -130,12 +126,8 @@ public sealed class IpcServer : IDisposable
     public static int QuitAllSiblingsAndSave()
     {
         int self = Environment.ProcessId;
-        string procName;
-        try { procName = Process.GetCurrentProcess().ProcessName; }
-        catch { return 0; }
-
         int acked = 0;
-        foreach (var proc in SafeGetProcesses(procName))
+        foreach (var proc in AppProcesses())
         {
             using (proc)
             {
@@ -162,11 +154,7 @@ public sealed class IpcServer : IDisposable
     public static QuitResult QuitAllSiblingsInteractive()
     {
         int self = Environment.ProcessId;
-        string procName;
-        try { procName = Process.GetCurrentProcess().ProcessName; }
-        catch { return QuitResult.NoneRunning; }
-
-        var siblings = SafeGetProcesses(procName).Where(p => p.Id != self).ToList();
+        var siblings = AppProcesses().Where(p => p.Id != self).ToList();
         if (siblings.Count == 0)
             return QuitResult.NoneRunning;
 
@@ -208,11 +196,7 @@ public sealed class IpcServer : IDisposable
     private static bool AnySibling(Func<int, bool> ask)
     {
         int self = Environment.ProcessId;
-        string procName;
-        try { procName = Process.GetCurrentProcess().ProcessName; }
-        catch { return false; }
-
-        foreach (var proc in SafeGetProcesses(procName))
+        foreach (var proc in AppProcesses())
         {
             using (proc)
             {
@@ -262,9 +246,25 @@ public sealed class IpcServer : IDisposable
         return Encoding.UTF8.GetString(bytes.ToArray());
     }
 
-    private static Process[] SafeGetProcesses(string name)
+    /// <summary>
+    /// Every running instance of this app, matched by executable-name *prefix* ("NotepadRedo") so
+    /// themed variant builds (NotepadRedo-Graphite.exe, NotepadRedo-Sunset.exe) are found too — they
+    /// all listen on the same "NotepadRedo.&lt;pid&gt;" pipe, so a redeploy or focus must reach them.
+    /// (Pre-rename TreeNotepad.exe instances listen on a different pipe name and can't be signalled;
+    /// build.bat detects and refuses those separately.)
+    /// </summary>
+    private static Process[] AppProcesses()
     {
-        try { return Process.GetProcessesByName(name); }
+        try
+        {
+            return Process.GetProcesses()
+                .Where(p =>
+                {
+                    try { return p.ProcessName.StartsWith("NotepadRedo", StringComparison.OrdinalIgnoreCase); }
+                    catch { return false; }
+                })
+                .ToArray();
+        }
         catch { return Array.Empty<Process>(); }
     }
 
