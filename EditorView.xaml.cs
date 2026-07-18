@@ -1290,8 +1290,17 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
     // Checkboxes (case-sensitive / whole-word).
     private void SearchOption_Changed(object sender, RoutedEventArgs e)
     {
+        // Skip while Proximity_Changed is programmatically flipping the whole-word box; it runs the
+        // search itself afterward, so we'd otherwise search twice.
+        if (_syncingWholeWord) return;
         if (IsLoaded) RunSearch();
     }
+
+    // Remembers the user's "match whole word only" choice from before proximity mode auto-forced it
+    // on, so leaving proximity restores it (null = not currently overridden).
+    private bool? _wholeWordBeforeProximity;
+    // Set while Proximity_Changed toggles WholeWordCheck itself, to suppress its change handler.
+    private bool _syncingWholeWord;
 
     // The "near each other" checkbox switches between plain literal search and the multi-item
     // proximity list. Show/hide the item-list UI and the "within N" row, then re-search.
@@ -1303,6 +1312,27 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
         SearchBox.ToolTip = prox
             ? "Type an item and press Enter to add it; results match where all items appear near each other."
             : "Type text to find — matched exactly as typed.";
+
+        // Proximity items are conceptually whole words (searching "op" and "po" shouldn't match
+        // inside "opposite"), so default "match whole word only" ON when entering proximity mode.
+        // The user can still uncheck it for substring proximity. Restore the prior setting on exit
+        // so plain search isn't left with an unexpected whole-word default.
+        _syncingWholeWord = true;
+        try
+        {
+            if (prox)
+            {
+                _wholeWordBeforeProximity ??= WholeWordCheck.IsChecked == true;
+                WholeWordCheck.IsChecked = true;
+            }
+            else if (_wholeWordBeforeProximity is bool prev)
+            {
+                WholeWordCheck.IsChecked = prev;
+                _wholeWordBeforeProximity = null;
+            }
+        }
+        finally { _syncingWholeWord = false; }
+
         if (IsLoaded) RunSearch();
     }
 
