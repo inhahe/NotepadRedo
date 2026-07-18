@@ -26,6 +26,31 @@
                 <MenuItem Header="_Copy"  Command="Copy"/>
                 <MenuItem Header="_Paste" Command="Paste"/>
             </MenuItem>
+            <MenuItem Header="F_ormat">
+                <MenuItem Header="_Font..." Click="Font_Click"/>
+                <Separator/>
+                <MenuItem x:Name="BoldItem"   Header="_Bold"   IsCheckable="True"
+                          InputGestureText="Ctrl+B" Click="Bold_Click"/>
+                <MenuItem x:Name="ItalicItem" Header="_Italic" IsCheckable="True"
+                          InputGestureText="Ctrl+I" Click="Italic_Click"/>
+                <Separator/>
+                <MenuItem x:Name="FontSizeMenu" Header="_Size">
+                    <MenuItem Header="8"  IsCheckable="True" Tag="8"  Click="FontSize_Click"/>
+                    <MenuItem Header="9"  IsCheckable="True" Tag="9"  Click="FontSize_Click"/>
+                    <MenuItem Header="10" IsCheckable="True" Tag="10" Click="FontSize_Click"/>
+                    <MenuItem Header="11" IsCheckable="True" Tag="11" Click="FontSize_Click"/>
+                    <MenuItem Header="12" IsCheckable="True" Tag="12" Click="FontSize_Click"/>
+                    <MenuItem Header="14" IsCheckable="True" Tag="14" Click="FontSize_Click"/>
+                    <MenuItem Header="16" IsCheckable="True" Tag="16" Click="FontSize_Click"/>
+                    <MenuItem Header="18" IsCheckable="True" Tag="18" Click="FontSize_Click"/>
+                    <MenuItem Header="20" IsCheckable="True" Tag="20" Click="FontSize_Click"/>
+                    <MenuItem Header="24" IsCheckable="True" Tag="24" Click="FontSize_Click"/>
+                    <MenuItem Header="28" IsCheckable="True" Tag="28" Click="FontSize_Click"/>
+                    <MenuItem Header="36" IsCheckable="True" Tag="36" Click="FontSize_Click"/>
+                    <MenuItem Header="48" IsCheckable="True" Tag="48" Click="FontSize_Click"/>
+                    <MenuItem Header="72" IsCheckable="True" Tag="72" Click="FontSize_Click"/>
+                </MenuItem>
+            </MenuItem>
             <MenuItem Header="_View">
                 <MenuItem x:Name="WordWrapItem" Header="_Word Wrap" IsCheckable="True"
                           IsChecked="True" Click="WordWrap_Click"/>

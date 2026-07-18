@@ -38,10 +38,15 @@ Choose what the window's **X** button does:
 - **Minimize to tray** — hide to the notification area and keep running.
 - **Minimize to taskbar** — minimize instead of closing.
 
+### Font & formatting
+- **Format** menu with a native **Font…** picker (family, size, and style in one dialog).
+- Quick toggles for **Bold** (`Ctrl+B`) and **Italic** (`Ctrl+I`).
+- A **Size** submenu for common point sizes.
+- The chosen font is a shared, persisted preference applied to the editor in every tab and window.
+
 ### Other
 - Word wrap toggle.
 - Standard editing: cut / copy / paste.
-- Consolas monospace editor.
 
 ---
 
@@ -57,6 +62,8 @@ Choose what the window's **X** button does:
 | `Ctrl+Z` | Undo (walk up the history tree) |
 | `Ctrl+Y` / `Ctrl+Shift+Z` | Redo (walk down the history tree) |
 | `Ctrl+X` / `Ctrl+C` / `Ctrl+V` | Cut / copy / paste |
+| `Ctrl+B` | Toggle bold |
+| `Ctrl+I` | Toggle italic |
 
 ---
 
@@ -97,7 +104,7 @@ Everything is stored under `%LOCALAPPDATA%\TreeNotepad\`:
 
 | File | Purpose |
 |---|---|
-| `settings.json` | Persisted preferences (autosave interval, word wrap, tree visibility, preview mode, open-in behavior, close-button behavior). |
+| `settings.json` | Persisted preferences (autosave interval, word wrap, tree visibility, preview mode, editor font, open-in behavior, close-button behavior). |
 | `crash.log` | Timestamped exception log with full stack traces. |
 | recovery files | Autosaved copies of in-progress documents, restored on next launch. |
 

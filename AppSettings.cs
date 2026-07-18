@@ -38,6 +38,18 @@ public sealed class AppSettings
     /// <summary>What the window's X (close) button does.</summary>
     public CloseButtonBehavior CloseButton { get; set; } = CloseButtonBehavior.Close;
 
+    // ----- Editor font (applied to the text area of every document) -----
+
+    /// <summary>Editor font family name.</summary>
+    public string FontFamily { get; set; } = "Consolas";
+
+    /// <summary>Editor font size, in points (as shown in the font picker). Converted to WPF
+    /// device-independent units when applied to the editor.</summary>
+    public double FontSize { get; set; } = 11;
+
+    public bool FontBold { get; set; }
+    public bool FontItalic { get; set; }
+
     private static readonly string Dir = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "TreeNotepad");
     private static readonly string FilePath = Path.Combine(Dir, "settings.json");

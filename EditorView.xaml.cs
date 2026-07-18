@@ -76,6 +76,8 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
         ApplyWordWrap(AppSettings.Current.WordWrap);
         ApplyTreeVisible(AppSettings.Current.ShowTree);
         ApplyPreviewFit(AppSettings.Current.PreviewFitToWidth);
+        ApplyFont(AppSettings.Current.FontFamily, AppSettings.Current.FontSize,
+                  AppSettings.Current.FontBold, AppSettings.Current.FontItalic);
 
         Loaded += (_, _) => RaiseAll();
     }
@@ -424,6 +426,15 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
 
     public void ApplyWordWrap(bool wrap) =>
         Editor.TextWrapping = wrap ? TextWrapping.Wrap : TextWrapping.NoWrap;
+
+    /// <summary>Apply the shared editor-font preference to this document's text area.</summary>
+    public void ApplyFont(string family, double size, bool bold, bool italic)
+    {
+        Editor.FontFamily = new System.Windows.Media.FontFamily(family);
+        Editor.FontSize = size;
+        Editor.FontWeight = bold ? FontWeights.Bold : FontWeights.Normal;
+        Editor.FontStyle = italic ? FontStyles.Italic : FontStyles.Normal;
+    }
 
     /// <summary>Whether the tree pane is only showing to let the user pick an ambiguous redo branch.</summary>
     private bool _treeTemporarilyShown;

@@ -398,6 +398,81 @@ public partial class MainWindow : Window
             v.ApplyWordWrap(AppSettings.Current.WordWrap);
     }
 
+    // ===================== Menu: Format (editor font) =====================
+
+    /// <summary>Font sizes are stored/picked in points; WPF's FontSize is in 1/96" pixels.</summary>
+    private const double PointsToPixels = 96.0 / 72.0;
+
+    /// <summary>Open the native font picker and apply the chosen family/size/style everywhere.</summary>
+    private void Font_Click(object sender, RoutedEventArgs e)
+    {
+        var s = AppSettings.Current;
+        var style = System.Drawing.FontStyle.Regular;
+        if (s.FontBold)   style |= System.Drawing.FontStyle.Bold;
+        if (s.FontItalic) style |= System.Drawing.FontStyle.Italic;
+
+        using var dlg = new System.Windows.Forms.FontDialog
+        {
+            // We only model family/size/bold/italic, so hide colour and underline/strikeout effects.
+            ShowColor = false,
+            ShowEffects = false,
+            FontMustExist = true,
+            MinSize = 6,
+            MaxSize = 400,
+        };
+        try { dlg.Font = new System.Drawing.Font(s.FontFamily, (float)s.FontSize, style); }
+        catch { /* stored family unavailable — let the dialog open on its own default */ }
+
+        if (dlg.ShowDialog() != System.Windows.Forms.DialogResult.OK)
+            return;
+
+        var f = dlg.Font;
+        s.FontFamily = f.Name;
+        s.FontSize   = f.SizeInPoints;
+        s.FontBold   = f.Bold;
+        s.FontItalic = f.Italic;
+        ApplyFontEverywhere();
+    }
+
+    private void Bold_Click(object sender, RoutedEventArgs e)   => ToggleBold();
+    private void Italic_Click(object sender, RoutedEventArgs e) => ToggleItalic();
+
+    private void ToggleBold()
+    {
+        AppSettings.Current.FontBold = !AppSettings.Current.FontBold;
+        ApplyFontEverywhere();
+    }
+
+    private void ToggleItalic()
+    {
+        AppSettings.Current.FontItalic = !AppSettings.Current.FontItalic;
+        ApplyFontEverywhere();
+    }
+
+    private void FontSize_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not MenuItem mi || mi.Tag is not string tag || !double.TryParse(tag, out double pt))
+            return;
+        AppSettings.Current.FontSize = pt;
+        ApplyFontEverywhere();
+    }
+
+    /// <summary>Persist the shared editor font and apply it to every open document in every window.</summary>
+    private static void ApplyFontEverywhere()
+    {
+        var s = AppSettings.Current;
+        s.Save();
+        double px = s.FontSize * PointsToPixels;
+        foreach (Window w in Application.Current.Windows)
+        {
+            if (w is not MainWindow mw)
+                continue;
+            mw.SyncOptionMenus();
+            foreach (var v in mw.AllViews())
+                v.ApplyFont(s.FontFamily, px, s.FontBold, s.FontItalic);
+        }
+    }
+
     private void ShowTree_Click(object sender, RoutedEventArgs e) => SetTreePreference(ShowTreeItem.IsChecked);
 
     private void ToggleTree_Click(object sender, RoutedEventArgs e) => SetTreePreference(TreeToggle.IsChecked == true);
@@ -474,6 +549,11 @@ public partial class MainWindow : Window
         CloseCloses.IsChecked    = s.CloseButton == CloseButtonBehavior.Close;
         CloseToTray.IsChecked    = s.CloseButton == CloseButtonBehavior.MinimizeToTray;
         CloseToTaskbar.IsChecked = s.CloseButton == CloseButtonBehavior.MinimizeToTaskbar;
+
+        BoldItem.IsChecked   = s.FontBold;
+        ItalicItem.IsChecked = s.FontItalic;
+        foreach (var item in FontSizeMenu.Items.OfType<MenuItem>())
+            item.IsChecked = item.Tag is string t && double.TryParse(t, out double pt) && pt == s.FontSize;
     }
 
     private IEnumerable<EditorView> AllViews() =>
@@ -496,6 +576,8 @@ public partial class MainWindow : Window
         Bind(Key.S, ModifierKeys.Control | ModifierKeys.Shift, () => ActiveView?.Save(true));
         Bind(Key.W, ModifierKeys.Control, () => CloseTab(Tabs.SelectedItem as TabItem));
         Bind(Key.F4, ModifierKeys.Control, () => CloseTab(Tabs.SelectedItem as TabItem));
+        Bind(Key.B, ModifierKeys.Control, ToggleBold);
+        Bind(Key.I, ModifierKeys.Control, ToggleItalic);
     }
 
     // ===================== Tab drag: tear-off & reattach =====================
