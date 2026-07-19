@@ -96,8 +96,11 @@ if not exist "%~dp0release\NotepadRedo.exe" (
 )
 
 REM --- Optional extra asset: the .txt-association helper, if present. ---
+REM  The value keeps its surrounding quotes so the path (which contains spaces, e.g.
+REM  "...\visual studio projects\...") reaches gh as a SINGLE argument. Passing it unquoted
+REM  makes gh see split words like "studio" and fail with "no matches found for `studio`".
 set "EXTRA="
-if exist "%~dp0associate-txt.bat" set "EXTRA=%~dp0associate-txt.bat"
+if exist "%~dp0associate-txt.bat" set EXTRA="%~dp0associate-txt.bat"
 
 echo.
 echo Creating GitHub release %TAG% on %REPO% ...
