@@ -73,7 +73,31 @@ public partial class DiffMergeWindow : Window
         RightHeader.Text = $"On disk — {_fileName}";
         Title = $"Resolve differences — {_fileName}";
 
+        // Lock the two panes' scrolling together so matching rows stay side-by-side. The panes are
+        // built row-for-row aligned (gaps fill the missing side), so mirroring one's scroll offset
+        // onto the other keeps corresponding lines level.
+        LeftBox.AddHandler(ScrollViewer.ScrollChangedEvent, new ScrollChangedEventHandler(LeftBox_ScrollChanged));
+        RightBox.AddHandler(ScrollViewer.ScrollChangedEvent, new ScrollChangedEventHandler(RightBox_ScrollChanged));
+
         Render();
+    }
+
+    private bool _syncingScroll;
+
+    private void LeftBox_ScrollChanged(object sender, ScrollChangedEventArgs e) => MirrorScroll(from: LeftBox, to: RightBox, e);
+    private void RightBox_ScrollChanged(object sender, ScrollChangedEventArgs e) => MirrorScroll(from: RightBox, to: LeftBox, e);
+
+    private void MirrorScroll(RichTextBox from, RichTextBox to, ScrollChangedEventArgs e)
+    {
+        if (_syncingScroll) return;
+        if (e.VerticalChange == 0 && e.HorizontalChange == 0) return;
+        _syncingScroll = true;
+        try
+        {
+            if (e.VerticalChange != 0) to.ScrollToVerticalOffset(from.VerticalOffset);
+            if (e.HorizontalChange != 0) to.ScrollToHorizontalOffset(from.HorizontalOffset);
+        }
+        finally { _syncingScroll = false; }
     }
 
     private string KeptWork
