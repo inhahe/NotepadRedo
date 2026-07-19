@@ -31,7 +31,7 @@ Built with WPF on .NET 8.
 - Configurable: new files open in **a new tab** (of the existing instance) or **a new instance** (separate process).
 
 ### Search
-- Open the search pane with `Ctrl+F` (or **Edit → Find…**); it slides in on the right.
+- Open the search pane with `Ctrl+F` (or **Edit → Find…**, or the toolbar **Search** toggle button); it slides in on the right. The toolbar button stays lit while the pane is open and toggles it closed again.
 - **Literal matching**: the search matches **exactly what you type** — every character, including spaces and quotes, is searched verbatim, with no special syntax. Typing `"blah"` finds the text `"blah"` (quote marks and all); typing ` os ` (with surrounding spaces) finds a standalone `os` rather than the `os` inside `composition`.
 - **Case-sensitivity** toggle.
 - **Match whole word only** toggle: restricts matches to places where the term stands alone as a word (bounded by non-word characters), so searching `os` won't match inside `composition`. Applies to plain and proximity searches alike.

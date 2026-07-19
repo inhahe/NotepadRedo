@@ -138,6 +138,19 @@
                                    Foreground="{DynamicResource Theme.ToolbarFg}"/>
                     </StackPanel>
                 </ToggleButton>
+                <ToggleButton x:Name="SearchToggle" Click="ToggleSearch_Click"
+                              Padding="6,2" ToolTip="Show/hide the search pane">
+                    <StackPanel Orientation="Horizontal">
+                        <Canvas Width="16" Height="16" VerticalAlignment="Center">
+                            <Ellipse Canvas.Left="2" Canvas.Top="2" Width="8" Height="8"
+                                     Stroke="{DynamicResource Theme.ToolbarFg}" StrokeThickness="1.5"/>
+                            <Line X1="9" Y1="9" X2="13" Y2="13"
+                                  Stroke="{DynamicResource Theme.ToolbarFg}" StrokeThickness="1.5"/>
+                        </Canvas>
+                        <TextBlock Text="Search" Margin="6,0,0,0" VerticalAlignment="Center"
+                                   Foreground="{DynamicResource Theme.ToolbarFg}"/>
+                    </StackPanel>
+                </ToggleButton>
             </ToolBar>
         </ToolBarTray>
 

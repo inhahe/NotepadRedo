@@ -1363,6 +1363,15 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
     /// <summary>Open the search pane and focus its input (called by Ctrl+F and the Edit menu).</summary>
     public void OpenSearch() => ShowSearch(true);
 
+    /// <summary>True while the search pane is showing.</summary>
+    public bool IsSearchOpen => SearchPanel.Visibility == Visibility.Visible;
+
+    /// <summary>Raised when the search pane is shown or hidden (for toolbar toggle sync).</summary>
+    public event EventHandler? SearchVisibilityChanged;
+
+    /// <summary>Open the search pane if closed, close it if open (toolbar toggle).</summary>
+    public void ToggleSearch() => ShowSearch(!IsSearchOpen);
+
     private void ShowSearch(bool show)
     {
         if (show)
@@ -1381,6 +1390,7 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
             SearchColumn.Width = new GridLength(0);
             Editor.Focus();
         }
+        SearchVisibilityChanged?.Invoke(this, EventArgs.Empty);
     }
 
     private void SearchClose_Click(object sender, RoutedEventArgs e) => ShowSearch(false);

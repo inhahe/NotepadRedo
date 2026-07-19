@@ -180,7 +180,11 @@ public partial class MainWindow : Window
         NodeStatus.Text = view.NodeText;
         SaveStatus.Text = view.SaveText;
         SaveStatus.Foreground = view.IsDirty ? Brushes.Firebrick : Brushes.ForestGreen;
+        SyncSearchToggle();
     }
+
+    /// <summary>Keep the toolbar Search toggle in sync with the active view's search pane.</summary>
+    private void SyncSearchToggle() => SearchToggle.IsChecked = ActiveView?.IsSearchOpen == true;
 
     private const string TitleSuffix = " - NotepadRedo";
 
@@ -238,6 +242,19 @@ public partial class MainWindow : Window
     {
         if (ReferenceEquals(sender, ActiveView))
             UpdateChrome();
+    }
+
+    private void View_SearchVisibilityChanged(object? sender, EventArgs e)
+    {
+        if (ReferenceEquals(sender, ActiveView))
+            SyncSearchToggle();
+    }
+
+    /// <summary>Toolbar Search toggle: open/close the active view's search pane.</summary>
+    private void ToggleSearch_Click(object sender, RoutedEventArgs e)
+    {
+        ActiveView?.ToggleSearch();
+        SyncSearchToggle();
     }
 
     // ===================== Tab lifecycle =====================
@@ -363,6 +380,7 @@ public partial class MainWindow : Window
     {
         view.StatusChanged += View_Changed;
         view.TitleChanged += View_Changed;
+        view.SearchVisibilityChanged += View_SearchVisibilityChanged;
 
         var ti = new TabItem { Content = view, Header = BuildHeader(view) };
         Tabs.Items.Add(ti);
@@ -426,6 +444,7 @@ public partial class MainWindow : Window
         {
             view.StatusChanged -= View_Changed;
             view.TitleChanged -= View_Changed;
+            view.SearchVisibilityChanged -= View_SearchVisibilityChanged;
             ti.Content = null;          // release so the control can be re-parented
             if (dispose)
                 view.Dispose();
