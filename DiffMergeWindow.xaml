@@ -35,8 +35,12 @@
                         ToolTip="Recompute the highlights after editing the kept side by hand"/>
 
                 <Button DockPanel.Dock="Right" Content="Cancel" Padding="12,3" Margin="8,0,0,0" Click="Cancel_Click"/>
+                <Button DockPanel.Dock="Right" x:Name="SaveBothButton" Content="Save both"
+                        Padding="12,3" Margin="8,0,0,0" Click="SaveBoth_Click"
+                        ToolTip="Save the kept side as the file, and the other side to a separate timestamped file next to it"/>
                 <Button DockPanel.Dock="Right" x:Name="SaveButton" Content="Save kept side"
-                        Padding="12,3" Click="Save_Click"/>
+                        Padding="12,3" Click="Save_Click"
+                        ToolTip="Save only the kept side as the file, discarding the other side"/>
             </DockPanel>
         </Border>
 
