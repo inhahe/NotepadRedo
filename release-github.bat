@@ -5,7 +5,12 @@ cd /d "%~dp0"
 REM ===========================================================================
 REM  release-github.bat  --  publish a new GitHub release of NotepadRedo.
 REM
-REM  Usage:  release-github.bat vMAJOR.MINOR.PATCH   (e.g. release-github.bat v1.0.1)
+REM  Usage:  release-github.bat [vMAJOR.MINOR.PATCH]
+REM
+REM    - With no argument it auto-detects the latest GitHub release and bumps the
+REM      patch number (e.g. v1.0.0 -> v1.0.1). This is the normal way to run it.
+REM    - Pass an explicit version to override (e.g. release-github.bat v1.1.0 for
+REM      a minor bump). Use /?, -h or --help for this help.
 REM
 REM  Builds a fresh, self-contained, single-file NotepadRedo.exe (no .NET install
 REM  needed by end users) into a throwaway "release\" folder -- separate from the
@@ -19,11 +24,12 @@ REM  branch; the attached exe is built from your working tree.
 REM ===========================================================================
 
 set "REPO=inhahe/NotepadRedo"
-set "VERSION=%~1"
 
-if "%VERSION%"=="" goto :usage
+if /i "%~1"=="/?"     goto :usage
+if /i "%~1"=="-h"     goto :usage
+if /i "%~1"=="--help" goto :usage
 
-REM --- GitHub CLI present? ---
+REM --- GitHub CLI present? (needed both to detect the latest release and to publish) ---
 where gh >nul 2>&1
 if errorlevel 1 (
     echo.
@@ -31,6 +37,39 @@ if errorlevel 1 (
     echo and run "gh auth login", then re-run this script.
     exit /b 1
 )
+
+REM --- Decide the version to release. ---
+set "VERSION=%~1"
+if not "%VERSION%"=="" goto :haveversion
+
+REM No version given: read the latest release tag and bump its patch component.
+set "LATEST="
+for /f "delims=" %%t in ('gh release view --repo %REPO% --json tagName --jq ".tagName" 2^>nul') do set "LATEST=%%t"
+
+if not defined LATEST (
+    echo No existing release found on %REPO%; starting at v1.0.0.
+    set "VERSION=v1.0.0"
+    goto :haveversion
+)
+
+REM Strip a leading v/V, split on dots, default any missing part to 0, bump patch.
+set "NUM=%LATEST%"
+if /i "%NUM:~0,1%"=="v" set "NUM=%NUM:~1%"
+for /f "tokens=1,2,3 delims=." %%a in ("%NUM%") do (
+    set "MAJOR=%%a"
+    set "MINOR=%%b"
+    set "PATCH=%%c"
+)
+if not defined MAJOR set "MAJOR=0"
+if not defined MINOR set "MINOR=0"
+if not defined PATCH set "PATCH=0"
+set /a PATCH=PATCH+1
+set "VERSION=v%MAJOR%.%MINOR%.%PATCH%"
+echo Latest release is %LATEST%; bumping to %VERSION%.
+
+:haveversion
+echo.
+echo Releasing NotepadRedo %VERSION% to %REPO%.
 
 REM --- Warn if the working tree has uncommitted changes (exe won't match a commit). ---
 set "DIRTY="
@@ -80,8 +119,10 @@ endlocal
 exit /b 0
 
 :usage
-echo Usage: release-github.bat vMAJOR.MINOR.PATCH
-echo    e.g. release-github.bat v1.0.1
+echo Usage: release-github.bat [vMAJOR.MINOR.PATCH]
+echo.
+echo   With no argument, auto-detects the latest release and bumps the patch
+echo   number (e.g. v1.0.0 -^> v1.0.1). Pass an explicit version to override.
 echo.
 echo Builds a self-contained NotepadRedo.exe and publishes it as a new GitHub
 echo release on %REPO%.
