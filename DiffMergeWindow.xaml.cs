@@ -178,7 +178,14 @@ public partial class DiffMergeWindow : Window
             case DiffOpKind.Change:
                 var (l, r) = DiffEngine.InlineDiff(op.Left ?? "", op.Right ?? "");
                 foreach (var span in leftSide ? l : r)
-                    p.Inlines.Add(new Run(span.Text) { Foreground = span.Differs ? Red : null });
+                {
+                    // Only the differing spans get an explicit (red) brush; leave the rest unset so
+                    // they inherit the editor foreground. Setting Foreground = null would render the
+                    // text invisibly (WPF draws no glyphs for a null brush rather than inheriting).
+                    var run = new Run(span.Text);
+                    if (span.Differs) run.Foreground = Red;
+                    p.Inlines.Add(run);
+                }
                 p.Background = ChangeBg;
                 break;
 
