@@ -17,6 +17,7 @@ Built with WPF on .NET 8.
 - Preview text can either show a **fixed number of characters** (adjustable with a slider) or **fit to the pane width** with a trailing ellipsis (toggleable).
 - The history pane is resizable (drag the divider) and can be hidden entirely.
 - **Configurable undo grouping** (Options → Undo grouping) controls how typing is chunked into history nodes: start a new step on each **line** (Enter), each **paste**, or each **character**, and/or after a configurable **typing pause** (1/2/4/8 seconds or a custom value).
+- **Persistent history** (Options → *Remember edit history between sessions*, off by default): when on, a file's entire branching history is written to a sidecar under `%LOCALAPPDATA%` when the file is saved (and on clean close), and restored the next time you open the file — so undo/redo and every branch survive restarts. The history is only restored when the file's on-disk contents still match what the history was anchored to; if the file was changed by something else in the meantime, the stale history is ignored and a fresh root is started. Off by default because it persists document content to `%LOCALAPPDATA%`. Old sidecars are pruned after 90 days.
 
 ### Tabs
 - Multiple documents open as tabs in a single window.
@@ -129,10 +130,11 @@ Everything is stored under `%LOCALAPPDATA%\NotepadRedo\`:
 
 | File | Purpose |
 |---|---|
-| `settings.json` | Persisted preferences (autosave interval, word wrap, tree visibility, preview mode, history condensing (branches-only), editor font, undo grouping, open-in behavior, close-button behavior, session-restore mode, external-change watching, file locking). |
+| `settings.json` | Persisted preferences (autosave interval, word wrap, tree visibility, preview mode, history condensing (branches-only), editor font, undo grouping, open-in behavior, close-button behavior, session-restore mode, external-change watching, file locking, persistent history). |
 | `crash.log` | Timestamped exception log with full stack traces. |
 | `session.json` | The set of files open at last exit, reopened on next launch (session restore). |
 | recovery files | Autosaved copies of in-progress documents, restored on next launch. |
+| `history\` | Per-file branching-history sidecars (when *Remember edit history between sessions* is on), keyed by a hash of the file path and anchored to a content stamp; pruned after 90 days. |
 
 On first launch, if a `%LOCALAPPDATA%\TreeNotepad\` folder exists (from before the rename), it is automatically moved to `NotepadRedo\` so all settings and recovery data carry over.
 
@@ -151,6 +153,7 @@ On first launch, if a `%LOCALAPPDATA%\TreeNotepad\` folder exists (from before t
 | `DiffEngine.cs` | Pure, testable line + inline diff logic used by the merge viewer. |
 | `DiffMergeWindow.xaml(.cs)` | Side-by-side diff/merge viewer for reconciling external changes. |
 | `SessionStore.cs` | Reads/writes `session.json` for reopening last session's files. |
+| `HistoryStore.cs` | Reads/writes the per-file branching-history sidecars (persistent history). |
 | `AppSettings.cs` | Persisted user preferences. |
 | `ThemedDialog.cs` | Themed replacements for `MessageBox` (incl. the multi-choice resolution prompts). |
 | `Converters.cs` | XAML value converters (e.g. preview width). |

@@ -67,6 +67,13 @@ public sealed class AppSettings
     /// can read but not modify or delete it while it is open in NotepadRedo.</summary>
     public bool LockFileWhileOpen { get; set; }
 
+    /// <summary>
+    /// When true, a file's whole branching undo history is written to a sidecar under LocalAppData
+    /// when it's saved (and on clean close), and restored the next time the file is opened — provided
+    /// the on-disk contents still match. Off by default (it persists document content to LocalAppData).
+    /// </summary>
+    public bool PersistHistory { get; set; }
+
     // ----- Editor font (applied to the text area of every document) -----
 
     /// <summary>Editor font family name.</summary>
@@ -153,6 +160,7 @@ public sealed class AppSettings
             RestoreSession      = fresh.RestoreSession;
             WatchExternalChanges = fresh.WatchExternalChanges;
             LockFileWhileOpen   = fresh.LockFileWhileOpen;
+            PersistHistory      = fresh.PersistHistory;
             FontFamily          = fresh.FontFamily;
             FontSize            = fresh.FontSize;
             FontBold            = fresh.FontBold;

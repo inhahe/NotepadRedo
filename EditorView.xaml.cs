@@ -178,8 +178,75 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
         _currentPath = path;
         _savedText = text;
         DeleteRecovery();
-        ResetTree(text);
+        // Restore the persisted branching history when enabled and the sidecar still matches the
+        // file on disk; otherwise start a fresh single-root tree from the disk text.
+        if (!(AppSettings.Current.PersistHistory && TryRestoreHistory(path, text)))
+            ResetTree(text);
         OnPathEstablished();
+    }
+
+    /// <summary>
+    /// Try to rebuild this document's saved branching history from its sidecar. Succeeds only when
+    /// the stored history still reconstructs the current on-disk text exactly (so the document opens
+    /// clean, matching disk, with its full history — including undone/redo branches — available).
+    /// Returns false to fall back to a fresh root.
+    /// </summary>
+    private bool TryRestoreHistory(string path, string diskText)
+    {
+        var dto = HistoryStore.Load(path, diskText);
+        if (dto is null)
+            return false;
+        try
+        {
+            var tree = UndoTree.Deserialize(dto);
+            string curText = tree.Materialize(tree.Current);
+            if (curText != diskText)
+                return false;   // anchor drifted — don't open dirty; use a fresh tree instead
+
+            _tree = tree;
+            _typingNode = null;
+            _currentText = curText;
+            RebuildHistoryRows();
+
+            _suppressTextChange = true;
+            Editor.Text = curText;
+            Editor.CaretIndex = Math.Clamp(tree.Current.CaretIndex, 0, curText.Length);
+            _suppressTextChange = false;
+
+            _lastAutosave = null;
+            _lastRecoveryText = "";
+
+            SetCurrent(tree.Current);
+            RaiseAll();
+            Editor.Focus();
+            return true;
+        }
+        catch (Exception ex)
+        {
+            CrashLog.Log("history restore failed", ex);
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Persist this document's whole branching history to its sidecar, anchored to the saved text —
+    /// but only when the setting is on and the document is clean (its current text matches what's on
+    /// disk), so the anchor is valid. When there's no real history (just the root), any stale sidecar
+    /// is removed instead. No-op for untitled buffers (no path to key on).
+    /// </summary>
+    private void PersistHistory()
+    {
+        if (!AppSettings.Current.PersistHistory || string.IsNullOrEmpty(_currentPath) || IsDirty)
+            return;
+        try
+        {
+            // A tree with only the root carries no history worth keeping.
+            if (!_tree.AllNodes().Any(n => n.Parent is not null))
+                HistoryStore.Delete(_currentPath!);
+            else
+                HistoryStore.Save(_currentPath!, _tree.Serialize(), _savedText);
+        }
+        catch (Exception ex) { CrashLog.Log("history persist failed", ex); }
     }
 
     /// <summary>Full document snapshot (path + saved/current text + entire history) for tab transfer.</summary>
@@ -525,6 +592,7 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
             _lastAutosave = null;
             DeleteRecovery();
             OnPathEstablished();       // (re)start the watcher, capture the new disk stamp, (re)apply the lock
+            PersistHistory();          // write the whole history sidecar (now anchored to the saved text)
             RaiseAll();
             return true;
         }
@@ -952,6 +1020,7 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
     /// <summary>Stop timers and clear the recovery file — called when the tab is closed cleanly.</summary>
     public void Dispose()
     {
+        PersistHistory();   // capture any post-save branch exploration while the doc is clean
         StopTimers();
         StopWatching();
         ReleaseFileLock();
@@ -1174,6 +1243,9 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
         DeleteRecovery();
         ResetTree(diskText);
         CaptureDiskStamp();
+        // The content changed under us, so the old history no longer reconstructs it — overwrite the
+        // sidecar with the fresh (single-root) tree anchored to the new disk text.
+        PersistHistory();
     }
 
     /// <summary>Programmatically set the editor text and commit it as a single history node.</summary>

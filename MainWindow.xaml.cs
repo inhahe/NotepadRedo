@@ -785,6 +785,12 @@ public partial class MainWindow : Window
         SaveAndSyncOptions();
     }
 
+    private void PersistHistory_Click(object sender, RoutedEventArgs e)
+    {
+        AppSettings.Current.PersistHistory = PersistHistoryItem.IsChecked;
+        SaveAndSyncOptions();
+    }
+
     private void SyncOptionMenus()
     {
         var s = AppSettings.Current;
@@ -810,6 +816,7 @@ public partial class MainWindow : Window
 
         WatchChangesItem.IsChecked = s.WatchExternalChanges;
         LockFileItem.IsChecked     = s.LockFileWhileOpen;
+        PersistHistoryItem.IsChecked = s.PersistHistory;
 
         BoldItem.IsChecked   = s.FontBold;
         ItalicItem.IsChecked = s.FontItalic;

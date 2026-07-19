@@ -98,6 +98,8 @@
                           IsCheckable="True" Click="WatchChanges_Click"/>
                 <MenuItem x:Name="LockFileItem" Header="_Lock open files from outside changes"
                           IsCheckable="True" Click="LockFile_Click"/>
+                <MenuItem x:Name="PersistHistoryItem" Header="_Remember edit history between sessions"
+                          IsCheckable="True" Click="PersistHistory_Click"/>
                 <Separator/>
                 <MenuItem Header="_Undo grouping">
                     <MenuItem x:Name="UndoBreakEnter" Header="New step on each _line (Enter)"
