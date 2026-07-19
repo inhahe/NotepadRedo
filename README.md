@@ -122,6 +122,14 @@ build.bat
 
 `build.bat` publishes a self-contained single-file `NotepadRedo.exe`, then signals every running instance to close (prompting you to save each unsaved document) and **waits** until they have all exited before copying the new build into place. If you cancel a save prompt the redeploy aborts, leaving that instance untouched.
 
+### Publishing a GitHub release
+
+```sh
+release-github.bat v1.0.1
+```
+
+`release-github.bat <version>` builds a fresh self-contained `NotepadRedo.exe` into a throwaway `release\` folder (kept separate from the deployed copies so it never collides with a running instance's file lock) and publishes it as a new GitHub release — with the exe and `associate-txt.bat` attached — via the [GitHub CLI](https://cli.github.com/) (`gh`, which must be installed and authenticated). Run it with no arguments to print usage and list existing releases. It builds from your working tree and does not push source.
+
 ---
 
 ## Where settings and data live
