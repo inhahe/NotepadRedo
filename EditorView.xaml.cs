@@ -973,6 +973,37 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
         OnPropertyChanged(nameof(TabTitle));
     }
 
+    /// <summary>
+    /// Triple-click selects the whole paragraph — the run of text between hard line breaks — the way
+    /// a word processor does. (WPF's TextBox only gives a word on double-click and does nothing useful
+    /// on the third click.) With word wrap on, a paragraph is one logical line that may span several
+    /// visual rows, so the entire wrapped block is selected.
+    /// </summary>
+    private void Editor_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        if (e.ClickCount != 3)
+            return;
+
+        string text = Editor.Text;
+        // Use the click position, not CaretIndex: on the preview event the caret hasn't moved yet.
+        int idx = Editor.GetCharacterIndexFromPoint(e.GetPosition(Editor), snapToText: true);
+        if (idx < 0)
+            idx = Editor.CaretIndex;
+        idx = Math.Max(0, Math.Min(idx, text.Length));
+
+        // Grow outward to the nearest line break on each side (handles \n and \r\n; the break chars
+        // themselves are left out of the selection).
+        int start = idx;
+        while (start > 0 && text[start - 1] != '\n' && text[start - 1] != '\r')
+            start--;
+        int end = idx;
+        while (end < text.Length && text[end] != '\n' && text[end] != '\r')
+            end++;
+
+        Editor.Select(start, end - start);
+        e.Handled = true;   // suppress the default third-click so it can't collapse our selection
+    }
+
     // ===================== Autosave / crash recovery =====================
 
     public void ApplyAutosaveInterval(int seconds)
