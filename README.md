@@ -124,11 +124,13 @@ build.bat
 
 ### Publishing a GitHub release
 
+The app version is stored in one place — the **`VERSION`** file at the project root — which the csproj reads into `<Version>` (so it's stamped into the exe). Bump `VERSION` when you build, then:
+
 ```sh
-release-github.bat v1.0.1
+release-github.bat
 ```
 
-`release-github.bat <version>` builds a fresh self-contained `NotepadRedo.exe` into a throwaway `release\` folder (kept separate from the deployed copies so it never collides with a running instance's file lock) and publishes it as a new GitHub release — with the exe and `associate-txt.bat` attached — via the [GitHub CLI](https://cli.github.com/) (`gh`, which must be installed and authenticated). Run it with no arguments to print usage and list existing releases. It builds from your working tree and does not push source.
+`release-github.bat` (no argument) reads the current version from `VERSION`, and — if a release for it doesn't already exist — builds a fresh self-contained `NotepadRedo.exe` into a throwaway `release\` folder (kept separate from the deployed copies so it never collides with a running instance's file lock) and publishes it as a GitHub release, with the exe and `associate-txt.bat` attached, via the [GitHub CLI](https://cli.github.com/) (`gh`, which must be installed and authenticated). It **aborts if that version is already released** (so it only publishes after `VERSION` has been bumped). It builds from your working tree and does not push source.
 
 ---
 
