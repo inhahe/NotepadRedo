@@ -1,3 +1,5 @@
+using System.Text;
+
 namespace NotepadRedo;
 
 /// <summary>Kind of a line-level diff operation.</summary>
@@ -28,6 +30,13 @@ public static class DiffEngine
     /// files stay far below this.
     /// </summary>
     public const long MaxLcsCells = 8_000_000;
+
+    /// <summary>
+    /// Cap (chars_a × chars_b) for the character-level refinement inside a changed block. Above this
+    /// the fine char alignment is skipped and the whole block is marked differing (rare — only for
+    /// very long single-line changes).
+    /// </summary>
+    public const long MaxInlineCells = 4_000_000;
 
     /// <summary>Split text into lines for diffing (normalising CRLF/CR to LF first).</summary>
     public static string[] SplitLines(string text) =>
@@ -97,7 +106,11 @@ public static class DiffEngine
     }
 
     /// <summary>
-    /// Word/whitespace-token inline diff of two (changed) lines. Returns the segment lists for each
+    /// Inline diff of two (changed) lines, refined to the character level. First aligns on
+    /// word/whitespace tokens (so shared words stay anchored and the alignment doesn't drift), then
+    /// within each changed block runs a character-level LCS so only the differing <em>characters</em>
+    /// are marked — e.g. <c>composition</c> → <c>compositions</c> reddens just the trailing "s",
+    /// matching UltraCompare rather than reddening the whole word. Returns the segment lists for each
     /// side; segments with <see cref="InlineSpan.Differs"/> true are the parts to paint red.
     /// </summary>
     public static (List<InlineSpan> left, List<InlineSpan> right) InlineDiff(string a, string b)
@@ -106,40 +119,128 @@ public static class DiffEngine
         var tokB = Tokenize(b ?? "");
         var dp = LcsTable(tokA, tokB);
 
-        var left = new List<InlineSpan>();
-        var right = new List<InlineSpan>();
         int i = tokA.Length, j = tokB.Length;
-        var rev = new List<(int side, string text, bool diff)>();  // side: 0 both, 1 left, 2 right
+        var rev = new List<(int side, string text)>();  // side: 0 both, 1 left, 2 right
         while (i > 0 || j > 0)
         {
             if (i > 0 && j > 0 && tokA[i - 1] == tokB[j - 1])
             {
-                rev.Add((0, tokA[i - 1], false));
+                rev.Add((0, tokA[i - 1]));
                 i--; j--;
             }
             else if (j > 0 && (i == 0 || dp[i, j - 1] >= dp[i - 1, j]))
             {
-                rev.Add((2, tokB[j - 1], true));
+                rev.Add((2, tokB[j - 1]));
                 j--;
             }
             else
             {
-                rev.Add((1, tokA[i - 1], true));
+                rev.Add((1, tokA[i - 1]));
                 i--;
             }
         }
         rev.Reverse();
 
-        foreach (var (side, text, diff) in rev)
+        var left = new List<InlineSpan>();
+        var right = new List<InlineSpan>();
+        var leftBuf = new StringBuilder();
+        var rightBuf = new StringBuilder();
+
+        void FlushChanged()
         {
-            if (side == 0) { AppendSpan(left, text, false); AppendSpan(right, text, false); }
-            else if (side == 1) AppendSpan(left, text, true);
-            else AppendSpan(right, text, true);
+            if (leftBuf.Length == 0 && rightBuf.Length == 0) return;
+            RefineChars(leftBuf.ToString(), rightBuf.ToString(), left, right);
+            leftBuf.Clear();
+            rightBuf.Clear();
         }
+
+        // Walk the token alignment; equal tokens anchor and flush the accumulated changed block,
+        // where the character-level refinement happens.
+        foreach (var (side, text) in rev)
+        {
+            if (side == 0)
+            {
+                FlushChanged();
+                AppendSpan(left, text, false);
+                AppendSpan(right, text, false);
+            }
+            else if (side == 1) leftBuf.Append(text);
+            else rightBuf.Append(text);
+        }
+        FlushChanged();
         return (left, right);
     }
 
     // ---- helpers ----
+
+    /// <summary>
+    /// Character-level LCS of one changed block: <paramref name="a"/> is the left text, <paramref
+    /// name="b"/> the right. Appends shared characters as non-differing spans to both sides and the
+    /// differing characters (marked) to their own side.
+    /// </summary>
+    private static void RefineChars(string a, string b, List<InlineSpan> left, List<InlineSpan> right)
+    {
+        if (a.Length == 0 && b.Length == 0) return;
+        if (a.Length == 0) { AppendSpan(right, b, true); return; }
+        if (b.Length == 0) { AppendSpan(left, a, true); return; }
+
+        // Pathologically long single-line change: skip fine alignment, mark the whole block.
+        if ((long)a.Length * b.Length > MaxInlineCells)
+        {
+            AppendSpan(left, a, true);
+            AppendSpan(right, b, true);
+            return;
+        }
+
+        var dp = LcsCharTable(a, b);
+        int i = a.Length, j = b.Length;
+        var rev = new List<(int side, char ch)>();  // side: 0 both, 1 left, 2 right
+        while (i > 0 || j > 0)
+        {
+            if (i > 0 && j > 0 && a[i - 1] == b[j - 1])
+            {
+                rev.Add((0, a[i - 1]));
+                i--; j--;
+            }
+            else if (j > 0 && (i == 0 || dp[i, j - 1] >= dp[i - 1, j]))
+            {
+                rev.Add((2, b[j - 1]));
+                j--;
+            }
+            else
+            {
+                rev.Add((1, a[i - 1]));
+                i--;
+            }
+        }
+        rev.Reverse();
+
+        // Batch consecutive same-side characters into one span so AppendSpan isn't called per char.
+        int p = 0;
+        var sb = new StringBuilder();
+        while (p < rev.Count)
+        {
+            int side = rev[p].side;
+            sb.Clear();
+            while (p < rev.Count && rev[p].side == side) { sb.Append(rev[p].ch); p++; }
+            string s = sb.ToString();
+            if (side == 0) { AppendSpan(left, s, false); AppendSpan(right, s, false); }
+            else if (side == 1) AppendSpan(left, s, true);
+            else AppendSpan(right, s, true);
+        }
+    }
+
+    private static int[,] LcsCharTable(string a, string b)
+    {
+        int m = a.Length, n = b.Length;
+        var dp = new int[m + 1, n + 1];
+        for (int i = 1; i <= m; i++)
+            for (int j = 1; j <= n; j++)
+                dp[i, j] = a[i - 1] == b[j - 1]
+                    ? dp[i - 1, j - 1] + 1
+                    : Math.Max(dp[i - 1, j], dp[i, j - 1]);
+        return dp;
+    }
 
     private static void AppendSpan(List<InlineSpan> spans, string text, bool differs)
     {
