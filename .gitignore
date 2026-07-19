@@ -2,7 +2,3 @@ bin/
 obj/
 publish/
 *.exe
-.vs/
-.claude/
-*.user
-todo.disk-*.txt

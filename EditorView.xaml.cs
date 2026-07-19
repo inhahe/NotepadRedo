@@ -949,10 +949,21 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
 
     private void RaiseAll()
     {
-        int caret = Editor.CaretIndex;
-        int line = Editor.GetLineIndexFromCharacterIndex(caret);
-        int lineStart = Editor.GetCharacterIndexFromLineIndex(line);
-        int col = caret - lineStart;
+        // Compute Ln/Col defensively. This runs from TextChanged, which also fires mid text-reset
+        // (ResetTree / ReloadFromDisk swap Editor.Text wholesale): at that instant the caret can be
+        // out of range for the new text, or the line layout isn't measured yet, and the
+        // GetLineIndex/GetCharacterIndex calls throw ArgumentOutOfRangeException. Clamp and guard so a
+        // reload can't crash the UI thread.
+        int line = 0, col = 0;
+        try
+        {
+            int caret = Math.Max(0, Math.Min(Editor.CaretIndex, Editor.Text.Length));
+            line = Editor.GetLineIndexFromCharacterIndex(caret);
+            if (line < 0) line = 0;
+            int lineStart = Editor.GetCharacterIndexFromLineIndex(line);
+            col = Math.Max(0, caret - lineStart);
+        }
+        catch { /* line metrics not ready — fall back to Ln 1, Col 1 for this tick */ }
         CaretText = $"Ln {line + 1}, Col {col + 1}";
         CountText = $"{Editor.Text.Length} chars";
         NodeText = $"node #{_tree.Current.Id}";

@@ -1,0 +1,25 @@
+
+
+
+--
+
+Add the ability to detect when a loaded file is changed by an external program, and let the user decide between reloading it and dropping their own edits (if there are any), keeping the current state, saving the current state as another file and then reloading the file, or viewing a graphical diff of the two versions in the same way that ..\orchestrator2's edit tool shows diffs and letting the user edit the file file file there (but then we have to decide what to do if the file changes yet again while they're in the diff viewer..what should we do then?). we need the diff viewer to give the user the option of which file to keep, to edit the which one they want to keep with copying from both files enabled and pasting enabled on the one they want to keep, and red-item-by-red-item right-click-and-select-option or maybe double-click ability to copy the red item over to the file they want to save. they can change their mind and choose the op
+posite file if they want, it gives the file they're currently choosing an outline of some sort.
+
+also have an option to lock the file from being written to while it's open in the NotepadRedo.
+
+^ not done yet
+
+
+
+
+
+
+we need a search feature. have a case sensitivity option. add an option to find results only where every word/string entered occurs within N characters/words/lines of each other. have the search inputs and the results be in a pane that opens on the right and lists results with brief text for each (spanning maybe one or two lines, ending with an ellipses character if it doesn't fit into one or two lines) that you can click on to go to that results. have clicking on it actually change the cursor position to that result, too
+
+change the display in the taskbar title to show the ellipses character followed by the rightmost part of the file path that will fit into the taskbar text if it won't all show, if that's possible. do the same with the app titlebar.
+
+there's a bug, i added some things to the text earlier that aren't showing up now.
+
+^ doing
+
