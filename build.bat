@@ -27,23 +27,25 @@ if exist "%~dp0publish\NotepadRedo.exe" set "QUITEXE=%~dp0publish\NotepadRedo.ex
 if not defined QUITEXE if exist "%~dp0NotepadRedo.exe" set "QUITEXE=%~dp0NotepadRedo.exe"
 if not defined QUITEXE if exist "d:\utils\NotepadRedo.exe" set "QUITEXE=d:\utils\NotepadRedo.exe"
 
-if defined QUITEXE (
-    echo Closing any running NotepadRedo (you will be prompted to save each unsaved document)...
-    REM Ask every running instance to close interactively: each prompts to save its unsaved work
-    REM (Yes/No/Cancel). This call BLOCKS until the user has answered every prompt and each instance
-    REM has actually exited, so we never overwrite the exe out from under a live process. Exit code 2
-    REM means the user cancelled a save prompt (an instance is still open) — abort rather than kill it.
-    "%QUITEXE%" --quit-prompt
-    if errorlevel 2 (
-        echo.
-        echo Aborted: a save prompt was cancelled, so a running instance was left open.
-        echo Nothing was redeployed. Close NotepadRedo and re-run build.bat.
-        exit /b 1
-    )
-    REM Let the OS release the executable file locks before overwriting.
-    "%SystemRoot%\System32\ping.exe" -n 2 127.0.0.1 >nul
-)
+REM Skip the sweep when nothing is deployed yet (fresh checkout, nothing running).
+if not defined QUITEXE goto :afterquit
 
+echo Closing any running NotepadRedo (you will be prompted to save each unsaved document)...
+REM Ask every running instance to close interactively: each prompts to save its unsaved work
+REM (Yes/No/Cancel). This call BLOCKS until the user has answered every prompt and each instance
+REM has actually exited, so we never overwrite the exe out from under a live process. Exit code 2
+REM means the user cancelled a save prompt (an instance is still open) — abort rather than kill it.
+"%QUITEXE%" --quit-prompt
+if errorlevel 2 (
+    echo.
+    echo Aborted: a save prompt was cancelled, so a running instance was left open.
+    echo Nothing was redeployed. Close NotepadRedo and re-run build.bat.
+    exit /b 1
+)
+REM Let the OS release the executable file locks before overwriting.
+"%SystemRoot%\System32\ping.exe" -n 2 127.0.0.1 >nul
+
+:afterquit
 echo Building NotepadRedo (Release, single-file)...
 dotnet publish NotepadRedo.csproj -c Release -r win-x64 --self-contained false -p:PublishSingleFile=true -o "%~dp0publish"
 if errorlevel 1 (
