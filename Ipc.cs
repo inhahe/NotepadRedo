@@ -52,31 +52,57 @@ public sealed class IpcServer : IDisposable
 
     private static void HandleConnection(NamedPipeServerStream server)
     {
-        string request = ReadLine(server);
-        int tab = request.IndexOf('\t');
-        string verb = tab < 0 ? request : request.Substring(0, tab);
-        string arg = tab < 0 ? "" : request.Substring(tab + 1);
-
         bool ok = false;
-        var app = Application.Current;
-        if (app is not null && !string.IsNullOrEmpty(arg))
+        try
         {
-            ok = app.Dispatcher.Invoke(() => verb switch
+            string request = ReadLine(server);
+            int tab = request.IndexOf('\t');
+            string verb = tab < 0 ? request : request.Substring(0, tab);
+            string arg = tab < 0 ? "" : request.Substring(tab + 1);
+
+            var app = Application.Current;
+            if (app is not null && !string.IsNullOrEmpty(arg))
             {
-                "FOCUS" => MainWindow.TryFocusDocument(arg),
-                "OPEN"  => MainWindow.OpenDocument(arg),
-                "CLOSE" => MainWindow.CloseTabByToken(arg),
-                "QUIT"  => MainWindow.RequestQuitWithRecovery(),
-                "QUITSAVE" => MainWindow.RequestQuitWithSave(),
-                "QUITASK"  => MainWindow.RequestQuitWithPrompt(),
-                _       => false,
-            });
+                // Run the action on the UI thread, but never let an exception in it swallow the
+                // reply: a launching sibling blocks reading our answer, so if we die silently it
+                // hangs forever. Catch inside the Invoke so we always fall through to write a reply.
+                ok = app.Dispatcher.Invoke(() =>
+                {
+                    try
+                    {
+                        return verb switch
+                        {
+                            "FOCUS" => MainWindow.TryFocusDocument(arg),
+                            "OPEN"  => MainWindow.OpenDocument(arg),
+                            "CLOSE" => MainWindow.CloseTabByToken(arg),
+                            "QUIT"  => MainWindow.RequestQuitWithRecovery(),
+                            "QUITSAVE" => MainWindow.RequestQuitWithSave(),
+                            "QUITASK"  => MainWindow.RequestQuitWithPrompt(),
+                            _       => false,
+                        };
+                    }
+                    catch (Exception ex)
+                    {
+                        CrashLog.Log($"IPC handler '{verb}' threw", ex);
+                        return false;
+                    }
+                });
+            }
+        }
+        catch (Exception ex)
+        {
+            CrashLog.Log("IPC HandleConnection failed", ex);
         }
 
-        var reply = Encoding.UTF8.GetBytes((ok ? "OK" : "NO") + "\n");
-        server.Write(reply, 0, reply.Length);
-        server.Flush();
-        try { server.WaitForPipeDrain(); } catch { /* client already gone */ }
+        // Always answer, even on failure, so the caller's reply-read unblocks promptly.
+        try
+        {
+            var reply = Encoding.UTF8.GetBytes((ok ? "OK" : "NO") + "\n");
+            server.Write(reply, 0, reply.Length);
+            server.Flush();
+            try { server.WaitForPipeDrain(); } catch { /* client already gone */ }
+        }
+        catch { /* client already gone */ }
     }
 
     public void Dispose() => _cts.Cancel();
@@ -86,16 +112,16 @@ public sealed class IpcServer : IDisposable
     /// the first that does is brought to the foreground with that tab selected. Returns true
     /// when a sibling took ownership.
     /// </summary>
-    public static bool TryFocusInSibling(string path) => AnySibling(pid => Send(pid, "FOCUS", path, steal: true));
+    public static bool TryFocusInSibling(string path) => AnySibling(pid => Send(pid, "FOCUS", path, steal: true, replyTimeoutMs: OpenReplyTimeoutMs));
 
     /// <summary>
     /// Forward <paramref name="path"/> to an existing instance so it opens as a new tab there.
     /// Returns true when a sibling accepted it (tab-mode consolidation).
     /// </summary>
-    public static bool OpenInSibling(string path) => AnySibling(pid => Send(pid, "OPEN", path, steal: true));
+    public static bool OpenInSibling(string path) => AnySibling(pid => Send(pid, "OPEN", path, steal: true, replyTimeoutMs: OpenReplyTimeoutMs));
 
     /// <summary>Tell a specific process to drop the tab holding <paramref name="token"/>.</summary>
-    public static bool CloseTabInProcess(int pid, string token) => Send(pid, "CLOSE", token, steal: false);
+    public static bool CloseTabInProcess(int pid, string token) => Send(pid, "CLOSE", token, steal: false, replyTimeoutMs: OpenReplyTimeoutMs);
 
     /// <summary>
     /// Ask every other NotepadRedo process to autosave to crash recovery and exit. Returns the
@@ -111,7 +137,7 @@ public sealed class IpcServer : IDisposable
             {
                 if (proc.Id == self)
                     continue;
-                if (Send(proc.Id, "QUIT", "quit", steal: false))
+                if (Send(proc.Id, "QUIT", "quit", steal: false, replyTimeoutMs: Timeout.Infinite))
                     acked++;
             }
         }
@@ -133,7 +159,7 @@ public sealed class IpcServer : IDisposable
             {
                 if (proc.Id == self)
                     continue;
-                if (Send(proc.Id, "QUITSAVE", "quit", steal: false))
+                if (Send(proc.Id, "QUITSAVE", "quit", steal: false, replyTimeoutMs: Timeout.Infinite))
                     acked++;
             }
         }
@@ -165,7 +191,7 @@ public sealed class IpcServer : IDisposable
             {
                 // Send blocks until the instance answers its Save? prompts (the reply is written
                 // only after the UI action returns), so this waits for the user with no polling.
-                bool quitting = Send(proc.Id, "QUITASK", "quit", steal: true);
+                bool quitting = Send(proc.Id, "QUITASK", "quit", steal: true, replyTimeoutMs: Timeout.Infinite);
                 if (quitting)
                 {
                     // It acknowledged the quit (its work is already saved/discarded per the prompt),
@@ -209,12 +235,23 @@ public sealed class IpcServer : IDisposable
         return false;
     }
 
-    private static bool Send(int pid, string verb, string arg, bool steal)
+    /// <summary>
+    /// How long a launching instance waits for a sibling to answer a FOCUS/OPEN/CLOSE request before
+    /// giving up on it. These handlers reply near-instantly in the normal case; the cap only exists so
+    /// a wedged or unresponsive sibling can never hang the process that's trying to open a file. The
+    /// quit verbs deliberately pass <see cref="Timeout.Infinite"/> because they must block on the
+    /// user's interactive Save prompts.
+    /// </summary>
+    private const int OpenReplyTimeoutMs = 8000;
+
+    private static bool Send(int pid, string verb, string arg, bool steal, int replyTimeoutMs)
     {
         NamedPipeClientStream? client = null;
         try
         {
-            client = new NamedPipeClientStream(".", PipeNameFor(pid), PipeDirection.InOut);
+            // PipeOptions.Asynchronous so the reply read below can honour a cancellation timeout via
+            // overlapped I/O — without it, ReadAsync's token is only checked before the read starts.
+            client = new NamedPipeClientStream(".", PipeNameFor(pid), PipeDirection.InOut, PipeOptions.Asynchronous);
             client.Connect(250);
 
             if (steal)
@@ -224,11 +261,11 @@ public sealed class IpcServer : IDisposable
             client.Write(outBytes, 0, outBytes.Length);
             client.Flush();
 
-            return ReadLine(client).Trim() == "OK";
+            return ReadLine(client, replyTimeoutMs).Trim() == "OK";
         }
         catch
         {
-            return false;   // not listening / gone / busy — caller tries the next
+            return false;   // not listening / gone / busy / timed out — caller tries the next
         }
         finally
         {
@@ -236,13 +273,40 @@ public sealed class IpcServer : IDisposable
         }
     }
 
-    /// <summary>Read a single '\n'-terminated line of UTF-8 from a pipe stream.</summary>
+    /// <summary>Read a single '\n'-terminated line of UTF-8 from a pipe stream (blocking, no timeout).</summary>
     private static string ReadLine(PipeStream pipe)
     {
         var bytes = new List<byte>(260);
         int b;
         while ((b = pipe.ReadByte()) != -1 && b != '\n')
             bytes.Add((byte)b);
+        return Encoding.UTF8.GetString(bytes.ToArray());
+    }
+
+    /// <summary>
+    /// Read a single '\n'-terminated line, giving up after <paramref name="timeoutMs"/> (or blocking
+    /// forever when it is <see cref="Timeout.Infinite"/>). A timeout returns "" so the caller treats
+    /// the sibling as not having accepted the request rather than hanging on it indefinitely.
+    /// </summary>
+    private static string ReadLine(PipeStream pipe, int timeoutMs)
+    {
+        if (timeoutMs == Timeout.Infinite)
+            return ReadLine(pipe);
+
+        using var cts = new CancellationTokenSource(timeoutMs);
+        var bytes = new List<byte>(260);
+        var one = new byte[1];
+        try
+        {
+            while (true)
+            {
+                int n = pipe.ReadAsync(one.AsMemory(0, 1), cts.Token).AsTask().GetAwaiter().GetResult();
+                if (n <= 0 || one[0] == (byte)'\n')
+                    break;
+                bytes.Add(one[0]);
+            }
+        }
+        catch (OperationCanceledException) { return ""; }
         return Encoding.UTF8.GetString(bytes.ToArray());
     }
 
