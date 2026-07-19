@@ -110,6 +110,11 @@ public partial class DiffMergeWindow : Window
 
     private void Render()
     {
+        // Reassigning a RichTextBox.Document destroys the focused element's visual subtree; if focus
+        // was inside the dialog, restore it afterwards so activation doesn't escape this modal window
+        // (which would look like the whole app losing focus).
+        bool hadFocusWithin = _rendered && IsKeyboardFocusWithin;
+
         var leftLines = DiffEngine.SplitLines(_leftWork);
         var rightLines = DiffEngine.SplitLines(_rightWork);
         var ops = DiffEngine.DiffLines(leftLines, rightLines);
@@ -153,6 +158,19 @@ public partial class DiffMergeWindow : Window
         _suppressRadio = false;
 
         _rendered = true;
+
+        // Pull keyboard focus back into the (editable) kept pane after the document rebuild so the
+        // dialog stays active. Deferred to Input priority so it runs after the new content hosts are
+        // realized.
+        if (hadFocusWithin)
+        {
+            var keptBox = _keepLeft ? LeftBox : RightBox;
+            Dispatcher.BeginInvoke(new Action(() =>
+            {
+                if (IsActive && !IsKeyboardFocusWithin)
+                    keptBox.Focus();
+            }), System.Windows.Threading.DispatcherPriority.Input);
+        }
     }
 
     private static Paragraph BuildParagraph(DiffOp op, bool leftSide)
