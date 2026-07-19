@@ -342,12 +342,20 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
     {
         _suppressTextChange = true;
         Editor.Text = text;
-        Editor.CaretIndex = Math.Clamp(node.CaretIndex, 0, text.Length);
+        int caret = Math.Clamp(node.CaretIndex, 0, text.Length);
+        Editor.CaretIndex = caret;
         _suppressTextChange = false;
 
         SetCurrent(node);
         RaiseAll();
         Editor.Focus();
+
+        // Replacing the whole text resets the editor's scroll, and a programmatic CaretIndex doesn't
+        // reliably scroll the caret into view — so jumping to a node could leave the changed region
+        // off-screen. Bring the node's caret (where the edit happened) into view, centered, once the
+        // TextBox has laid out the new text. Deferred to Background so the layout pass has run.
+        Dispatcher.BeginInvoke(new Action(() => BringIntoView(caret, center: true)),
+                               DispatcherPriority.Background);
     }
 
     /// <summary>Highlight and select the given node in the history list.</summary>
@@ -1602,14 +1610,28 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
     /// both vertically (its line) and horizontally. The horizontal pass matters when
     /// word-wrap is off and the match sits far to the right: <see cref="System.Windows.Controls.Primitives.TextBoxBase.ScrollToLine"/>
     /// only moves vertically, so the caret would otherwise stay scrolled off the right edge.</summary>
-    private void BringIntoView(int index)
+    private void BringIntoView(int index, bool center = false)
     {
         int len = Editor.Text.Length;
         index = Math.Clamp(index, 0, len);
 
         int line = Editor.GetLineIndexFromCharacterIndex(index);
         if (line >= 0)
-            Editor.ScrollToLine(line);
+            Editor.ScrollToLine(line);   // realizes the line and ensures it's at least visible
+
+        // For node jumps, center the changed line in the viewport so its surrounding context is
+        // visible (ScrollToLine alone can leave it pinned to an edge). GetRectFromCharacterIndex is
+        // viewport-relative, so add VerticalOffset to get the content-space Y.
+        if (center)
+        {
+            Rect lr = Editor.GetRectFromCharacterIndex(index);
+            if (!lr.IsEmpty && Editor.ViewportHeight > 0)
+            {
+                double contentY = lr.Y + Editor.VerticalOffset;
+                double target = contentY - (Editor.ViewportHeight - lr.Height) / 2;
+                Editor.ScrollToVerticalOffset(Math.Max(0, target));
+            }
+        }
 
         // GetRectFromCharacterIndex is viewport-relative, so an X outside
         // [0, ViewportWidth] means the character is scrolled off-screen horizontally.
