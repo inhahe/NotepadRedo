@@ -110,10 +110,14 @@ public partial class DiffMergeWindow : Window
 
     private void Render()
     {
-        // Reassigning a RichTextBox.Document destroys the focused element's visual subtree; if focus
-        // was inside the dialog, restore it afterwards so activation doesn't escape this modal window
-        // (which would look like the whole app losing focus).
+        // Reassigning a RichTextBox.Document destroys the focused element's visual subtree. If focus
+        // is inside a pane when we swap, it drops to null mid-swap and — because this is a modal
+        // dialog whose owner is disabled — Windows moves activation to another top-level window,
+        // which looks like the whole app losing focus. Park focus on a persistent control (the
+        // toolbar radio) *before* the swap so focus never enters limbo, then restore it after.
         bool hadFocusWithin = _rendered && IsKeyboardFocusWithin;
+        if (hadFocusWithin)
+            Keyboard.Focus(KeepLeftRadio);
 
         var leftLines = DiffEngine.SplitLines(_leftWork);
         var rightLines = DiffEngine.SplitLines(_rightWork);
@@ -159,17 +163,13 @@ public partial class DiffMergeWindow : Window
 
         _rendered = true;
 
-        // Pull keyboard focus back into the (editable) kept pane after the document rebuild so the
-        // dialog stays active. Deferred to Input priority so it runs after the new content hosts are
-        // realized.
+        // Focus was parked on the radio above; move it back into the (editable) kept pane once the
+        // new content hosts are realized. Deferred to Input priority so the pane's document is live.
         if (hadFocusWithin)
         {
             var keptBox = _keepLeft ? LeftBox : RightBox;
-            Dispatcher.BeginInvoke(new Action(() =>
-            {
-                if (IsActive && !IsKeyboardFocusWithin)
-                    keptBox.Focus();
-            }), System.Windows.Threading.DispatcherPriority.Input);
+            Dispatcher.BeginInvoke(new Action(() => keptBox.Focus()),
+                                   System.Windows.Threading.DispatcherPriority.Input);
         }
     }
 
