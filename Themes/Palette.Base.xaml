@@ -1,0 +1,43 @@
+<!-- Base palette: reproduces NotepadRedo's original (un-themed) colours so that the plain
+     NotepadRedo.exe looks exactly as before. Variant palettes override these keys. Every key
+     referenced by MainWindow.xaml / EditorView.xaml via DynamicResource must exist here. -->
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <!-- Window / editor -->
+    <SolidColorBrush x:Key="Theme.WindowBg"    Color="White"/>
+    <SolidColorBrush x:Key="Theme.EditorBg"    Color="White"/>
+    <SolidColorBrush x:Key="Theme.EditorFg"    Color="#000000"/>
+
+    <!-- Toolbar -->
+    <SolidColorBrush x:Key="Theme.ToolbarBg"   Color="#F7F7F7"/>
+    <SolidColorBrush x:Key="Theme.ToolbarFg"   Color="#555555"/>
+
+    <!-- Splitter -->
+    <SolidColorBrush x:Key="Theme.Splitter"    Color="#DDDDDD"/>
+
+    <!-- History-tree pane -->
+    <SolidColorBrush x:Key="Theme.PanelBg"      Color="#F3F3F3"/>
+    <SolidColorBrush x:Key="Theme.PanelBorder"  Color="#DDDDDD"/>
+    <SolidColorBrush x:Key="Theme.TreeBg"       Color="White"/>
+    <SolidColorBrush x:Key="Theme.TreePreviewFg" Color="#222222"/>
+    <SolidColorBrush x:Key="Theme.TreeMetaFg"   Color="#888888"/>
+    <SolidColorBrush x:Key="Theme.NodeSelBg"    Color="#EAEAEA"/>
+    <SolidColorBrush x:Key="Theme.NodeSelBorder" Color="#CCCCCC"/>
+    <SolidColorBrush x:Key="Theme.NodeCurBg"    Color="#FFF3D9"/>
+    <SolidColorBrush x:Key="Theme.NodeCurBorder" Color="#E0A93B"/>
+
+    <!-- Status bar -->
+    <SolidColorBrush x:Key="Theme.StatusBg"    Color="#F0F0F0"/>
+    <SolidColorBrush x:Key="Theme.StatusFg"    Color="#1A1A1A"/>
+
+    <!-- Accent / controls (used by the themed control styles; harmless here) -->
+    <SolidColorBrush x:Key="Theme.Accent"      Color="#2D7DF6"/>
+    <SolidColorBrush x:Key="Theme.AccentHover" Color="#1F6AE0"/>
+    <SolidColorBrush x:Key="Theme.AccentText"  Color="White"/>
+    <SolidColorBrush x:Key="Theme.AccentSoft"  Color="#E3EEFD"/>
+    <SolidColorBrush x:Key="Theme.ButtonBg"    Color="#FDFDFD"/>
+    <SolidColorBrush x:Key="Theme.ButtonBorder" Color="#D0D0D0"/>
+    <SolidColorBrush x:Key="Theme.ButtonHover" Color="#EFEFEF"/>
+    <SolidColorBrush x:Key="Theme.ButtonText"  Color="#1B1B1B"/>
+</ResourceDictionary>

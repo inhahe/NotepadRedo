@@ -1,0 +1,36 @@
+<!-- "Graphite" — a two-tone modern look: charcoal chrome (toolbar + status bar) framing a clean
+     light editor, with a teal accent. -->
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <SolidColorBrush x:Key="Theme.WindowBg"    Color="#FFFFFF"/>
+    <SolidColorBrush x:Key="Theme.EditorBg"    Color="#FFFFFF"/>
+    <SolidColorBrush x:Key="Theme.EditorFg"    Color="#1B1B1B"/>
+
+    <SolidColorBrush x:Key="Theme.ToolbarBg"   Color="#2B2F36"/>
+    <SolidColorBrush x:Key="Theme.ToolbarFg"   Color="#C7CDD6"/>
+
+    <SolidColorBrush x:Key="Theme.Splitter"    Color="#D4D7DC"/>
+
+    <SolidColorBrush x:Key="Theme.PanelBg"      Color="#EEF0F3"/>
+    <SolidColorBrush x:Key="Theme.PanelBorder"  Color="#D4D7DC"/>
+    <SolidColorBrush x:Key="Theme.TreeBg"       Color="#FFFFFF"/>
+    <SolidColorBrush x:Key="Theme.TreePreviewFg" Color="#24282E"/>
+    <SolidColorBrush x:Key="Theme.TreeMetaFg"   Color="#8A909B"/>
+    <SolidColorBrush x:Key="Theme.NodeSelBg"    Color="#E7ECF2"/>
+    <SolidColorBrush x:Key="Theme.NodeSelBorder" Color="#C3CAD3"/>
+    <SolidColorBrush x:Key="Theme.NodeCurBg"    Color="#DFF3F1"/>
+    <SolidColorBrush x:Key="Theme.NodeCurBorder" Color="#14B8A6"/>
+
+    <SolidColorBrush x:Key="Theme.StatusBg"    Color="#2B2F36"/>
+    <SolidColorBrush x:Key="Theme.StatusFg"    Color="#C7CDD6"/>
+
+    <SolidColorBrush x:Key="Theme.Accent"      Color="#14B8A6"/>
+    <SolidColorBrush x:Key="Theme.AccentHover" Color="#0E9384"/>
+    <SolidColorBrush x:Key="Theme.AccentText"  Color="#FFFFFF"/>
+    <SolidColorBrush x:Key="Theme.AccentSoft"  Color="#204A47"/>
+    <SolidColorBrush x:Key="Theme.ButtonBg"    Color="#F4F6F8"/>
+    <SolidColorBrush x:Key="Theme.ButtonBorder" Color="#CBD1D9"/>
+    <SolidColorBrush x:Key="Theme.ButtonHover" Color="#E7ECF1"/>
+    <SolidColorBrush x:Key="Theme.ButtonText"  Color="#24282E"/>
+</ResourceDictionary>

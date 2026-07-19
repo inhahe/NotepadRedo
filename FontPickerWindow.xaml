@@ -1,0 +1,56 @@
+<Window x:Class="NotepadRedo.FontPickerWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Font" Height="440" Width="560"
+        WindowStartupLocation="CenterOwner" ShowInTaskbar="False"
+        MinWidth="460" MinHeight="380">
+    <Grid Margin="10">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="*"/>
+            <ColumnDefinition Width="80"/>
+            <ColumnDefinition Width="120"/>
+        </Grid.ColumnDefinitions>
+
+        <TextBlock Grid.Row="0" Grid.Column="0" Text="Font"  FontWeight="Bold" Margin="0,0,0,4"/>
+        <TextBlock Grid.Row="0" Grid.Column="1" Text="Size"  FontWeight="Bold" Margin="6,0,0,4"/>
+        <TextBlock Grid.Row="0" Grid.Column="2" Text="Style" FontWeight="Bold" Margin="6,0,0,4"/>
+
+        <DockPanel Grid.Row="1" Grid.Column="0">
+            <TextBox x:Name="FilterBox" DockPanel.Dock="Top" Margin="0,0,0,4"
+                     TextChanged="Filter_TextChanged"/>
+            <ListBox x:Name="FamilyList" SelectionChanged="Family_SelectionChanged"/>
+        </DockPanel>
+
+        <DockPanel Grid.Row="1" Grid.Column="1" Margin="6,0,0,0">
+            <TextBox x:Name="SizeBox" DockPanel.Dock="Top" Margin="0,0,0,4"
+                     TextChanged="Size_TextChanged"/>
+            <ListBox x:Name="SizeList" SelectionChanged="SizeList_SelectionChanged"/>
+        </DockPanel>
+
+        <StackPanel Grid.Row="1" Grid.Column="2" Margin="6,0,0,0">
+            <CheckBox x:Name="BoldCheck"   Content="Bold"   Margin="0,3"
+                      Checked="Style_Changed" Unchecked="Style_Changed"/>
+            <CheckBox x:Name="ItalicCheck" Content="Italic" Margin="0,3"
+                      Checked="Style_Changed" Unchecked="Style_Changed"/>
+        </StackPanel>
+
+        <Border Grid.Row="2" Grid.ColumnSpan="3" Margin="0,10" Height="72"
+                BorderBrush="#CCCCCC" BorderThickness="1" Background="White">
+            <TextBlock x:Name="Preview" Text="AaBbYyZz 0123456789"
+                       HorizontalAlignment="Center" VerticalAlignment="Center"
+                       TextTrimming="CharacterEllipsis"/>
+        </Border>
+
+        <StackPanel Grid.Row="3" Grid.ColumnSpan="3" Orientation="Horizontal"
+                    HorizontalAlignment="Right">
+            <Button Content="OK"     Width="82" Margin="0,0,8,0" IsDefault="True" Click="Ok_Click"/>
+            <Button Content="Cancel" Width="82" IsCancel="True"  Click="Cancel_Click"/>
+        </StackPanel>
+    </Grid>
+</Window>

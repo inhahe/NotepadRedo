@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWPF>true</UseWPF>
+    <!-- System.Windows.Forms.NotifyIcon powers the optional "minimise to tray" close behaviour. -->
+    <UseWindowsForms>true</UseWindowsForms>
+    <AssemblyName>NotepadRedo</AssemblyName>
+    <RootNamespace>NotepadRedo</RootNamespace>
+    <ApplicationTitle>NotepadRedo</ApplicationTitle>
+  </PropertyGroup>
+
+  <!-- We reference WinForms only for NotifyIcon (all uses fully-qualified). Drop its implicit
+       global usings so WPF types (Application, UserControl, Point, *EventArgs) stay unambiguous. -->
+  <ItemGroup>
+    <Using Remove="System.Windows.Forms" />
+    <Using Remove="System.Drawing" />
+  </ItemGroup>
+
+</Project>
