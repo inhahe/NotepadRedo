@@ -26,6 +26,7 @@
                  CaretBrush="{DynamicResource Theme.EditorFg}"
                  Padding="6"
                  PreviewKeyDown="Editor_PreviewKeyDown"
+                 PreviewMouseLeftButtonDown="Editor_PreviewMouseLeftButtonDown"
                  TextChanged="Editor_TextChanged"
                  SelectionChanged="Editor_SelectionChanged"/>
 
