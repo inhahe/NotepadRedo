@@ -327,6 +327,34 @@ public partial class DiffMergeWindow : Window
         Close();
     }
 
+    /// <summary>
+    /// Save both versions: the kept side becomes the file (returned as <see cref="ResultText"/> for
+    /// the host to write to the real filename), and the other — non-kept — side is written to a
+    /// timestamped sibling file next to it, so neither version is lost.
+    /// </summary>
+    private void SaveBoth_Click(object sender, RoutedEventArgs e)
+    {
+        SyncKeptFromUi();
+
+        // The non-kept side is read-only, so its model text is authoritative. Name the sibling after
+        // which side it is: "disk" when we're keeping mine, "mine" when we're keeping the disk copy.
+        string otherText   = _keepLeft ? _rightWork : _leftWork;
+        string otherSuffix = _keepLeft ? "disk" : "mine";
+
+        string? otherPath = SaveToSibling(otherSuffix, otherText);
+        if (otherPath is null)
+            return;   // a write failed and was already reported; stay open so nothing is lost
+
+        ThemedDialog.Show(this,
+            $"The other version was saved to:\n{otherPath}\n\n" +
+            $"The kept version will be written to “{_fileName}”.",
+            "Saved both versions", MessageBoxButton.OK, MessageBoxImage.Information);
+
+        ResultText = KeptWork;
+        Saved = true;
+        Close();
+    }
+
     private void Cancel_Click(object sender, RoutedEventArgs e)
     {
         Saved = false;

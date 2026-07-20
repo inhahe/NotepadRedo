@@ -51,7 +51,7 @@ Built with WPF on .NET 8.
   - **Save my version to another file**, then reload the disk version,
   - **Save the disk version to another file**, then keep yours, or
   - **Show a diff and merge…** — open a side-by-side merge viewer.
-- The **merge viewer** shows the two versions with changed/added/removed lines tinted and the differing text painted red. The intra-line diff is refined to the **character level** (UltraCompare-style): shared words stay anchored on a word/whitespace alignment, but within a changed run only the differing *characters* are reddened — so `composition` → `compositions` highlights just the trailing "s" rather than the whole word. You pick which side to **keep** — it's outlined and freely editable (copy/paste enabled) — and pull individual red lines across from the other side by **double-clicking** them (or via the right-click menu, which can also replace/insert/remove a line). You can flip which side is kept at any time, re-diff after hand-editing, then save the assembled result back to the file.
+- The **merge viewer** shows the two versions with changed/added/removed lines tinted and the differing text painted red. The intra-line diff is refined to the **character level** (UltraCompare-style): shared words stay anchored on a word/whitespace alignment, but within a changed run only the differing *characters* are reddened — so `composition` → `compositions` highlights just the trailing "s" rather than the whole word. You pick which side to **keep** — it's outlined and freely editable (copy/paste enabled) — and pull individual red lines across from the other side by **double-clicking** them (or via the right-click menu, which can also replace/insert/remove a line). You can flip which side is kept at any time, re-diff after hand-editing, then save the assembled result back to the file. **Save kept side** writes the kept side to the file and discards the other; **Save both** also writes the kept side to the file but preserves the other side alongside it as a timestamped sibling file (so nothing is lost).
 - If the file changes on disk **again** while you're merging, a banner appears and you can fold the new version into the viewer, ignore it, stash it to a file, or save both versions off and bail out.
 - **Lock open files** (Options → *Lock open files from outside changes*, off by default): while a file is open, hold it with a deny-write lock so other programs can read it but can't modify or delete it. Saving writes through the held handle.
 
@@ -104,6 +104,8 @@ NotepadRedo.exe [files...] [--new] [--quit-prompt] [--quit] [--quit-save]
 - `--quit-save` — signal every running instance to save silently (titled docs to disk, untitled parked in recovery) and exit, then exit. Non-interactive alternative to `--quit-prompt`.
 - `--quit` — signal every running instance to park all work in crash recovery and exit.
 
+Launching from a console (`cmd.exe`, a batch file, a script) returns the prompt **immediately** — NotepadRedo detaches itself so the console isn't held open until you close the editor. (This matters because `cmd` waits for any program it starts to exit, GUI apps included; NotepadRedo works around that by relaunching itself detached and letting the original process exit at once.) The `--quit*` signalling modes are exempt, since callers like `build.bat` need to block on their result.
+
 ---
 
 ## Building
@@ -121,6 +123,16 @@ build.bat
 ```
 
 `build.bat` publishes a self-contained single-file `NotepadRedo.exe`, then signals every running instance to close (prompting you to save each unsaved document) and **waits** until they have all exited before copying the new build into place. If you cancel a save prompt the redeploy aborts, leaving that instance untouched.
+
+### Publishing a GitHub release
+
+The app version is stored in one place — the **`VERSION`** file at the project root — which the csproj reads into `<Version>` (so it's stamped into the exe). Bump `VERSION` when you build, then:
+
+```sh
+release-github.bat
+```
+
+`release-github.bat` (no argument) reads the current version from `VERSION`, and — if a release for it doesn't already exist — builds a fresh self-contained `NotepadRedo.exe` into a throwaway `release\` folder (kept separate from the deployed copies so it never collides with a running instance's file lock) and publishes it as a GitHub release, with the exe and `associate-txt.bat` attached, via the [GitHub CLI](https://cli.github.com/) (`gh`, which must be installed and authenticated). It **aborts if that version is already released** (so it only publishes after `VERSION` has been bumped). It builds from your working tree and does not push source.
 
 ---
 

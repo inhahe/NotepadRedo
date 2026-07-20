@@ -519,6 +519,10 @@ public partial class MainWindow : Window
         try
         {
             var psi = new ProcessStartInfo { FileName = Environment.ProcessPath!, UseShellExecute = false };
+            // We're already a running GUI app with no console to unblock, so mark the child
+            // "--detached" — it should open directly rather than doing another detach-relaunch hop
+            // (see App.OnStartup). Without this it would needlessly spawn a grandchild and exit.
+            psi.ArgumentList.Add("--detached");
             psi.ArgumentList.Add(arg);
             Process.Start(psi);
         }
