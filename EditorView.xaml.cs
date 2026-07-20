@@ -119,6 +119,17 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
         Editor.PreviewMouseMove += Editor_PreviewMouseMove;
         Editor.PreviewMouseLeftButtonUp += (_, _) => EndDragScroll();
         Editor.LostMouseCapture += (_, _) => EndDragScroll();
+        // While we're driving that scroll, suppress the TextBox's own "scroll the caret into view"
+        // (see Editor_RequestBringIntoView). Register on the Editor and — because the request is
+        // raised deep inside the control template and the inner ScrollViewer may act on it before it
+        // bubbles up to the Editor — also on the internal PART_ContentHost ScrollViewer once the
+        // template is applied.
+        Editor.RequestBringIntoView += Editor_RequestBringIntoView;
+        Editor.Loaded += (_, _) =>
+        {
+            if (Editor.Template?.FindName("PART_ContentHost", Editor) is ScrollViewer sv)
+                sv.RequestBringIntoView += Editor_RequestBringIntoView;
+        };
 
         _autosave.Tick += (_, _) => WriteRecovery();
 
@@ -1857,6 +1868,20 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
         StopDragScrollTimer();
     }
 
+    /// <summary>
+    /// While a drag-scroll is in progress, veto the TextBox's automatic "scroll the caret into view".
+    /// Editor.Select() (used to grow the selection each tick) raises this request with the caret at the
+    /// fixed anchor — the BOTTOM of the selection when dragging up — so honouring it would scroll the
+    /// view back down, fighting our upward auto-scroll (visible as flicker, never reaching the top).
+    /// We are the sole authority on the scroll position during a drag, so it's safe to suppress it
+    /// entirely; normal bring-into-view resumes the moment the drag ends.
+    /// </summary>
+    private void Editor_RequestBringIntoView(object sender, RequestBringIntoViewEventArgs e)
+    {
+        if (_dragScrollActive)
+            e.Handled = true;
+    }
+
     private void DragScrollTick()
     {
         // The button may have been released past the edge without another mouse-move — stop then.
@@ -1894,14 +1919,11 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
         if (idx < 0) return;
         int start = Math.Min(_dragScrollAnchor, idx);
         int len = Math.Abs(idx - _dragScrollAnchor);
-
-        // Editor.Select() scrolls the caret into view. The caret lands at start+len — i.e. the fixed
-        // BOTTOM anchor when dragging up — so that scroll would drag the view back down and cancel our
-        // upward auto-scroll. Capture the offset we intend and restore it immediately after selecting.
-        double keepOffset = _dragScrollActive ? _dragScrollOffset : Editor.VerticalOffset;
+        // Editor.Select() puts the caret at start+len and asks the TextBox to scroll it into view.
+        // While a drag-scroll is active WE own the scroll position, so that request is suppressed in
+        // Editor_RequestBringIntoView — otherwise, when dragging up (caret pinned at the bottom
+        // anchor), it fights our upward scroll and the view flickers instead of reaching the top.
         Editor.Select(start, len);
-        if (_dragScrollActive && Editor.VerticalOffset != keepOffset)
-            Editor.ScrollToVerticalOffset(keepOffset);
     }
 
     /// <summary>Logical (newline-based) line number of a character index.</summary>
