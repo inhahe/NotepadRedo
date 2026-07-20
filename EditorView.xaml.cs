@@ -200,6 +200,22 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
     }
 
     /// <summary>
+    /// Set this fresh view up as a brand-new document targeted at <paramref name="path"/> that does
+    /// not yet exist on disk (the user asked to "create" it, Notepad-style): empty text, the save
+    /// target established so Ctrl+S writes straight there with no Save As prompt, and the tab/title
+    /// showing the file name. Nothing is written until the user actually saves — so closing an
+    /// untouched new document leaves no stray empty file behind, exactly like Notepad.
+    /// </summary>
+    public void PrepareNewFile(string path)
+    {
+        _currentPath = path;
+        _savedText = "";
+        DeleteRecovery();
+        ResetTree("");
+        OnPathEstablished();   // watch the folder for the file's (future) creation; no lock/stamp yet
+    }
+
+    /// <summary>
     /// Try to rebuild this document's saved branching history from its sidecar. Succeeds only when
     /// the stored history still reconstructs the current on-disk text exactly (so the document opens
     /// clean, matching disk, with its full history — including undone/redo branches — available).

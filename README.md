@@ -98,7 +98,7 @@ Choose what the window's **X** button does:
 NotepadRedo.exe [files...] [--new] [--quit-prompt] [--quit] [--quit-save]
 ```
 
-- `files...` — open one or more files. Files already open elsewhere are focused rather than reopened; otherwise they open as a new tab or new instance per your settings.
+- `files...` — open one or more files. Files already open elsewhere are focused rather than reopened; otherwise they open as a new tab or new instance per your settings. If a named file doesn't exist but its folder does, NotepadRedo asks whether to create it (like Notepad) — choosing **Yes** opens a blank document that's written to that path when you save; **No** skips it (and if it was the only file, NotepadRedo just exits).
 - `--new` — start with a blank document even if files are passed.
 - `--quit-prompt` — signal every running instance to close **interactively**: each prompts to save its unsaved work (Save / Save All / Don't Save / Cancel). With multiple unsaved documents you're asked about each one in turn; **Save All** saves the current document and every remaining one without further prompts. This call **blocks** until the user has answered every prompt and each instance has exited, and reports exit code `2` if the user cancels (leaving an instance open). Used by `build.bat` before redeploying, so a redeploy can't overwrite the exe until you've decided the fate of your unsaved work.
 - `--quit-save` — signal every running instance to save silently (titled docs to disk, untitled parked in recovery) and exit, then exit. Non-interactive alternative to `--quit-prompt`.
