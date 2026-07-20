@@ -83,6 +83,9 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
     private int _dragScrollAnchor;         // fixed end of the selection (the mouse-down point)
     private double _dragScrollVelocity;    // px per tick, signed (+ down / − up); 0 while in view
     private double _dragScrollMouseX;      // last cursor X (Editor coords) for edge hit-testing
+    private double _dragScrollOffset;      // our authoritative vertical offset while auto-scrolling
+                                           // (see ExtendDragSelection: TextBox.Select scrolls the
+                                           // caret into view and would otherwise fight our scroll)
     private const double DragScrollIntervalMs = 16;
     private const double DragScrollMaxPxPerTick = 28;
 
@@ -1797,6 +1800,7 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
         if (!_dragScrollActive)
         {
             _dragScrollActive = true;
+            _dragScrollOffset = Editor.VerticalOffset;   // seed our authoritative scroll position
             // Fix the end opposite the drag direction — that's the original mouse-down point:
             // dragging down keeps the top (SelectionStart), dragging up keeps the bottom.
             _dragScrollAnchor = pos.Y > bottom
@@ -1812,7 +1816,10 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
         if (_dragScrollVelocity != 0)
             EnsureDragScrollTimer();     // beyond the edge — keep scrolling on a timer
         else
+        {
             StopDragScrollTimer();       // back inside — no scroll, but we still drive selection
+            _dragScrollOffset = Editor.VerticalOffset;   // stay synced so a later edge-cross resumes here
+        }
 
         // Extend selection to the cursor (clamped into the viewport for the hit-test).
         ExtendDragSelection(
@@ -1859,9 +1866,14 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
             return;
         }
 
+        // Advance OUR authoritative offset rather than reading Editor.VerticalOffset: TextBox.Select
+        // (below) scrolls the caret into view, which — when dragging up, with the caret pinned at the
+        // fixed bottom anchor — yanks the view back down. Driving from our own accumulator means that
+        // even if such a yank slips through, the next tick re-forces the correct position, so the view
+        // keeps moving instead of getting stuck (this is why only "up" appeared broken).
         double max = Math.Max(0, Editor.ExtentHeight - Editor.ViewportHeight);
-        double target = Math.Clamp(Editor.VerticalOffset + _dragScrollVelocity, 0, max);
-        Editor.ScrollToVerticalOffset(target);
+        _dragScrollOffset = Math.Clamp(_dragScrollOffset + _dragScrollVelocity, 0, max);
+        Editor.ScrollToVerticalOffset(_dragScrollOffset);
 
         // Extend the selection to the character under a point pinned just inside the edge we're
         // scrolling toward (at the cursor's X). As the text scrolls under that fixed point, the
@@ -1882,7 +1894,14 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
         if (idx < 0) return;
         int start = Math.Min(_dragScrollAnchor, idx);
         int len = Math.Abs(idx - _dragScrollAnchor);
+
+        // Editor.Select() scrolls the caret into view. The caret lands at start+len — i.e. the fixed
+        // BOTTOM anchor when dragging up — so that scroll would drag the view back down and cancel our
+        // upward auto-scroll. Capture the offset we intend and restore it immediately after selecting.
+        double keepOffset = _dragScrollActive ? _dragScrollOffset : Editor.VerticalOffset;
         Editor.Select(start, len);
+        if (_dragScrollActive && Editor.VerticalOffset != keepOffset)
+            Editor.ScrollToVerticalOffset(keepOffset);
     }
 
     /// <summary>Logical (newline-based) line number of a character index.</summary>
