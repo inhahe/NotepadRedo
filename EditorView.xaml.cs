@@ -83,6 +83,9 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
     private int _dragScrollAnchor;         // fixed end of the selection (the mouse-down point)
     private double _dragScrollVelocity;    // px per tick, signed (+ down / − up); 0 while in view
     private double _dragScrollMouseX;      // last cursor X (Editor coords) for edge hit-testing
+    private double _dragScrollOffset;      // our authoritative vertical offset while auto-scrolling
+                                           // (see ExtendDragSelection: TextBox.Select scrolls the
+                                           // caret into view and would otherwise fight our scroll)
     private const double DragScrollIntervalMs = 16;
     private const double DragScrollMaxPxPerTick = 28;
 
@@ -116,6 +119,17 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
         Editor.PreviewMouseMove += Editor_PreviewMouseMove;
         Editor.PreviewMouseLeftButtonUp += (_, _) => EndDragScroll();
         Editor.LostMouseCapture += (_, _) => EndDragScroll();
+        // While we're driving that scroll, suppress the TextBox's own "scroll the caret into view"
+        // (see Editor_RequestBringIntoView). Register on the Editor and — because the request is
+        // raised deep inside the control template and the inner ScrollViewer may act on it before it
+        // bubbles up to the Editor — also on the internal PART_ContentHost ScrollViewer once the
+        // template is applied.
+        Editor.RequestBringIntoView += Editor_RequestBringIntoView;
+        Editor.Loaded += (_, _) =>
+        {
+            if (Editor.Template?.FindName("PART_ContentHost", Editor) is ScrollViewer sv)
+                sv.RequestBringIntoView += Editor_RequestBringIntoView;
+        };
 
         _autosave.Tick += (_, _) => WriteRecovery();
 
@@ -183,6 +197,22 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
         if (!(AppSettings.Current.PersistHistory && TryRestoreHistory(path, text)))
             ResetTree(text);
         OnPathEstablished();
+    }
+
+    /// <summary>
+    /// Set this fresh view up as a brand-new document targeted at <paramref name="path"/> that does
+    /// not yet exist on disk (the user asked to "create" it, Notepad-style): empty text, the save
+    /// target established so Ctrl+S writes straight there with no Save As prompt, and the tab/title
+    /// showing the file name. Nothing is written until the user actually saves — so closing an
+    /// untouched new document leaves no stray empty file behind, exactly like Notepad.
+    /// </summary>
+    public void PrepareNewFile(string path)
+    {
+        _currentPath = path;
+        _savedText = "";
+        DeleteRecovery();
+        ResetTree("");
+        OnPathEstablished();   // watch the folder for the file's (future) creation; no lock/stamp yet
     }
 
     /// <summary>
@@ -1797,6 +1827,7 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
         if (!_dragScrollActive)
         {
             _dragScrollActive = true;
+            _dragScrollOffset = Editor.VerticalOffset;   // seed our authoritative scroll position
             // Fix the end opposite the drag direction — that's the original mouse-down point:
             // dragging down keeps the top (SelectionStart), dragging up keeps the bottom.
             _dragScrollAnchor = pos.Y > bottom
@@ -1812,12 +1843,19 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
         if (_dragScrollVelocity != 0)
             EnsureDragScrollTimer();     // beyond the edge — keep scrolling on a timer
         else
+        {
             StopDragScrollTimer();       // back inside — no scroll, but we still drive selection
+            _dragScrollOffset = Editor.VerticalOffset;   // stay synced so a later edge-cross resumes here
+        }
 
         // Extend selection to the cursor (clamped into the viewport for the hit-test).
         ExtendDragSelection(
             Math.Clamp(pos.X, Editor.Padding.Left, Editor.Padding.Left + Editor.ViewportWidth - 1),
             Math.Clamp(pos.Y, top, bottom - 1));
+        // While auto-scrolling, re-assert our offset after the Select() above (its synchronous
+        // caret-scroll would otherwise drag the view around between timer ticks — see DragScrollTick).
+        if (_dragScrollVelocity != 0)
+            Editor.ScrollToVerticalOffset(_dragScrollOffset);
         e.Handled = true;                // suppress WPF's own (lurching) auto-scroll + selection
     }
 
@@ -1850,6 +1888,20 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
         StopDragScrollTimer();
     }
 
+    /// <summary>
+    /// While a drag-scroll is in progress, veto the TextBox's automatic "scroll the caret into view".
+    /// Editor.Select() (used to grow the selection each tick) raises this request with the caret at the
+    /// fixed anchor — the BOTTOM of the selection when dragging up — so honouring it would scroll the
+    /// view back down, fighting our upward auto-scroll (visible as flicker, never reaching the top).
+    /// We are the sole authority on the scroll position during a drag, so it's safe to suppress it
+    /// entirely; normal bring-into-view resumes the moment the drag ends.
+    /// </summary>
+    private void Editor_RequestBringIntoView(object sender, RequestBringIntoViewEventArgs e)
+    {
+        if (_dragScrollActive)
+            e.Handled = true;
+    }
+
     private void DragScrollTick()
     {
         // The button may have been released past the edge without another mouse-move — stop then.
@@ -1859,11 +1911,15 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
             return;
         }
 
+        // Advance OUR authoritative offset (never read back Editor.VerticalOffset — Select() below
+        // pollutes it by scrolling the caret into view).
         double max = Math.Max(0, Editor.ExtentHeight - Editor.ViewportHeight);
-        double target = Math.Clamp(Editor.VerticalOffset + _dragScrollVelocity, 0, max);
-        Editor.ScrollToVerticalOffset(target);
+        _dragScrollOffset = Math.Clamp(_dragScrollOffset + _dragScrollVelocity, 0, max);
 
-        // Extend the selection to the character under a point pinned just inside the edge we're
+        // Scroll to our target FIRST so the hit-test below sees the freshly scrolled text...
+        Editor.ScrollToVerticalOffset(_dragScrollOffset);
+
+        // ...extend the selection to the character under a point pinned just inside the edge we're
         // scrolling toward (at the cursor's X). As the text scrolls under that fixed point, the
         // covered character advances, growing the selection smoothly.
         double edgeY = _dragScrollVelocity > 0
@@ -1873,6 +1929,14 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
                               Editor.Padding.Left,
                               Editor.Padding.Left + Editor.ViewportWidth - 1);
         ExtendDragSelection(x, edgeY);
+
+        // ...then RE-ASSERT our offset. ExtendDragSelection's Editor.Select() synchronously scrolls the
+        // caret into view (via IScrollInfo.MakeVisible, not the RequestBringIntoView event — so it can't
+        // be vetoed there). When dragging up the caret is pinned at the bottom anchor, so that scroll
+        // jumps the view back down; being the LAST write before the frame renders, it would otherwise
+        // win and the view would never move up. Writing our offset last makes ours win, and because the
+        // intermediate caret-scroll is never painted there's no flicker.
+        Editor.ScrollToVerticalOffset(_dragScrollOffset);
     }
 
     /// <summary>Select from the fixed anchor to the character under the given Editor-space point.</summary>
@@ -1882,6 +1946,9 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
         if (idx < 0) return;
         int start = Math.Min(_dragScrollAnchor, idx);
         int len = Math.Abs(idx - _dragScrollAnchor);
+        // Editor.Select() puts the caret at start+len and synchronously scrolls it into view. Callers
+        // that are auto-scrolling (DragScrollTick / PreviewMouseMove) re-assert our own offset right
+        // after this so that caret-scroll can't hijack the view — see the note in DragScrollTick.
         Editor.Select(start, len);
     }
 

@@ -58,7 +58,18 @@ public partial class MainWindow : Window
     {
         var list = files.ToList();
         foreach (var f in list)
-            RequestOpenFile(f);   // focuses instead of duplicating if already open here
+            // Explicit command-line filenames: offer to create a missing one, Notepad-style.
+            RequestOpenFile(f, offerCreate: true);   // focuses instead of duplicating if already open here
+
+        // Command-line files were given but none opened — every one was missing-and-declined (or
+        // failed to open). Don't fall through to a surprise blank "Untitled" tab; close instead, the
+        // way Notepad exits when you decline to create the file it was launched with.
+        if (Tabs.Items.Count == 0 && !blankRequested && list.Count > 0)
+        {
+            _realClose = true;   // bypass the X-button "minimise to tray" behaviour — really exit
+            Close();
+            return;
+        }
 
         if (Tabs.Items.Count == 0 && !blankRequested && list.Count == 0)
         {
@@ -261,8 +272,37 @@ public partial class MainWindow : Window
 
     private EditorView CreateBlankView() => new();
 
-    private void OpenFileInTab(string path)
+    /// <summary>
+    /// Open <paramref name="path"/> as a new tab. When <paramref name="offerCreate"/> is set (an
+    /// explicit open — a command-line filename or a hand-off from another launch) and the file does
+    /// not exist but its folder does, prompt to create it, Notepad-style; on Yes a fresh empty
+    /// document targeted at that path is opened (written only when the user saves). Returns true when
+    /// a tab was opened/created, false when nothing was (open error, or the user declined to create).
+    /// </summary>
+    private bool OpenFileInTab(string path, bool offerCreate = false)
     {
+        if (offerCreate && !File.Exists(path) && !Directory.Exists(path))
+        {
+            // The file isn't there. Only offer to create it when its folder is valid — otherwise the
+            // path itself is bad, so fall through and let LoadFile surface a clear "not found" error.
+            string? dir = null;
+            try { dir = Path.GetDirectoryName(Path.GetFullPath(path)); } catch { /* malformed path */ }
+            if (dir is not null && Directory.Exists(dir))
+            {
+                var choice = ThemedDialog.Show(this,
+                    $"Cannot find '{Path.GetFileName(path)}'.\n\nDo you want to create a new file?",
+                    "NotepadRedo",
+                    MessageBoxButton.YesNo, MessageBoxImage.Question);
+                if (choice != MessageBoxResult.Yes)
+                    return false;
+
+                var created = CreateBlankView();
+                created.PrepareNewFile(Path.GetFullPath(path));
+                AddView(created, select: true);
+                return true;
+            }
+        }
+
         var view = CreateBlankView();
         try
         {
@@ -271,9 +311,10 @@ public partial class MainWindow : Window
         catch (Exception ex)
         {
             ThemedDialog.Show(this, ex.Message, "Open failed", MessageBoxButton.OK, MessageBoxImage.Error);
-            return;
+            return false;
         }
         AddView(view, select: true);
+        return true;
     }
 
     /// <summary>
@@ -281,11 +322,11 @@ public partial class MainWindow : Window
     /// focus the existing tab instead of creating a duplicate. Returns true if it was focused
     /// (rather than newly opened here).
     /// </summary>
-    private bool RequestOpenFile(string path)
+    private bool RequestOpenFile(string path, bool offerCreate = false)
     {
         if (TryFocusDocument(path) || IpcServer.TryFocusInSibling(path))
             return true;
-        OpenFileInTab(path);
+        OpenFileInTab(path, offerCreate);
         return false;
     }
 
@@ -333,7 +374,9 @@ public partial class MainWindow : Window
         var mw = Application.Current.Windows.OfType<MainWindow>().FirstOrDefault();
         if (mw is null)
             return false;
-        mw.OpenFileInTab(path);
+        // This is an explicit hand-off of a command-line filename from another launch, so honour the
+        // same "offer to create a missing file" behaviour as opening on our own command line.
+        mw.OpenFileInTab(path, offerCreate: true);
         mw.ForceForeground();
         return true;
     }
