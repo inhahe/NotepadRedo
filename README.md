@@ -104,6 +104,8 @@ NotepadRedo.exe [files...] [--new] [--quit-prompt] [--quit] [--quit-save]
 - `--quit-save` — signal every running instance to save silently (titled docs to disk, untitled parked in recovery) and exit, then exit. Non-interactive alternative to `--quit-prompt`.
 - `--quit` — signal every running instance to park all work in crash recovery and exit.
 
+Launching from a console (`cmd.exe`, a batch file, a script) returns the prompt **immediately** — NotepadRedo detaches itself so the console isn't held open until you close the editor. (This matters because `cmd` waits for any program it starts to exit, GUI apps included; NotepadRedo works around that by relaunching itself detached and letting the original process exit at once.) The `--quit*` signalling modes are exempt, since callers like `build.bat` need to block on their result.
+
 ---
 
 ## Building

@@ -1,4 +1,6 @@
+using System.Diagnostics;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Threading;
@@ -12,6 +14,37 @@ public partial class App : Application
     protected override void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
+
+        // Detach from a launching console so its prompt returns immediately. cmd.exe (and batch
+        // scripts) WAIT for a process they start to exit before returning — this is true for GUI
+        // apps too, not just console apps (the reason `notepad`/`calc` seem to return instantly is
+        // that those are stub launchers that exit immediately). So a plain `notepadredo file.txt`
+        // would block the prompt until the editor window is closed.
+        //
+        // To avoid that we relaunch ourselves as a process detached from any console (via
+        // ShellExecute, so it isn't a console child) and exit this one immediately: whatever launched
+        // us — cmd, a batch file, another script — unblocks at once while the real editor runs in the
+        // detached instance. We can't cheaply tell "launched from a console that will wait" apart from
+        // "launched by Explorer" (a GUI process isn't attached to a console window, so GetConsoleWindow
+        // is 0 in BOTH cases even though cmd still waits on the process handle), so we always relaunch.
+        // Explorer/double-click launches don't wait anyway and simply pay one cheap, invisible extra
+        // process hop (the throwaway original never shows a window). We skip the relaunch only when:
+        //   • it's a --quit* signalling mode — build.bat launches those and MUST block on their exit
+        //     code (e.g. --quit-prompt returns 2 when the user cancels), so they must not detach;
+        //   • we're already the detached relaunch (marked with --detached).
+        bool signallingQuit = e.Args.Contains("--quit")
+                           || e.Args.Contains("--quit-save")
+                           || e.Args.Contains("--quit-prompt");
+        if (!signallingQuit && !e.Args.Contains("--detached"))
+        {
+            if (TryRelaunchDetached(e.Args))
+            {
+                Shutdown();
+                return;
+            }
+            // Relaunch failed (already logged): fall through and run in-place — a blocking window is
+            // far better than opening nothing.
+        }
 
         // Pick a visual theme from the executable's own filename, so a single build can be shipped
         // under several names (NotepadRedo-Graphite.exe, -Sunset.exe) to compare looks. The plain
@@ -147,4 +180,48 @@ public partial class App : Application
         _ipc?.Dispose();
         base.OnExit(e);
     }
+
+    /// <summary>
+    /// Relaunch this executable as a process detached from the current console, carrying the same
+    /// command-line arguments plus a "--detached" sentinel so the new instance doesn't detach again.
+    /// Started via ShellExecute (UseShellExecute = true) so it is NOT a console child of the launching
+    /// cmd/batch — the caller can then exit right away and free the prompt. The working directory is
+    /// preserved so relative file paths on the command line still resolve. Returns true when the new
+    /// process was started (so the caller should exit); false on failure (so the caller runs in-place).
+    /// </summary>
+    private static bool TryRelaunchDetached(string[] args)
+    {
+        try
+        {
+            string? exe = Environment.ProcessPath;
+            if (string.IsNullOrEmpty(exe))
+                return false;
+
+            var psi = new ProcessStartInfo
+            {
+                FileName = exe,
+                UseShellExecute = true,                              // detach from the parent console
+                WorkingDirectory = Directory.GetCurrentDirectory(),  // keep relative paths resolving
+            };
+            psi.ArgumentList.Add("--detached");
+            foreach (var a in args)
+                psi.ArgumentList.Add(a);
+
+            var child = Process.Start(psi);
+            if (child is not null)
+            {
+                // Let the freshly launched instance legitimately take the foreground (we still own it).
+                try { AllowSetForegroundWindow(child.Id); } catch { /* best-effort */ }
+            }
+            return true;
+        }
+        catch (Exception ex)
+        {
+            CrashLog.Log("Detached relaunch failed; starting in-place instead", ex);
+            return false;
+        }
+    }
+
+    [DllImport("user32.dll")]
+    private static extern bool AllowSetForegroundWindow(int dwProcessId);
 }
