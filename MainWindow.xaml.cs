@@ -133,8 +133,14 @@ public partial class MainWindow : Window
     /// Persist the set of open document files (across every window in this process) so the next
     /// launch reopens the same tabs. Called at each structural change (open/close/save). Skipped
     /// during a forced redeploy quit so the last good session list is preserved untouched.
+    ///
+    /// By default an <i>empty</i> result is NOT written: a window showing only a blank/untitled buffer
+    /// (a <c>--new</c> launch, a fresh startup, or a tab torn off to another window mid-drag) has no
+    /// file paths, and letting that overwrite session.json would wipe a remembered session. Only an
+    /// explicit close of the last file tab passes <paramref name="allowEmpty"/> so the workspace can
+    /// genuinely be cleared.
     /// </summary>
-    public static void SaveSession()
+    public static void SaveSession(bool allowEmpty = false)
     {
         if (_forceQuitting)
             return;
@@ -145,6 +151,8 @@ public partial class MainWindow : Window
                 foreach (var v in mw.AllViews())
                     if (v.FilePath is string p && seen.Add(NormalizePath(p)))
                         paths.Add(p);
+        if (paths.Count == 0 && !allowEmpty)
+            return;
         SessionStore.Save(paths);
     }
 
@@ -506,7 +514,9 @@ public partial class MainWindow : Window
         }
         Tabs.Items.Remove(ti);
         UpdateChrome();
-        SaveSession();
+        // A real close (dispose) of the last file tab may clear the session; a tear-off (move to
+        // another window) must not — the view lives on and AddView will re-record it there.
+        SaveSession(allowEmpty: dispose);
     }
 
     /// <summary>Re-host a live EditorView (moved from another window) in a fresh tab here.</summary>
