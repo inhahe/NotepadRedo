@@ -219,6 +219,22 @@ public sealed class IpcServer : IDisposable
     }
 
     /// <summary>Run <paramref name="ask"/> against each sibling process; stop at the first true.</summary>
+    /// <summary>
+    /// True when at least one <i>other</i> NotepadRedo process is already running. Used at startup to
+    /// decide whether this launch is the "first" instance — the one that should restore the previous
+    /// session — versus a secondary instance (new-instance mode) that should only open what it was
+    /// asked to. Counts processes by name, so it doesn't depend on the IPC pipe being up yet.
+    /// </summary>
+    public static bool AnyOtherInstanceRunning()
+    {
+        int self = Environment.ProcessId;
+        foreach (var proc in AppProcesses())
+            using (proc)
+                if (proc.Id != self)
+                    return true;
+        return false;
+    }
+
     private static bool AnySibling(Func<int, bool> ask)
     {
         int self = Environment.ProcessId;

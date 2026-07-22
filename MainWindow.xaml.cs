@@ -53,31 +53,41 @@ public partial class MainWindow : Window
         };
     }
 
-    /// <summary>Seed a freshly-shown window: open the given files, or offer recovery when there are none.</summary>
-    public void Initialize(IEnumerable<string> files, bool blankRequested)
+    /// <summary>
+    /// Seed a freshly-shown window. On the first instance of a launch we bring back the previous
+    /// session first — crash snapshots (which carry unsaved edits, incl. for titled docs) then the
+    /// saved-file list — so that any file named on the command line opens on top of them as the
+    /// focused tab. Session restore runs whether or not a file was passed; it's skipped only for a
+    /// requested blank (<c>--new</c>), for secondary instances (new-instance mode), and per the
+    /// restore-mode preference (see <see cref="RestoreSession"/>).
+    /// </summary>
+    public void Initialize(IEnumerable<string> files, bool blankRequested, bool firstInstance)
     {
         var list = files.ToList();
+
+        if (firstInstance && !blankRequested)
+        {
+            // RestoreSession de-dupes against anything recovery already reopened, so a file that was
+            // dirty at exit keeps its recovered version.
+            OfferRecovery();
+            RestoreSession();
+        }
+
         foreach (var f in list)
             // Explicit command-line filenames: offer to create a missing one, Notepad-style.
-            RequestOpenFile(f, offerCreate: true);   // focuses instead of duplicating if already open here
+            // Opened after any restored session so the launched file becomes the active tab;
+            // focuses instead of duplicating if it's already open here (e.g. also in the session).
+            RequestOpenFile(f, offerCreate: true);
 
         // Command-line files were given but none opened — every one was missing-and-declined (or
-        // failed to open). Don't fall through to a surprise blank "Untitled" tab; close instead, the
-        // way Notepad exits when you decline to create the file it was launched with.
+        // failed to open) — and nothing else is open. Don't fall through to a surprise blank
+        // "Untitled" tab; close instead, the way Notepad exits when you decline to create the file it
+        // was launched with. (If the session restored tabs, those remain and we don't close.)
         if (Tabs.Items.Count == 0 && !blankRequested && list.Count > 0)
         {
             _realClose = true;   // bypass the X-button "minimise to tray" behaviour — really exit
             Close();
             return;
-        }
-
-        if (Tabs.Items.Count == 0 && !blankRequested && list.Count == 0)
-        {
-            // Crash snapshots first (they carry unsaved edits, incl. for titled docs), then reopen
-            // the rest of last session's files. RestoreSession de-dupes against anything recovery
-            // already reopened, so a file that was dirty at exit keeps its recovered version.
-            OfferRecovery();
-            RestoreSession();
         }
 
         if (Tabs.Items.Count == 0)
@@ -123,8 +133,14 @@ public partial class MainWindow : Window
     /// Persist the set of open document files (across every window in this process) so the next
     /// launch reopens the same tabs. Called at each structural change (open/close/save). Skipped
     /// during a forced redeploy quit so the last good session list is preserved untouched.
+    ///
+    /// By default an <i>empty</i> result is NOT written: a window showing only a blank/untitled buffer
+    /// (a <c>--new</c> launch, a fresh startup, or a tab torn off to another window mid-drag) has no
+    /// file paths, and letting that overwrite session.json would wipe a remembered session. Only an
+    /// explicit close of the last file tab passes <paramref name="allowEmpty"/> so the workspace can
+    /// genuinely be cleared.
     /// </summary>
-    public static void SaveSession()
+    public static void SaveSession(bool allowEmpty = false)
     {
         if (_forceQuitting)
             return;
@@ -135,6 +151,8 @@ public partial class MainWindow : Window
                 foreach (var v in mw.AllViews())
                     if (v.FilePath is string p && seen.Add(NormalizePath(p)))
                         paths.Add(p);
+        if (paths.Count == 0 && !allowEmpty)
+            return;
         SessionStore.Save(paths);
     }
 
@@ -449,10 +467,12 @@ public partial class MainWindow : Window
         var label = new TextBlock
         {
             MaxWidth = 260,
-            TextTrimming = TextTrimming.CharacterEllipsis,
+            // Truncation is done by LeadingEllipsisText (leading "…", keeps the file name) — not the
+            // built-in trailing ellipsis, which would hide the informative tail of a long path.
+            TextTrimming = TextTrimming.None,
             VerticalAlignment = VerticalAlignment.Center
         };
-        label.SetBinding(TextBlock.TextProperty, new System.Windows.Data.Binding(nameof(EditorView.TabTitle)));
+        label.SetBinding(LeadingEllipsisText.PathProperty, new System.Windows.Data.Binding(nameof(EditorView.TabTitle)));
         label.SetBinding(FrameworkElement.ToolTipProperty, new System.Windows.Data.Binding(nameof(EditorView.TabTitle)));
 
         panel.Children.Add(close);
@@ -494,7 +514,9 @@ public partial class MainWindow : Window
         }
         Tabs.Items.Remove(ti);
         UpdateChrome();
-        SaveSession();
+        // A real close (dispose) of the last file tab may clear the session; a tear-off (move to
+        // another window) must not — the view lives on and AddView will re-record it there.
+        SaveSession(allowEmpty: dispose);
     }
 
     /// <summary>Re-host a live EditorView (moved from another window) in a fresh tab here.</summary>

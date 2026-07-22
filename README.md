@@ -41,7 +41,7 @@ Built with WPF on .NET 8.
 ### Autosave, crash recovery & session restore
 - Periodic background autosave (configurable interval, or off) parks in-progress work so an unexpected crash or forced quit doesn't lose unsaved changes.
 - Unsaved/recovered work is offered for restoration on the next launch.
-- **Session restore**: the set of open files is remembered between runs, so relaunching can reopen the same tabs where you left off. The behaviour is configurable (Options → *Reopen last session's files at startup*): **Ask me first** (the default — lists the files and prompts, so a stale session can't silently clobber edits you made elsewhere), **Always reopen**, or **Never reopen**. (Files opened from the command line, or `--new`, start fresh instead of restoring.)
+- **Session restore**: the set of open files is remembered between runs, so relaunching can reopen the same tabs where you left off. The behaviour is configurable (Options → *Reopen last session's files at startup*): **Ask me first** (the default — lists the files and prompts, so a stale session can't silently clobber edits you made elsewhere), **Always reopen**, or **Never reopen**. Launching NotepadRedo with a file still restores the previous session too — the named file just opens on top, as the active tab. Only a requested blank (`--new`) starts fresh, and in *new instance* mode a secondary instance opens just what it was given (the first instance is the one that restores the session).
 - All unhandled exceptions are logged with full stack traces; UI-thread glitches are caught and swallowed to keep your documents alive rather than crashing.
 
 ### External-change detection & diff/merge
