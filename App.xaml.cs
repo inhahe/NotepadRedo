@@ -92,7 +92,14 @@ public partial class App : Application
             return;
         }
 
-        var files = e.Args.Where(a => !a.StartsWith("--", StringComparison.Ordinal)).ToList();
+        // Resolve every file arg to an absolute path *here*, while this process's working directory
+        // is still the one the user launched from. A relative name (e.g. "notes.txt") otherwise gets
+        // handed over IPC to a sibling instance that has a different cwd, which would resolve it
+        // against the wrong folder — opening/creating the file in the wrong place.
+        var files = e.Args
+            .Where(a => !a.StartsWith("--", StringComparison.Ordinal))
+            .Select(ToAbsolutePath)
+            .ToList();
         bool blankRequested = e.Args.Contains("--new");
 
         if (files.Count > 0 && !blankRequested)
@@ -130,6 +137,16 @@ public partial class App : Application
         var window = new MainWindow();
         window.Show();
         window.Initialize(files, blankRequested);
+    }
+
+    /// <summary>
+    /// Resolve a possibly-relative command-line path to an absolute one against the current working
+    /// directory. Falls back to the original string if the path is malformed.
+    /// </summary>
+    private static string ToAbsolutePath(string p)
+    {
+        try { return Path.GetFullPath(p); }
+        catch { return p; }
     }
 
     /// <summary>
