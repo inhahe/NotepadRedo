@@ -126,6 +126,11 @@ public partial class App : Application
             files = remaining;
         }
 
+        // Are we the first NotepadRedo process? Only the first instance restores the previous session;
+        // secondary instances (new-instance mode) just open what they were launched with. Checked here,
+        // before we start our own pipe server, but it counts processes by name so ordering is moot.
+        bool firstInstance = !IpcServer.AnyOtherInstanceRunning();
+
         _ipc = new IpcServer();
         _ipc.Start();
 
@@ -136,7 +141,7 @@ public partial class App : Application
 
         var window = new MainWindow();
         window.Show();
-        window.Initialize(files, blankRequested);
+        window.Initialize(files, blankRequested, firstInstance);
     }
 
     /// <summary>
