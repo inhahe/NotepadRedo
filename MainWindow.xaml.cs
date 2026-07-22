@@ -449,10 +449,12 @@ public partial class MainWindow : Window
         var label = new TextBlock
         {
             MaxWidth = 260,
-            TextTrimming = TextTrimming.CharacterEllipsis,
+            // Truncation is done by LeadingEllipsisText (leading "…", keeps the file name) — not the
+            // built-in trailing ellipsis, which would hide the informative tail of a long path.
+            TextTrimming = TextTrimming.None,
             VerticalAlignment = VerticalAlignment.Center
         };
-        label.SetBinding(TextBlock.TextProperty, new System.Windows.Data.Binding(nameof(EditorView.TabTitle)));
+        label.SetBinding(LeadingEllipsisText.PathProperty, new System.Windows.Data.Binding(nameof(EditorView.TabTitle)));
         label.SetBinding(FrameworkElement.ToolTipProperty, new System.Windows.Data.Binding(nameof(EditorView.TabTitle)));
 
         panel.Children.Add(close);
