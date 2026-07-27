@@ -142,9 +142,15 @@ internal static class ThemedDialog
             }
         };
 
-        // Give the default button keyboard focus as soon as the dialog is up, so Enter/Esc and the
-        // letter shortcuts all work immediately — without the user having to click in the dialog first.
-        dlg.Loaded += (_, _) => defaultButton?.Focus();
+        // Bring the prompt to the front and give the default button keyboard focus as soon as it's up,
+        // so it's actually visible and Enter/Esc and the letter shortcuts work immediately — without
+        // the user having to click in the dialog first. Activate() matters when the owner window isn't
+        // itself foreground yet (e.g. a launch from a console, where cmd still owns it).
+        dlg.Loaded += (_, _) =>
+        {
+            dlg.Activate();
+            defaultButton?.Focus();
+        };
 
         dlg.ShowDialog();
         return result;
