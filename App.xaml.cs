@@ -141,6 +141,12 @@ public partial class App : Application
 
         var window = new MainWindow();
         window.Show();
+        // A launch from a console (cmd/batch) leaves that console owning the foreground, and because
+        // we relaunch detached this window would otherwise come up *behind* it — hiding any prompt
+        // Initialize puts up (notably "create a new file?", which then looks like a silent hang).
+        // The parent granted this process foreground rights via AllowSetForegroundWindow, so claim
+        // them now, before those dialogs appear.
+        window.ForceForeground();
         window.Initialize(files, blankRequested, firstInstance);
     }
 

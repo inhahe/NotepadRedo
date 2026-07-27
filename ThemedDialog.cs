@@ -85,8 +85,12 @@ internal static class ThemedDialog
         dlg.Content = root;
 
         var result = DefaultResult(buttons);
+        Button? defaultButton = null;
+        // Bare-letter shortcuts: press Y/N/O/C to pick the matching button with no click first
+        // (e.g. the "create a new file?" prompt answers to 'y' / 'n').
+        var hotkeys = new Dictionary<Key, MessageBoxResult>();
 
-        void Add(string label, MessageBoxResult r, bool isDefault = false)
+        void Add(string label, MessageBoxResult r, Key? hotkey = null, bool isDefault = false)
         {
             var b = new Button
             {
@@ -97,36 +101,55 @@ internal static class ThemedDialog
             };
             b.Click += (_, _) => { result = r; dlg.Close(); };
             btnRow.Children.Add(b);
+            if (isDefault) defaultButton = b;
+            if (hotkey is Key k) hotkeys[k] = r;
         }
 
         switch (buttons)
         {
             case MessageBoxButton.OK:
-                Add("OK", MessageBoxResult.OK, isDefault: true);
+                Add("OK", MessageBoxResult.OK, Key.O, isDefault: true);
                 break;
             case MessageBoxButton.OKCancel:
-                Add("OK", MessageBoxResult.OK, isDefault: true);
-                Add("Cancel", MessageBoxResult.Cancel);
+                Add("OK", MessageBoxResult.OK, Key.O, isDefault: true);
+                Add("Cancel", MessageBoxResult.Cancel, Key.C);
                 break;
             case MessageBoxButton.YesNo:
-                Add("Yes", MessageBoxResult.Yes, isDefault: true);
-                Add("No", MessageBoxResult.No);
+                Add("Yes", MessageBoxResult.Yes, Key.Y, isDefault: true);
+                Add("No", MessageBoxResult.No, Key.N);
                 break;
             case MessageBoxButton.YesNoCancel:
-                Add("Yes", MessageBoxResult.Yes, isDefault: true);
-                Add("No", MessageBoxResult.No);
-                Add("Cancel", MessageBoxResult.Cancel);
+                Add("Yes", MessageBoxResult.Yes, Key.Y, isDefault: true);
+                Add("No", MessageBoxResult.No, Key.N);
+                Add("Cancel", MessageBoxResult.Cancel, Key.C);
                 break;
         }
 
-        // Escape maps to the natural "cancel" choice (Cancel, else No, else OK) and closes.
         dlg.PreviewKeyDown += (_, e) =>
         {
+            // Escape maps to the natural "cancel" choice (Cancel, else No, else OK) and closes.
             if (e.Key == Key.Escape)
             {
                 result = DefaultResult(buttons);
                 dlg.Close();
             }
+            // A bare letter key picks its button (Y=Yes, N=No, O=OK, C=Cancel), no modifier needed.
+            else if (hotkeys.TryGetValue(e.Key, out var r))
+            {
+                result = r;
+                e.Handled = true;
+                dlg.Close();
+            }
+        };
+
+        // Bring the prompt to the front and give the default button keyboard focus as soon as it's up,
+        // so it's actually visible and Enter/Esc and the letter shortcuts work immediately — without
+        // the user having to click in the dialog first. Activate() matters when the owner window isn't
+        // itself foreground yet (e.g. a launch from a console, where cmd still owns it).
+        dlg.Loaded += (_, _) =>
+        {
+            dlg.Activate();
+            defaultButton?.Focus();
         };
 
         dlg.ShowDialog();
