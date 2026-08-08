@@ -21,6 +21,9 @@ namespace NotepadRedo;
 ///   QUITASK &lt;any&gt;   — interactive quit: prompt to save each unsaved document (Yes/No/Cancel) and
 ///                       exit; reply is OK when quitting, NO when the user cancelled. The reply is
 ///                       only sent once the prompts are answered, so the caller blocks on the user.
+///   PRESENT         — no argument: bring an existing window forward. Sent by a bare "notepadredo"
+///                       launch (no filenames) so it reuses the running instance instead of opening
+///                       a second window.
 /// </summary>
 public sealed class IpcServer : IDisposable
 {
@@ -61,7 +64,7 @@ public sealed class IpcServer : IDisposable
             string arg = tab < 0 ? "" : request.Substring(tab + 1);
 
             var app = Application.Current;
-            if (app is not null && !string.IsNullOrEmpty(arg))
+            if (app is not null)
             {
                 // Run the action on the UI thread, but never let an exception in it swallow the
                 // reply: a launching sibling blocks reading our answer, so if we die silently it
@@ -70,6 +73,11 @@ public sealed class IpcServer : IDisposable
                 {
                     try
                     {
+                        // The document verbs are meaningless without a path/token; reject them rather
+                        // than acting on "". PRESENT and the QUIT* verbs carry no meaningful argument.
+                        if (verb is "FOCUS" or "OPEN" or "CLOSE" && string.IsNullOrEmpty(arg))
+                            return false;
+
                         return verb switch
                         {
                             "FOCUS" => MainWindow.TryFocusDocument(arg),
@@ -78,6 +86,7 @@ public sealed class IpcServer : IDisposable
                             "QUIT"  => MainWindow.RequestQuitWithRecovery(),
                             "QUITSAVE" => MainWindow.RequestQuitWithSave(),
                             "QUITASK"  => MainWindow.RequestQuitWithPrompt(),
+                            "PRESENT"  => MainWindow.PresentExisting(),
                             _       => false,
                         };
                     }
@@ -119,6 +128,14 @@ public sealed class IpcServer : IDisposable
     /// Returns true when a sibling accepted it (tab-mode consolidation).
     /// </summary>
     public static bool OpenInSibling(string path) => AnySibling(pid => Send(pid, "OPEN", path, steal: true, replyTimeoutMs: OpenReplyTimeoutMs));
+
+    /// <summary>
+    /// Ask an existing instance to bring one of its windows to the front (restoring it from the tray
+    /// or a minimised state if need be). Used by a bare "notepadredo" launch with no filenames: the
+    /// user almost certainly wants the editor they already have, not a second empty window. Returns
+    /// true when a sibling took over, so the launching process can exit without showing anything.
+    /// </summary>
+    public static bool PresentSibling() => AnySibling(pid => Send(pid, "PRESENT", "", steal: true, replyTimeoutMs: OpenReplyTimeoutMs));
 
     /// <summary>Tell a specific process to drop the tab holding <paramref name="token"/>.</summary>
     public static bool CloseTabInProcess(int pid, string token) => Send(pid, "CLOSE", token, steal: false, replyTimeoutMs: OpenReplyTimeoutMs);

@@ -24,11 +24,17 @@ Built with WPF on .NET 8.
 - **Tear off** a tab by dragging its header out of the window to create a new window.
 - **Reattach / reorder** tabs by dragging headers between and within windows.
 - **Middle-click** a tab header to close it.
+- Tab headers show the file's **full path**, and the available width of the tab strip is shared out among them: a tab whose whole path fits takes only the room it needs, and the slack goes to the tabs that would otherwise be truncated. A path too long even then is shortened from the **front** (`…\folder\file.txt`) so the file name always stays readable; the full path is in the tooltip.
+- Closing a tab returns you to the tab you were on **before** it — and if that one has been closed too, the one before that — rather than to whichever tab happens to sit next to it.
 
 ### Multiple windows & instances
 - Cross-instance IPC over a named pipe coordinates all running copies.
 - Opening a file that's already open just focuses the existing tab/window.
 - Configurable: new files open in **a new tab** (of the existing instance) or **a new instance** (separate process).
+- Running `notepadredo` with **no filename** while a copy is already running just brings that window to the front (restoring it from the tray if need be) instead of opening a second, empty one. Use `--new` to ask for a fresh blank document, or switch to *new instance* mode if you'd rather always get a new process.
+
+### Recent files
+- **File → Open Recent** lists the last 15 files you opened or saved, newest first, with `Alt`-accessible numbers for the first nine. The list is shared by every window and every running instance, and persists between runs (`%LOCALAPPDATA%\NotepadRedo\recent.json`). **Clear this list** empties it.
 
 ### Search
 - Open the search pane with `Ctrl+F` (or **Edit → Find…**, or the toolbar **Search** toggle button); it slides in on the right. The toolbar button stays lit while the pane is open and toggles it closed again.
@@ -66,6 +72,9 @@ Choose what the window's **X** button does:
 - Quick toggles for **Bold** (`Ctrl+B`) and **Italic** (`Ctrl+I`).
 - A **Size** submenu for common point sizes.
 - The chosen font is a shared, persisted preference applied to the editor in every tab and window.
+
+### Dialogs
+- Every prompt is themed to match the editor, comes to the front with its default button already focused (so a prompt raised by a launch from a console can't hide behind the console window), and answers to bare keys with no clicking first: **Y**/**N**/**O**/**C** on Yes-No-OK-Cancel prompts, **S**/**A**/**D**/**C** on the save-before-closing prompt, and **1**–**9** on the multi-choice prompts. **Esc** always takes the safe way out (Cancel, else No).
 
 ### Other
 - Word wrap toggle.
@@ -165,6 +174,8 @@ On first launch, if a `%LOCALAPPDATA%\TreeNotepad\` folder exists (from before t
 | `DiffEngine.cs` | Pure, testable line + inline diff logic used by the merge viewer. |
 | `DiffMergeWindow.xaml(.cs)` | Side-by-side diff/merge viewer for reconciling external changes. |
 | `SessionStore.cs` | Reads/writes `session.json` for reopening last session's files. |
+| `RecentFiles.cs` | Reads/writes `recent.json` backing the File → Open Recent list (shared across windows and instances). |
+| `LeadingEllipsisText.cs` | Attached behavior that truncates a path from the *front* so the file name stays visible (tab headers). |
 | `HistoryStore.cs` | Reads/writes the per-file branching-history sidecars (persistent history). |
 | `AppSettings.cs` | Persisted user preferences. |
 | `ThemedDialog.cs` | Themed replacements for `MessageBox` (incl. the multi-choice resolution prompts). |

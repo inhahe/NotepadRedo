@@ -225,7 +225,11 @@ internal static class ThemedDialog
 
         int result = 3;   // default / Esc → Cancel
 
-        void Add(string label, int r, bool isDefault = false)
+        Button? defaultButton = null;
+        // Bare-letter shortcuts, as in Show(): S = Save, A = Save All, D = Don't Save, C = Cancel.
+        var hotkeys = new Dictionary<Key, int>();
+
+        void Add(string label, int r, Key hotkey, bool isDefault = false)
         {
             var b = new Button
             {
@@ -236,16 +240,28 @@ internal static class ThemedDialog
             };
             b.Click += (_, _) => { result = r; dlg.Close(); };
             btnRow.Children.Add(b);
+            if (isDefault) defaultButton = b;
+            hotkeys[hotkey] = r;
         }
-        Add("Save", 0, isDefault: true);
-        Add("Save All", 1);
-        Add("Don't Save", 2);
-        Add("Cancel", 3);
+        Add("Save", 0, Key.S, isDefault: true);
+        Add("Save All", 1, Key.A);
+        Add("Don't Save", 2, Key.D);
+        Add("Cancel", 3, Key.C);
 
         dlg.PreviewKeyDown += (_, e) =>
         {
             if (e.Key == Key.Escape) { result = 3; dlg.Close(); }
+            else if (hotkeys.TryGetValue(e.Key, out var r)) { result = r; e.Handled = true; dlg.Close(); }
         };
+
+        // Come to the front and take keyboard focus straight away — see Show() for why this matters
+        // when the owner window isn't foreground itself (a launch from a console).
+        dlg.Loaded += (_, _) =>
+        {
+            dlg.Activate();
+            defaultButton?.Focus();
+        };
+
         dlg.ShowDialog();
         return result;
     }
@@ -301,7 +317,10 @@ internal static class ThemedDialog
         header.Children.Add(text);
         outer.Children.Add(header);
 
-        // One full-width button per choice, stacked vertically.
+        // One full-width button per choice, stacked vertically. Typing the choice's number picks it,
+        // so the list is answerable from the keyboard without tabbing to the right button.
+        Button? defaultButton = null;
+        var hotkeys = new Dictionary<Key, int>();
         for (int i = 0; i < choices.Count; i++)
         {
             int idx = i;
@@ -315,13 +334,29 @@ internal static class ThemedDialog
             };
             b.Click += (_, _) => { result = idx; dlg.Close(); };
             outer.Children.Add(b);
+            if (i == defaultIndex) defaultButton = b;
+            if (i < 9)
+            {
+                hotkeys[Key.D1 + i] = idx;         // top-row digits
+                hotkeys[Key.NumPad1 + i] = idx;    // and the numeric keypad
+            }
         }
 
         dlg.Content = outer;
         dlg.PreviewKeyDown += (_, e) =>
         {
             if (e.Key == Key.Escape) { result = -1; dlg.Close(); }
+            else if (hotkeys.TryGetValue(e.Key, out var r)) { result = r; e.Handled = true; dlg.Close(); }
         };
+
+        // Come to the front and take keyboard focus straight away — see Show() for why this matters
+        // when the owner window isn't foreground itself (a launch from a console).
+        dlg.Loaded += (_, _) =>
+        {
+            dlg.Activate();
+            defaultButton?.Focus();
+        };
+
         dlg.ShowDialog();
         return result;
     }

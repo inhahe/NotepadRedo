@@ -38,16 +38,35 @@ public static class LeadingEllipsisText
 
     private static void OnSizeChanged(object sender, SizeChangedEventArgs e) => Apply((TextBlock)sender);
 
+    /// <summary>
+    /// Re-fit the text after the caller changed the element's <see cref="FrameworkElement.MaxWidth"/>.
+    /// Necessary because a *widened* cap produces no <see cref="FrameworkElement.SizeChanged"/> on its
+    /// own — the already-elided text still measures at the old, narrower width, so nothing would ever
+    /// prompt the element to grow back into the space it has just been given.
+    /// </summary>
+    public static void Refresh(TextBlock tb) => Apply(tb);
+
+    /// <summary>
+    /// Width in pixels the untruncated path would need. Used to divide the tab strip fairly: a tab
+    /// whose whole path already fits in less than its equal share only takes what it needs, leaving
+    /// the slack to the tabs that are actually being truncated.
+    /// </summary>
+    public static double MeasureFull(TextBlock tb)
+    {
+        string full = GetPath(tb) ?? "";
+        return full.Length == 0 ? 0 : Measurer(tb)(full);
+    }
+
     private static void Apply(TextBlock tb)
     {
         string full = GetPath(tb) ?? "";
 
         // Budget = the element's MaxWidth. A default TabControl sizes each tab to its content, so the
         // label's ActualWidth is driven by the text we put in it — fitting against ActualWidth would
-        // feed back on itself and ratchet the tab narrower each pass. MaxWidth is a fixed cap, so it's
-        // a stable target: a short path shows in full (the tab shrinks to it); a long one is fitted to
-        // the cap with a leading ellipsis (the tab sits at MaxWidth). Falls back to ActualWidth only if
-        // no finite cap is set.
+        // feed back on itself and ratchet the tab narrower each pass. MaxWidth is set from *outside*
+        // (MainWindow.UpdateTabWidths shares out the tab strip), so it's a stable, non-circular target:
+        // a short path shows in full (the tab shrinks to it); a long one is fitted to the cap with a
+        // leading ellipsis. Falls back to ActualWidth only if no finite cap is set.
         double budget = tb.MaxWidth;
         if (double.IsNaN(budget) || double.IsInfinity(budget) || budget <= 0)
             budget = tb.ActualWidth;
@@ -57,6 +76,19 @@ public static class LeadingEllipsisText
             tb.Text = display;
     }
 
+    /// <summary>A text-width function using the element's own typeface, size and DPI.</summary>
+    private static Func<string, double> Measurer(TextBlock tb)
+    {
+        var typeface = new Typeface(tb.FontFamily, tb.FontStyle, tb.FontWeight, tb.FontStretch);
+        double dpi;
+        try { dpi = VisualTreeHelper.GetDpi(tb).PixelsPerDip; }
+        catch { dpi = 1.0; }
+
+        return s => new FormattedText(
+            s, CultureInfo.CurrentCulture, FlowDirection.LeftToRight, typeface, tb.FontSize,
+            Brushes.Black, dpi).WidthIncludingTrailingWhitespace;
+    }
+
     /// <summary>Longest suffix of <paramref name="full"/> that fits in <paramref name="avail"/> px,
     /// prefixed with a leading ellipsis when anything was dropped.</summary>
     private static string Fit(TextBlock tb, string full, double avail)
@@ -64,14 +96,7 @@ public static class LeadingEllipsisText
         if (string.IsNullOrEmpty(full))
             return full;
 
-        var typeface = new Typeface(tb.FontFamily, tb.FontStyle, tb.FontWeight, tb.FontStretch);
-        double dpi;
-        try { dpi = VisualTreeHelper.GetDpi(tb).PixelsPerDip; }
-        catch { dpi = 1.0; }
-
-        double Measure(string s) => new FormattedText(
-            s, CultureInfo.CurrentCulture, FlowDirection.LeftToRight, typeface, tb.FontSize,
-            Brushes.Black, dpi).WidthIncludingTrailingWhitespace;
+        var Measure = Measurer(tb);
 
         if (Measure(full) <= avail)
             return full;

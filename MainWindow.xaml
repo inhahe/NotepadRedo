@@ -12,6 +12,8 @@
             <MenuItem Header="_File">
                 <MenuItem Header="_New"        Click="New_Click"     InputGestureText="Ctrl+N"/>
                 <MenuItem Header="_Open..."    Click="Open_Click"    InputGestureText="Ctrl+O"/>
+                <!-- Contents are rebuilt in code (RebuildRecentMenu) from the shared RecentFiles store. -->
+                <MenuItem x:Name="RecentMenu" Header="Open _Recent"/>
                 <Separator/>
                 <MenuItem Header="_Save"       Click="Save_Click"    InputGestureText="Ctrl+S"/>
                 <MenuItem Header="Save _As..." Click="SaveAs_Click"  InputGestureText="Ctrl+Shift+S"/>
@@ -175,7 +177,7 @@
         </StatusBar>
 
         <!-- ============ Tabs ============ -->
-        <TabControl x:Name="Tabs" SelectionChanged="Tabs_SelectionChanged">
+        <TabControl x:Name="Tabs" SelectionChanged="Tabs_SelectionChanged" SizeChanged="Tabs_SizeChanged">
             <TabControl.ItemContainerStyle>
                 <Style TargetType="TabItem">
                     <!-- Drag a header to reorder / tear off / reattach across windows. -->
