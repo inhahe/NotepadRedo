@@ -42,7 +42,8 @@ Built with WPF on .NET 8.
 - **Case-sensitivity** toggle.
 - **Match whole word only** toggle: restricts matches to places where the term stands alone as a word (bounded by non-word characters), so searching `os` won't match inside `composition`. Applies to plain and proximity searches alike.
 - **Proximity mode** (the **Only where all items are near each other** checkbox): switches the search box into a multi-item list. Type an item and press **Enter** to add it; each added item appears in a list you can **edit in place**, or **remove** with its × button (or by pressing **Delete** while the item's text is highlighted). **Tab** moves from the add box through each item in turn. Results are only the places where *all* the items occur **within N characters, words, or lines of each other** (N and the unit are configurable). Because items are entered discretely, no quoting or escaping is ever needed — an item can contain spaces and still be one item. Since proximity items are usually whole words, entering proximity mode **turns on "Match whole word only" by default** (so `op` and `po` won't both match inside `opposite`) — uncheck it for substring matching; your previous whole-word setting is restored when you leave proximity mode.
-- Results are listed with a one/two-line preview ending in an ellipsis when truncated; **clicking a result moves the caret and selection to that match** and scrolls it into view. `Enter` in the search box steps through matches.
+- Results are listed with a one/two-line preview ending in an ellipsis when truncated; **clicking a result moves the caret and selection to that match** and scrolls it into view.
+- **Cycle through matches with `F3`** (next) and **`Shift+F3`** (previous), wrapping around at the ends. `Enter` and `Shift+Enter` do the same from the search box, and the arrow keys walk the result list. Stepping starts from wherever the caret is, so you can click into the document and carry on from there — and it re-scans first, so matches stay correct after an edit. `F3` keeps working **after the pane is closed**, and with nothing searched for yet it just opens the pane. The current match stays highlighted while you are typing in the search pane.
 
 ### Autosave, crash recovery & session restore
 - Periodic background autosave (configurable interval, or off) parks in-progress work so an unexpected crash or forced quit doesn't lose unsaved changes.
@@ -93,6 +94,7 @@ Choose what the window's **X** button does:
 | `Ctrl+Shift+S` | Save As… |
 | `Ctrl+W` / `Ctrl+F4` | Close current tab (prompts to save if there are unsaved changes) |
 | `Ctrl+F` | Find… (open the search pane) |
+| `F3` / `Shift+F3` | Find next / previous match (also `Enter` / `Shift+Enter` in the search box) |
 | `Ctrl+Z` | Undo (walk up the history tree) |
 | `Ctrl+Y` / `Ctrl+Shift+Z` | Redo (walk down the history tree) |
 | `Ctrl+X` / `Ctrl+C` / `Ctrl+V` | Cut / copy / paste |

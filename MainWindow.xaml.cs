@@ -919,6 +919,8 @@ public partial class MainWindow : Window
     private void Undo_Click(object sender, RoutedEventArgs e) => ActiveView?.Undo();
     private void Redo_Click(object sender, RoutedEventArgs e) => ActiveView?.Redo();
     private void Find_Click(object sender, RoutedEventArgs e) => ActiveView?.OpenSearch();
+    private void FindNext_Click(object sender, RoutedEventArgs e) => ActiveView?.FindNext(backwards: false);
+    private void FindPrevious_Click(object sender, RoutedEventArgs e) => ActiveView?.FindNext(backwards: true);
 
     private void WordWrap_Click(object sender, RoutedEventArgs e)
     {
@@ -1265,6 +1267,8 @@ public partial class MainWindow : Window
         Bind(Key.W, ModifierKeys.Control, () => CloseTab(Tabs.SelectedItem as TabItem));
         Bind(Key.F4, ModifierKeys.Control, () => CloseTab(Tabs.SelectedItem as TabItem));
         Bind(Key.F, ModifierKeys.Control, () => ActiveView?.OpenSearch());
+        Bind(Key.F3, ModifierKeys.None, () => ActiveView?.FindNext(backwards: false));
+        Bind(Key.F3, ModifierKeys.Shift, () => ActiveView?.FindNext(backwards: true));
         Bind(Key.B, ModifierKeys.Control, ToggleBold);
         Bind(Key.I, ModifierKeys.Control, ToggleItalic);
     }

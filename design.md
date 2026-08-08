@@ -77,6 +77,26 @@ narrower on every layout pass. `ApplyTabWidths` shares the strip out:
 Recomputes are queued at `DispatcherPriority.Loaded` and coalesced, since the inputs only exist once
 layout has run. Triggers: tab added/removed, document retitled, strip resized.
 
+### Search navigation
+
+`EditorView.FindNext(backwards)` backs F3 / Shift+F3, Enter / Shift+Enter in the search box, and the
+two Edit-menu items. Two decisions shape it:
+
+- It **re-runs the search** (`RunSearch(force: true)`, which is why that method takes a `force` flag —
+  it otherwise skips the scan while the pane is collapsed) instead of stepping the existing list. The
+  results are rebuilt from scratch on every scan, so a remembered list index would be meaningless,
+  and the document may have been edited since.
+- It **anchors on the caret**, not on the selected result: the next match is the first one starting at
+  or after the selection (one past it when a match is currently selected), the previous one is the
+  last starting before it, and both wrap. So F3 does the obvious thing after you have clicked
+  somewhere else in the document, and it works with the pane closed.
+
+`NavigateToMatch` only pulls focus into the editor when the caller was *outside* the search pane
+(`SearchPanel.IsKeyboardFocusWithin`). Otherwise Enter/F3 could be pressed only once before the
+editor swallowed the next keystroke, and arrowing down the result list would jump focus away on the
+first press. The match stays visible either way because `Editor` sets
+`IsInactiveSelectionHighlightEnabled`.
+
 ## Persistence (all under `%LOCALAPPDATA%\NotepadRedo`)
 
 | File | Owner | Contents |

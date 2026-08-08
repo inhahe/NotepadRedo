@@ -1444,6 +1444,65 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
     /// <summary>Open the search pane if closed, close it if open (toolbar toggle).</summary>
     public void ToggleSearch() => ShowSearch(!IsSearchOpen);
 
+    /// <summary>True when something has been typed to search for — the box, or (in proximity mode)
+    /// any of the committed terms.</summary>
+    private bool HasSearchQuery =>
+        !string.IsNullOrEmpty(SearchBox.Text) ||
+        (ProximityCheck.IsChecked == true && _searchTerms.Any(t => t.Text.Length > 0));
+
+    /// <summary>
+    /// Step to the next match (F3) or the previous one (Shift+F3), wrapping around the ends. Works
+    /// whether or not the search pane is showing, so the pane can be dismissed and F3 still cycles.
+    /// With nothing to search for yet, opens the pane instead — the same thing Ctrl+F would do.
+    /// </summary>
+    public void FindNext(bool backwards = false)
+    {
+        if (!HasSearchQuery)
+        {
+            ShowSearch(true);
+            return;
+        }
+
+        // Re-scan first. The results are rebuilt from scratch on every search, so a remembered list
+        // index would be meaningless anyway, and the document may well have been edited since the
+        // last scan — stepping a stale list would select the wrong span.
+        _searchDebounce?.Stop();
+        RunSearch(force: true);
+        if (_searchResults.Count == 0)
+            return;
+
+        // Anchor on the caret rather than on the previously selected result: that keeps F3 doing the
+        // obvious thing after you have clicked elsewhere in the document, and survives the rescan.
+        int caret = Editor.SelectionStart;
+        int idx;
+        if (backwards)
+        {
+            idx = -1;
+            for (int i = _searchResults.Count - 1; i >= 0; i--)
+                if (_searchResults[i].Start < caret) { idx = i; break; }
+            if (idx < 0) idx = _searchResults.Count - 1;          // wrap past the top
+        }
+        else
+        {
+            // A match is already selected when its start is the selection anchor; step past it.
+            int from = caret + (Editor.SelectionLength > 0 ? 1 : 0);
+            idx = -1;
+            for (int i = 0; i < _searchResults.Count; i++)
+                if (_searchResults[i].Start >= from) { idx = i; break; }
+            if (idx < 0) idx = 0;                                  // wrap past the bottom
+        }
+
+        // Move the list's highlight without letting it navigate for us — we do that below, so the
+        // behaviour is identical whether the pane is visible or collapsed.
+        _suppressResultNav = true;
+        ResultsList.SelectedIndex = idx;
+        _suppressResultNav = false;
+        ResultsList.ScrollIntoView(ResultsList.SelectedItem);
+
+        SearchStatus.Text = $"{idx + 1} of {_searchResults.Count}";
+        NavigateToMatch(_searchResults[idx]);
+    }
+
     private void ShowSearch(bool show)
     {
         if (show)
@@ -1631,15 +1690,9 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
                 return;
             }
 
-            // Otherwise Enter runs the search now and steps to the next result (wrapping).
-            RunSearch();
-            if (_searchResults.Count > 0)
-            {
-                int next = ResultsList.SelectedIndex + 1;
-                if (next >= _searchResults.Count) next = 0;
-                ResultsList.SelectedIndex = next;
-                ResultsList.ScrollIntoView(ResultsList.SelectedItem);
-            }
+            // Otherwise Enter steps to the next result and Shift+Enter to the previous one, exactly
+            // as F3 / Shift+F3 do, wrapping at the ends.
+            FindNext(backwards: (Keyboard.Modifiers & ModifierKeys.Shift) != 0);
             e.Handled = true;
         }
     }
@@ -1664,9 +1717,11 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
         _searchDebounce.Start();
     }
 
-    private void RunSearch()
+    /// <param name="force">Scan even with the pane collapsed. Normally there is no point (nothing
+    /// would display the results), but F3 navigates the match list with the pane closed.</param>
+    private void RunSearch(bool force = false)
     {
-        if (SearchPanel.Visibility != Visibility.Visible)
+        if (!force && SearchPanel.Visibility != Visibility.Visible)
             return;
 
         _suppressResultNav = true;
@@ -1744,7 +1799,13 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
         int start = Math.Clamp(r.Start, 0, len);
         int selLen = Math.Clamp(r.Length, 0, len - start);
 
-        Editor.Focus();
+        // Only pull focus into the editor when the request came from outside the search pane.
+        // Leaving it where it is means Enter/F3 can be pressed repeatedly to cycle, and the result
+        // list can be arrowed through, without the editor snatching the next keystroke. The match
+        // stays visible regardless because the editor keeps its selection highlight when unfocused
+        // (IsInactiveSelectionHighlightEnabled).
+        if (!SearchPanel.IsKeyboardFocusWithin)
+            Editor.Focus();
         // Select() highlights the match and leaves the caret at its end. (Don't set
         // CaretIndex afterwards — doing so collapses the selection, hiding the match.)
         Editor.Select(start, selLen);

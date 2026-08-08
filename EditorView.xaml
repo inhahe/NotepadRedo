@@ -14,6 +14,9 @@
             <ColumnDefinition x:Name="SearchColumn" Width="0" MinWidth="0"/>
         </Grid.ColumnDefinitions>
 
+        <!-- IsInactiveSelectionHighlightEnabled: keep the found match highlighted while you type in
+             the search pane or step results with Enter/F3. Without it the selection vanishes the
+             moment the editor loses focus, so the "current" match would be invisible. -->
         <TextBox x:Name="Editor" Grid.Column="0"
                  AcceptsReturn="True" AcceptsTab="True"
                  TextWrapping="Wrap"
@@ -21,6 +24,7 @@
                  HorizontalScrollBarVisibility="Auto"
                  FontFamily="Consolas" FontSize="14"
                  IsUndoEnabled="False"
+                 IsInactiveSelectionHighlightEnabled="True"
                  Background="{DynamicResource Theme.EditorBg}"
                  Foreground="{DynamicResource Theme.EditorFg}"
                  CaretBrush="{DynamicResource Theme.EditorFg}"

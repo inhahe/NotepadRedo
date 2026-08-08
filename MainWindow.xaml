@@ -30,6 +30,8 @@
                 <MenuItem Header="_Paste" Command="Paste"/>
                 <Separator/>
                 <MenuItem Header="_Find..." Click="Find_Click" InputGestureText="Ctrl+F"/>
+                <MenuItem Header="Find _Next" Click="FindNext_Click" InputGestureText="F3"/>
+                <MenuItem Header="Find Pre_vious" Click="FindPrevious_Click" InputGestureText="Shift+F3"/>
             </MenuItem>
             <MenuItem Header="F_ormat">
                 <MenuItem Header="_Font..." Click="Font_Click"/>
