@@ -1455,7 +1455,10 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
     /// whether or not the search pane is showing, so the pane can be dismissed and F3 still cycles.
     /// With nothing to search for yet, opens the pane instead — the same thing Ctrl+F would do.
     /// </summary>
-    public void FindNext(bool backwards = false)
+    /// <param name="keepFocus">Leave the keyboard where it is instead of moving into the document.
+    /// Set for Enter in the search box, so the box can be used to keep stepping; F3 clears it,
+    /// because landing in the text with a real caret is the point of pressing F3.</param>
+    public void FindNext(bool backwards = false, bool keepFocus = false)
     {
         if (!HasSearchQuery)
         {
@@ -1499,8 +1502,17 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
         _suppressResultNav = false;
         ResultsList.ScrollIntoView(ResultsList.SelectedItem);
 
-        SearchStatus.Text = $"{idx + 1} of {_searchResults.Count}";
-        NavigateToMatch(_searchResults[idx]);
+        ShowMatchPosition(idx);
+        NavigateToMatch(_searchResults[idx], keepFocus);
+    }
+
+    /// <summary>Replace the search pane's "N results" summary with the position of the match you are
+    /// standing on. Every path that changes which match is current goes through here, so the counter
+    /// can't go stale (clicking a result and pressing F3 must agree).</summary>
+    private void ShowMatchPosition(int idx)
+    {
+        if (idx >= 0 && idx < _searchResults.Count)
+            SearchStatus.Text = $"{idx + 1} of {_searchResults.Count}";
     }
 
     private void ShowSearch(bool show)
@@ -1691,8 +1703,9 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
             }
 
             // Otherwise Enter steps to the next result and Shift+Enter to the previous one, exactly
-            // as F3 / Shift+F3 do, wrapping at the ends.
-            FindNext(backwards: (Keyboard.Modifiers & ModifierKeys.Shift) != 0);
+            // as F3 / Shift+F3 do, wrapping at the ends. Focus stays in the box so it can be pressed
+            // repeatedly; the match stays highlighted because the pane is its own focus scope.
+            FindNext(backwards: (Keyboard.Modifiers & ModifierKeys.Shift) != 0, keepFocus: true);
             e.Handled = true;
         }
     }
@@ -1702,7 +1715,22 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
         if (_suppressResultNav)
             return;
         if (ResultsList.SelectedItem is SearchResultVM r)
-            NavigateToMatch(r);
+        {
+            ShowMatchPosition(ResultsList.SelectedIndex);
+            // Keep the keyboard on the list so the arrow keys can keep walking it — moving focus into
+            // the document on the first press would make the second arrow key move the caret instead.
+            // Clicking a result is handled separately (Results_MouseUp) and does move focus.
+            NavigateToMatch(r, keepFocus: true);
+        }
+    }
+
+    /// <summary>A click on a result is a deliberate "take me there", so unlike arrowing down the list
+    /// it hands the keyboard to the document. Runs after the selection change, so the caret is already
+    /// on the match by now.</summary>
+    private void Results_MouseUp(object sender, MouseButtonEventArgs e)
+    {
+        if (ResultsList.SelectedItem is SearchResultVM)
+            Editor.Focus();
     }
 
     /// <summary>Debounce rapid input so we don't re-scan the whole document on every keystroke.</summary>
@@ -1793,18 +1821,18 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
     }
 
     /// <summary>Move the caret/selection to a result and scroll it into view.</summary>
-    private void NavigateToMatch(SearchResultVM r)
+    /// <param name="keepFocus">Leave the keyboard focus where it is rather than moving it into the
+    /// editor. Used by the search pane's own stepping (Enter in the box, arrow keys down the result
+    /// list) so the next keystroke isn't swallowed by the document. The match stays highlighted in
+    /// that case because the search pane is its own focus scope, which leaves the editor's selection
+    /// active (see SearchPanel in EditorView.xaml).</param>
+    private void NavigateToMatch(SearchResultVM r, bool keepFocus = false)
     {
         int len = Editor.Text.Length;
         int start = Math.Clamp(r.Start, 0, len);
         int selLen = Math.Clamp(r.Length, 0, len - start);
 
-        // Only pull focus into the editor when the request came from outside the search pane.
-        // Leaving it where it is means Enter/F3 can be pressed repeatedly to cycle, and the result
-        // list can be arrowed through, without the editor snatching the next keystroke. The match
-        // stays visible regardless because the editor keeps its selection highlight when unfocused
-        // (IsInactiveSelectionHighlightEnabled).
-        if (!SearchPanel.IsKeyboardFocusWithin)
+        if (!keepFocus)
             Editor.Focus();
         // Select() highlights the match and leaves the caret at its end. (Don't set
         // CaretIndex afterwards — doing so collapses the selection, hiding the match.)

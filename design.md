@@ -91,11 +91,28 @@ two Edit-menu items. Two decisions shape it:
   last starting before it, and both wrap. So F3 does the obvious thing after you have clicked
   somewhere else in the document, and it works with the pane closed.
 
-`NavigateToMatch` only pulls focus into the editor when the caller was *outside* the search pane
-(`SearchPanel.IsKeyboardFocusWithin`). Otherwise Enter/F3 could be pressed only once before the
-editor swallowed the next keystroke, and arrowing down the result list would jump focus away on the
-first press. The match stays visible either way because `Editor` sets
-`IsInactiveSelectionHighlightEnabled`.
+#### Where the focus goes
+
+`NavigateToMatch(r, keepFocus)` takes the decision as an explicit argument rather than sniffing
+`SearchPanel.IsKeyboardFocusWithin`, because the two callers that share a focus state want opposite
+things (a click in the result list vs. an arrow key in it).
+
+| Caller | `keepFocus` | Why |
+|---|---|---|
+| F3 / Shift+F3, Edit-menu Find Next/Previous | `false` | Landing in the document with a real caret *is* the point. F3 keeps cycling because it is a window-level `InputBinding`, so it fires with focus in the editor. |
+| Enter / Shift+Enter in the search box | `true` | The box must survive so it can be pressed again. |
+| Arrow keys down the result list (`Results_SelectionChanged`) | `true` | Moving focus on the first press would make the second arrow key move the caret instead. |
+| Click on a result (`Results_MouseUp`) | — focuses after | A click is a deliberate "take me there". Handled separately since a click and an arrow key are indistinguishable inside `SelectionChanged`. |
+
+Keeping the match *visible* while focus stays in the pane is what
+`FocusManager.IsFocusScope="True"` on `SearchPanel` is for. The pane is a tool beside the document,
+the same relationship a toolbar or menu has, and inside its own focus scope the editor's selection
+stays **active** — so the match keeps its normal selection highlight rather than vanishing.
+
+`Editor.IsInactiveSelectionHighlightEnabled` is *not* the mechanism, despite being the obvious
+candidate: measured on .NET 8 it resolves `SystemColors.InactiveSelectionHighlightBrushKey` and
+coerces `SelectionBrush` from it correctly, but paints nothing, because `IsSelectionActive` has
+already gone false by then. Don't reach for it (or for overriding that brush key) if this regresses.
 
 ## Persistence (all under `%LOCALAPPDATA%\NotepadRedo`)
 
