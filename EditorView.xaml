@@ -14,6 +14,10 @@
             <ColumnDefinition x:Name="SearchColumn" Width="0" MinWidth="0"/>
         </Grid.ColumnDefinitions>
 
+        <!-- IsInactiveSelectionHighlightEnabled: keep the selection visible when the *window* is
+             deactivated (alt-tab away and back), so a found match doesn't disappear. It does NOT
+             cover losing focus to another control in this window — see SearchPanel's IsFocusScope
+             below, which is what keeps the match highlighted while you type in the search pane. -->
         <TextBox x:Name="Editor" Grid.Column="0"
                  AcceptsReturn="True" AcceptsTab="True"
                  TextWrapping="Wrap"
@@ -21,6 +25,7 @@
                  HorizontalScrollBarVisibility="Auto"
                  FontFamily="Consolas" FontSize="14"
                  IsUndoEnabled="False"
+                 IsInactiveSelectionHighlightEnabled="True"
                  Background="{DynamicResource Theme.EditorBg}"
                  Foreground="{DynamicResource Theme.EditorFg}"
                  CaretBrush="{DynamicResource Theme.EditorFg}"
@@ -139,7 +144,13 @@
         </DockPanel>
 
         <!-- ===================== Search pane (far right, toggled by Ctrl+F) ===================== -->
-        <DockPanel x:Name="SearchPanel" Grid.Column="3" Margin="4" Visibility="Collapsed">
+        <!-- IsFocusScope: the search pane is a tool alongside the document, not a place the document
+             hands its focus to — the same relationship a toolbar or menu has. Making it a focus scope
+             means the editor keeps its *active* selection while you type here, so the current match
+             stays highlighted. (WPF's IsInactiveSelectionHighlightEnabled is no substitute: it resolves
+             the brush but paints nothing, because IsSelectionActive has already gone false.) -->
+        <DockPanel x:Name="SearchPanel" Grid.Column="3" Margin="4" Visibility="Collapsed"
+                   FocusManager.IsFocusScope="True">
             <Border DockPanel.Dock="Top" Background="{DynamicResource Theme.PanelBg}" Padding="6" Margin="0,0,0,4"
                     BorderBrush="{DynamicResource Theme.PanelBorder}" BorderThickness="1">
                 <StackPanel>
@@ -233,7 +244,8 @@
                      BorderBrush="{DynamicResource Theme.PanelBorder}" BorderThickness="1"
                      ScrollViewer.HorizontalScrollBarVisibility="Disabled"
                      HorizontalContentAlignment="Stretch"
-                     SelectionChanged="Results_SelectionChanged">
+                     SelectionChanged="Results_SelectionChanged"
+                     PreviewMouseLeftButtonUp="Results_MouseUp">
                 <ListBox.ItemContainerStyle>
                     <Style TargetType="ListBoxItem">
                         <Setter Property="Padding" Value="4,3"/>

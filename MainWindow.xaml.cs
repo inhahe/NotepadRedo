@@ -9,6 +9,7 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
+using System.Windows.Threading;
 using Microsoft.Win32;
 
 namespace NotepadRedo;
@@ -50,7 +51,53 @@ public partial class MainWindow : Window
             // as soon as this window gets focus.
             AppSettings.Current.Reload();
             SyncOptionMenus();
+            // Another instance may have opened files while we were in the background.
+            RebuildRecentMenu();
         };
+
+        RecentFiles.Changed += OnRecentFilesChanged;
+        Closed += (_, _) => RecentFiles.Changed -= OnRecentFilesChanged;
+        RebuildRecentMenu();
+    }
+
+    private void OnRecentFilesChanged(object? sender, EventArgs e) => RebuildRecentMenu();
+
+    /// <summary>
+    /// Fill File &gt; Open Recent from the shared store. Rebuilt rather than bound because the list is
+    /// process-wide state that other windows (and other instances) change behind this window's back.
+    /// </summary>
+    private void RebuildRecentMenu()
+    {
+        if (RecentMenu is null)
+            return;
+        RecentMenu.Items.Clear();
+
+        var files = RecentFiles.Load();
+        if (files.Count == 0)
+        {
+            RecentMenu.Items.Add(new MenuItem { Header = "(none)", IsEnabled = false });
+            return;
+        }
+
+        for (int i = 0; i < files.Count; i++)
+        {
+            string path = files[i];
+            // "_" is a menu accelerator, so double the ones in the path to show them literally; the
+            // leading "_1".."_9" (then plain numbers) are the accelerators we actually want.
+            string prefix = i < 9 ? $"_{i + 1}  " : $"{i + 1}  ";
+            var item = new MenuItem
+            {
+                Header = prefix + path.Replace("_", "__"),
+                ToolTip = path,
+            };
+            item.Click += (_, _) => RequestOpenFile(path);
+            RecentMenu.Items.Add(item);
+        }
+
+        RecentMenu.Items.Add(new Separator());
+        var clear = new MenuItem { Header = "_Clear this list" };
+        clear.Click += (_, _) => RecentFiles.Clear();
+        RecentMenu.Items.Add(clear);
     }
 
     /// <summary>
@@ -187,10 +234,30 @@ public partial class MainWindow : Window
 
     private EditorView? ActiveView => (Tabs.SelectedItem as TabItem)?.Content as EditorView;
 
+    /// <summary>
+    /// Tabs in most-recently-active-first order. Closing a tab hands focus back to the one you were on
+    /// before it (and, if that has since been closed too, the one before that) rather than to whichever
+    /// tab happens to sit next to it — so a detour into a tab and back out lands you where you started.
+    /// Holds the TabItems themselves; entries for removed tabs are pruned as they're encountered.
+    /// </summary>
+    private readonly List<TabItem> _tabMru = new();
+
+    /// <summary>
+    /// Set while <see cref="RemoveTab"/> is choosing the replacement selection. WPF auto-selects an
+    /// adjacent tab the moment one is removed, which would push that arbitrary neighbour to the front
+    /// of the MRU and destroy the very history we're about to consult.
+    /// </summary>
+    private bool _suppressMru;
+
     private void Tabs_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (!ReferenceEquals(e.OriginalSource, Tabs))
             return;
+        if (!_suppressMru && Tabs.SelectedItem is TabItem sel)
+        {
+            _tabMru.Remove(sel);
+            _tabMru.Insert(0, sel);
+        }
         UpdateChrome();
         ActiveView?.FocusEditor();
     }
@@ -271,6 +338,16 @@ public partial class MainWindow : Window
     {
         if (ReferenceEquals(sender, ActiveView))
             UpdateChrome();
+        // A retitled document (save-as, or the dirty marker appearing) changes how much room that tab
+        // wants, so the strip has to be shared out again — for every tab, not just the active one.
+        UpdateTabWidths();
+    }
+
+    /// <summary>The strip got wider/narrower (window resize, sidebar toggle): re-share the tab widths.</summary>
+    private void Tabs_SizeChanged(object sender, SizeChangedEventArgs e)
+    {
+        if (e.WidthChanged)
+            UpdateTabWidths();
     }
 
     private void View_SearchVisibilityChanged(object? sender, EventArgs e)
@@ -420,9 +497,34 @@ public partial class MainWindow : Window
         return false;
     }
 
-    /// <summary>Restore (if minimised) and force this window to the foreground.</summary>
+    /// <summary>
+    /// Bring an already-running instance forward, without opening anything. Answers the PRESENT IPC
+    /// verb, which a bare "notepadredo" launch (no filenames) sends so it reuses this instance rather
+    /// than opening a second, empty window. Prefers the active window, else the first one we have.
+    /// </summary>
+    public static bool PresentExisting()
+    {
+        var windows = Application.Current.Windows.OfType<MainWindow>().ToList();
+        var mw = windows.FirstOrDefault(w => w.IsActive) ?? windows.FirstOrDefault();
+        if (mw is null)
+            return false;
+        mw.ForceForeground();
+        mw.ActiveView?.FocusEditor();
+        return true;
+    }
+
+    /// <summary>Restore (from the tray / from minimised) and force this window to the foreground.</summary>
     public void ForceForeground()
     {
+        // A window parked in the notification area is Hidden, not merely minimised — Activate() alone
+        // would silently do nothing to it — so un-hide it (and put it back in the taskbar) first.
+        if (Visibility != Visibility.Visible)
+        {
+            Show();
+            ShowInTaskbar = true;
+            if (_tray is not null)
+                _tray.Visible = false;
+        }
         if (WindowState == WindowState.Minimized)
             WindowState = WindowState.Normal;
         Activate();
@@ -443,10 +545,24 @@ public partial class MainWindow : Window
         view.TitleChanged += View_Changed;
         view.SearchVisibilityChanged += View_SearchVisibilityChanged;
 
-        var ti = new TabItem { Content = view, Header = BuildHeader(view) };
+        // Stretch the header: when the strip wraps onto several rows the TabPanel widens the tabs in
+        // each row to fill it, and centred content would then float in the middle with gaps either
+        // side. Stretched, the path starts at the tab's left edge and its × sits at the right.
+        var ti = new TabItem
+        {
+            Content = view,
+            Header = BuildHeader(view),
+            HorizontalContentAlignment = HorizontalAlignment.Stretch,
+        };
         Tabs.Items.Add(ti);
         if (select)
-            Tabs.SelectedItem = ti;
+            Tabs.SelectedItem = ti;      // SelectionChanged puts it at the head of the MRU
+        else if (!_tabMru.Contains(ti))
+            _tabMru.Add(ti);             // never visited yet: still a candidate, but the oldest one
+        // Every route to a titled tab — command line, dialog, session restore, recent list, drag —
+        // funnels through here, so this one call keeps the recent list complete.
+        RecentFiles.Add(view.FilePath);
+        UpdateTabWidths();
         UpdateChrome();
         SaveSession();
     }
@@ -466,7 +582,8 @@ public partial class MainWindow : Window
 
         var label = new TextBlock
         {
-            MaxWidth = 260,
+            // Starting cap only; UpdateTabWidths recomputes it from the real width of the tab strip.
+            MaxWidth = DefaultLabelWidth,
             // Truncation is done by LeadingEllipsisText (leading "…", keeps the file name) — not the
             // built-in trailing ellipsis, which would hide the informative tail of a long path.
             TextTrimming = TextTrimming.None,
@@ -478,6 +595,166 @@ public partial class MainWindow : Window
         panel.Children.Add(close);
         panel.Children.Add(label);
         return panel;
+    }
+
+    // ===================== Tab label widths =====================
+
+    /// <summary>Cap a brand-new tab's label starts at, before the strip has been measured.</summary>
+    private const double DefaultLabelWidth = 260;
+
+    /// <summary>A truncated path is useless below this; tabs wrap to another row rather than go narrower.</summary>
+    private const double MinLabelWidth = 70;
+
+    /// <summary>Per-tab overhead (close button, paddings, borders) assumed until a laid-out tab shows the real figure.</summary>
+    private const double AssumedTabChrome = 46;
+
+    /// <summary>
+    /// Extra pixels of per-tab overhead the default TabItem template adds beyond its own Padding and
+    /// BorderThickness (the selected tab's slightly larger border, the header ContentPresenter's own
+    /// margin). Small and only affects how much slack is left over, so an approximation is fine.
+    /// </summary>
+    private const double TabTemplateSlop = 8;
+
+    private bool _tabWidthUpdateQueued;
+
+    /// <summary>
+    /// Queue a recompute of how much width each tab label may use. Deferred to the end of the layout
+    /// pass (and coalesced) because the numbers it needs — the tab strip's width and each tab's chrome
+    /// — only exist once WPF has actually measured the tabs we are reacting to.
+    /// </summary>
+    private void UpdateTabWidths()
+    {
+        if (_tabWidthUpdateQueued)
+            return;
+        _tabWidthUpdateQueued = true;
+        Dispatcher.BeginInvoke(DispatcherPriority.Loaded, new Action(() =>
+        {
+            _tabWidthUpdateQueued = false;
+            try { ApplyTabWidths(); }
+            catch (Exception ex) { CrashLog.Log("ApplyTabWidths failed", ex); }
+        }));
+    }
+
+    /// <summary>
+    /// Share the tab strip's width out among the tab labels, so a path is elided only when it genuinely
+    /// cannot fit — not at some arbitrary fixed cap. Two things make this worth doing: the tab strip
+    /// wraps onto as many rows as it needs, and WPF's TabPanel <i>stretches</i> the tabs in each row to
+    /// fill it — so with a fixed cap every tab sat visibly wider than the text it had elided. Here the
+    /// row count is worked out first, then that whole area is shared out: tabs whose full path is
+    /// shorter than an equal cut take only what they need and hand back the difference, so one long
+    /// path beside several short ones ends up with nearly all the room.
+    /// </summary>
+    private void ApplyTabWidths()
+    {
+        var labels = new List<TextBlock>();
+        var owners = new List<TabItem>();
+        foreach (var ti in Tabs.Items.OfType<TabItem>())
+            if (ti.Header is Panel p && p.Children.OfType<TextBlock>().FirstOrDefault() is TextBlock tb)
+            {
+                labels.Add(tb);
+                owners.Add(ti);
+            }
+        if (labels.Count == 0)
+            return;
+
+        // Slack for the TabControl's own border/padding. Erring generous costs a few pixels; erring
+        // short makes the TabPanel — which balances rows rather than strictly wrapping — push the last
+        // tab of a row past the window edge, where it gets clipped.
+        double strip = Tabs.ActualWidth - 16;
+        if (strip <= 0)
+            return;
+
+        double chrome = MeasureTabChrome(owners, labels);
+        var natural = labels.ToDictionary(tb => tb, LeadingEllipsisText.MeasureFull);
+
+        // How many rows to plan for. Deliberately *not* derived from the widths we're about to grant
+        // (that would be circular, and letting every path show in full could push the strip to a dozen
+        // rows). Instead: however many rows the tabs would have wrapped onto under the old fixed cap —
+        // the vertical footprint stays what it always was, and only the leftover width in each of those
+        // rows is what we're reclaiming.
+        double baseline = labels.Sum(tb => Math.Min(natural[tb], DefaultLabelWidth) + chrome);
+        int rows = Math.Max(1, (int)Math.Ceiling(baseline / strip));
+
+        double pool = rows * strip - chrome * labels.Count;
+        if (pool <= 0)
+        {
+            foreach (var tb in labels)
+                SetLabelWidth(tb, MinLabelWidth);
+            return;
+        }
+
+        // Greedy fair share: repeatedly hand every still-unsatisfied label an equal cut of what's left,
+        // settle the ones that need less than their cut (freeing the difference), and re-divide among
+        // the rest. Terminates because each round either settles a label or gives up and splits evenly.
+        var granted = new Dictionary<TextBlock, double>();
+        var pending = new List<TextBlock>(labels);
+        while (pending.Count > 0)
+        {
+            double share = pool / pending.Count;
+            var satisfied = pending.Where(tb => natural[tb] <= share).ToList();
+            if (satisfied.Count == 0)
+            {
+                foreach (var tb in pending)
+                    granted[tb] = share;
+                break;
+            }
+            foreach (var tb in satisfied)
+            {
+                // +1px so rounding down below can't shave the last glyph off and elide a path that
+                // was supposed to fit exactly.
+                granted[tb] = natural[tb] + 1;
+                pool -= granted[tb];
+                pending.Remove(tb);
+            }
+        }
+
+        foreach (var tb in labels)
+            SetLabelWidth(tb, Math.Max(MinLabelWidth, Math.Floor(granted[tb])));
+    }
+
+    /// <summary>
+    /// Everything of a tab that isn't the path label: the close button plus the TabItem's padding,
+    /// border and template margins. Read from <see cref="UIElement.DesiredSize"/> — the size the tab
+    /// asked for — rather than ActualWidth, because the TabPanel stretches the tabs in a row to fill
+    /// it, and that stretch slack varies with the very label widths we are about to set, which would
+    /// make the calculation circular and ratchet the labels down to nothing. The difference between a
+    /// tab's desired width and its label's is exactly the fixed overhead, whatever the text is.
+    /// </summary>
+    private static double MeasureTabChrome(IReadOnlyList<TabItem> owners, IReadOnlyList<TextBlock> labels)
+    {
+        double measured = 0;
+        for (int i = 0; i < owners.Count; i++)
+        {
+            double tab = owners[i].DesiredSize.Width;
+            double label = labels[i].DesiredSize.Width;
+            if (tab > label && label > 0)
+                measured = Math.Max(measured, tab - label);
+        }
+        if (measured > 0)
+            return measured;
+
+        // Nothing laid out yet (first pass on a new window): fall back to adding up what we can see of
+        // the structure, and to a flat guess if even that isn't available. Refined on the next pass.
+        if (owners[0].Header is Panel panel &&
+            panel.Children.OfType<Button>().FirstOrDefault() is Button close && close.ActualWidth > 0)
+        {
+            return close.ActualWidth + close.Margin.Left + close.Margin.Right
+                 + panel.Margin.Left + panel.Margin.Right
+                 + owners[0].Padding.Left + owners[0].Padding.Right
+                 + owners[0].BorderThickness.Left + owners[0].BorderThickness.Right
+                 + TabTemplateSlop;
+        }
+        return AssumedTabChrome;
+    }
+
+    private static void SetLabelWidth(TextBlock tb, double width)
+    {
+        if (Math.Abs(tb.MaxWidth - width) < 0.5)
+            return;
+        tb.MaxWidth = width;
+        // Widening the cap produces no SizeChanged of its own (the elided text still measures at the
+        // old width), so the re-fit has to be asked for explicitly.
+        LeadingEllipsisText.Refresh(tb);
     }
 
     private TabItem? FindTab(EditorView view) =>
@@ -512,7 +789,33 @@ public partial class MainWindow : Window
             if (dispose)
                 view.Dispose();
         }
-        Tabs.Items.Remove(ti);
+        // Removing the selected tab makes WPF pick a neighbour on its own. Suppress MRU tracking over
+        // the removal so that arbitrary choice doesn't rewrite the history, then select the tab the
+        // user was on before this one (skipping any that have since been closed).
+        bool wasSelected = ReferenceEquals(Tabs.SelectedItem, ti);
+        _tabMru.Remove(ti);
+        _suppressMru = true;
+        try
+        {
+            Tabs.Items.Remove(ti);
+            if (wasSelected)
+            {
+                _tabMru.RemoveAll(t => !Tabs.Items.Contains(t));
+                if (_tabMru.Count > 0)
+                    Tabs.SelectedItem = _tabMru[0];
+            }
+        }
+        finally { _suppressMru = false; }
+
+        // Whatever ended up selected (our MRU pick, or WPF's neighbour when the history was empty)
+        // is now the most recent — record it, since the handler above was suppressed.
+        if (Tabs.SelectedItem is TabItem nowSelected)
+        {
+            _tabMru.Remove(nowSelected);
+            _tabMru.Insert(0, nowSelected);
+        }
+
+        UpdateTabWidths();   // the freed width goes back to the tabs that remain
         UpdateChrome();
         // A real close (dispose) of the last file tab may clear the session; a tear-off (move to
         // another window) must not — the view lives on and AddView will re-record it there.
@@ -569,8 +872,22 @@ public partial class MainWindow : Window
 
     // Save through the active view, then refresh the session list — Save As can turn an untitled
     // buffer into a titled file (or change its path), which changes what should be reopened.
-    private void Save_Click(object sender, RoutedEventArgs e) { ActiveView?.Save(false); SaveSession(); }
-    private void SaveAs_Click(object sender, RoutedEventArgs e) { ActiveView?.Save(true); SaveSession(); }
+    private void Save_Click(object sender, RoutedEventArgs e) => DoSave(saveAs: false);
+    private void SaveAs_Click(object sender, RoutedEventArgs e) => DoSave(saveAs: true);
+
+    /// <summary>
+    /// Save the active document, then record the result. A first save / save-as gives a buffer a path
+    /// (and save-as changes an existing one), so both the restore session and the recent-files list
+    /// need updating afterwards — hence one helper shared by the menu items and the Ctrl+S bindings.
+    /// </summary>
+    private void DoSave(bool saveAs)
+    {
+        var view = ActiveView;
+        if (view is null || !view.Save(saveAs))
+            return;      // nothing open, or the user cancelled the Save As dialog
+        SaveSession();
+        RecentFiles.Add(view.FilePath);
+    }
     private void CloseTab_Click(object sender, RoutedEventArgs e) => CloseTab(Tabs.SelectedItem as TabItem);
 
     private void Exit_Click(object sender, RoutedEventArgs e)
@@ -602,6 +919,8 @@ public partial class MainWindow : Window
     private void Undo_Click(object sender, RoutedEventArgs e) => ActiveView?.Undo();
     private void Redo_Click(object sender, RoutedEventArgs e) => ActiveView?.Redo();
     private void Find_Click(object sender, RoutedEventArgs e) => ActiveView?.OpenSearch();
+    private void FindNext_Click(object sender, RoutedEventArgs e) => ActiveView?.FindNext(backwards: false);
+    private void FindPrevious_Click(object sender, RoutedEventArgs e) => ActiveView?.FindNext(backwards: true);
 
     private void WordWrap_Click(object sender, RoutedEventArgs e)
     {
@@ -941,11 +1260,15 @@ public partial class MainWindow : Window
         Bind(Key.Z, ModifierKeys.Control | ModifierKeys.Shift, () => ActiveView?.Redo());
         Bind(Key.N, ModifierKeys.Control, () => New_Click(this, new RoutedEventArgs()));
         Bind(Key.O, ModifierKeys.Control, () => Open_Click(this, new RoutedEventArgs()));
-        Bind(Key.S, ModifierKeys.Control, () => ActiveView?.Save(false));
-        Bind(Key.S, ModifierKeys.Control | ModifierKeys.Shift, () => ActiveView?.Save(true));
+        // Through the same helper as the menu items, so a keyboard save also updates the restore
+        // session and the recent-files list (a Ctrl+S on an untitled buffer gives it a path).
+        Bind(Key.S, ModifierKeys.Control, () => DoSave(saveAs: false));
+        Bind(Key.S, ModifierKeys.Control | ModifierKeys.Shift, () => DoSave(saveAs: true));
         Bind(Key.W, ModifierKeys.Control, () => CloseTab(Tabs.SelectedItem as TabItem));
         Bind(Key.F4, ModifierKeys.Control, () => CloseTab(Tabs.SelectedItem as TabItem));
         Bind(Key.F, ModifierKeys.Control, () => ActiveView?.OpenSearch());
+        Bind(Key.F3, ModifierKeys.None, () => ActiveView?.FindNext(backwards: false));
+        Bind(Key.F3, ModifierKeys.Shift, () => ActiveView?.FindNext(backwards: true));
         Bind(Key.B, ModifierKeys.Control, ToggleBold);
         Bind(Key.I, ModifierKeys.Control, ToggleItalic);
     }

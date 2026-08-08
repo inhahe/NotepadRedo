@@ -125,6 +125,19 @@ public partial class App : Application
             }
             files = remaining;
         }
+        else if (files.Count == 0 && !blankRequested && !AppSettings.Current.OpenInNewInstance)
+        {
+            // Bare "notepadredo" with no filenames while an instance is already running: the user
+            // wants the editor they already have, not a second empty window on top of it. Ask a
+            // sibling to come forward and exit without ever showing one. (In *new instance* mode
+            // that's exactly what the user asked us not to do, and "--new" is an explicit request
+            // for a fresh blank, so both fall through to opening normally.)
+            if (IpcServer.PresentSibling())
+            {
+                Shutdown();
+                return;
+            }
+        }
 
         // Are we the first NotepadRedo process? Only the first instance restores the previous session;
         // secondary instances (new-instance mode) just open what they were launched with. Checked here,

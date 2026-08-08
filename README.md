@@ -24,11 +24,17 @@ Built with WPF on .NET 8.
 - **Tear off** a tab by dragging its header out of the window to create a new window.
 - **Reattach / reorder** tabs by dragging headers between and within windows.
 - **Middle-click** a tab header to close it.
+- Tab headers show the file's **full path**, and the available width of the tab strip is shared out among them: a tab whose whole path fits takes only the room it needs, and the slack goes to the tabs that would otherwise be truncated. A path too long even then is shortened from the **front** (`…\folder\file.txt`) so the file name always stays readable; the full path is in the tooltip.
+- Closing a tab returns you to the tab you were on **before** it — and if that one has been closed too, the one before that — rather than to whichever tab happens to sit next to it.
 
 ### Multiple windows & instances
 - Cross-instance IPC over a named pipe coordinates all running copies.
 - Opening a file that's already open just focuses the existing tab/window.
 - Configurable: new files open in **a new tab** (of the existing instance) or **a new instance** (separate process).
+- Running `notepadredo` with **no filename** while a copy is already running just brings that window to the front (restoring it from the tray if need be) instead of opening a second, empty one. Use `--new` to ask for a fresh blank document, or switch to *new instance* mode if you'd rather always get a new process.
+
+### Recent files
+- **File → Open Recent** lists the last 15 files you opened or saved, newest first, with `Alt`-accessible numbers for the first nine. The list is shared by every window and every running instance, and persists between runs (`%LOCALAPPDATA%\NotepadRedo\recent.json`). **Clear this list** empties it.
 
 ### Search
 - Open the search pane with `Ctrl+F` (or **Edit → Find…**, or the toolbar **Search** toggle button); it slides in on the right. The toolbar button stays lit while the pane is open and toggles it closed again.
@@ -36,7 +42,8 @@ Built with WPF on .NET 8.
 - **Case-sensitivity** toggle.
 - **Match whole word only** toggle: restricts matches to places where the term stands alone as a word (bounded by non-word characters), so searching `os` won't match inside `composition`. Applies to plain and proximity searches alike.
 - **Proximity mode** (the **Only where all items are near each other** checkbox): switches the search box into a multi-item list. Type an item and press **Enter** to add it; each added item appears in a list you can **edit in place**, or **remove** with its × button (or by pressing **Delete** while the item's text is highlighted). **Tab** moves from the add box through each item in turn. Results are only the places where *all* the items occur **within N characters, words, or lines of each other** (N and the unit are configurable). Because items are entered discretely, no quoting or escaping is ever needed — an item can contain spaces and still be one item. Since proximity items are usually whole words, entering proximity mode **turns on "Match whole word only" by default** (so `op` and `po` won't both match inside `opposite`) — uncheck it for substring matching; your previous whole-word setting is restored when you leave proximity mode.
-- Results are listed with a one/two-line preview ending in an ellipsis when truncated; **clicking a result moves the caret and selection to that match** and scrolls it into view. `Enter` in the search box steps through matches.
+- Results are listed with a one/two-line preview ending in an ellipsis when truncated; **clicking a result moves the caret and selection to that match** and scrolls it into view.
+- **Cycle through matches with `F3`** (next) and **`Shift+F3`** (previous), wrapping around at the ends. `Enter` and `Shift+Enter` do the same from the search box, and the arrow keys walk the result list. Stepping starts from wherever the caret is, so you can click into the document and carry on from there — and it re-scans first, so matches stay correct after an edit. `F3` keeps working **after the pane is closed**, and with nothing searched for yet it just opens the pane. `F3` puts the caret on the match in the document; stepping from the search box or the result list instead leaves the keyboard where it is, so you can keep pressing — the match stays selected and visible in the document either way.
 
 ### Autosave, crash recovery & session restore
 - Periodic background autosave (configurable interval, or off) parks in-progress work so an unexpected crash or forced quit doesn't lose unsaved changes.
@@ -67,6 +74,9 @@ Choose what the window's **X** button does:
 - A **Size** submenu for common point sizes.
 - The chosen font is a shared, persisted preference applied to the editor in every tab and window.
 
+### Dialogs
+- Every prompt is themed to match the editor, comes to the front with its default button already focused (so a prompt raised by a launch from a console can't hide behind the console window), and answers to bare keys with no clicking first: **Y**/**N**/**O**/**C** on Yes-No-OK-Cancel prompts, **S**/**A**/**D**/**C** on the save-before-closing prompt, and **1**–**9** on the multi-choice prompts. **Esc** always takes the safe way out (Cancel, else No).
+
 ### Other
 - Word wrap toggle.
 - Standard editing: cut / copy / paste.
@@ -84,6 +94,7 @@ Choose what the window's **X** button does:
 | `Ctrl+Shift+S` | Save As… |
 | `Ctrl+W` / `Ctrl+F4` | Close current tab (prompts to save if there are unsaved changes) |
 | `Ctrl+F` | Find… (open the search pane) |
+| `F3` / `Shift+F3` | Find next / previous match (also `Enter` / `Shift+Enter` in the search box) |
 | `Ctrl+Z` | Undo (walk up the history tree) |
 | `Ctrl+Y` / `Ctrl+Shift+Z` | Redo (walk down the history tree) |
 | `Ctrl+X` / `Ctrl+C` / `Ctrl+V` | Cut / copy / paste |
@@ -165,6 +176,8 @@ On first launch, if a `%LOCALAPPDATA%\TreeNotepad\` folder exists (from before t
 | `DiffEngine.cs` | Pure, testable line + inline diff logic used by the merge viewer. |
 | `DiffMergeWindow.xaml(.cs)` | Side-by-side diff/merge viewer for reconciling external changes. |
 | `SessionStore.cs` | Reads/writes `session.json` for reopening last session's files. |
+| `RecentFiles.cs` | Reads/writes `recent.json` backing the File → Open Recent list (shared across windows and instances). |
+| `LeadingEllipsisText.cs` | Attached behavior that truncates a path from the *front* so the file name stays visible (tab headers). |
 | `HistoryStore.cs` | Reads/writes the per-file branching-history sidecars (persistent history). |
 | `AppSettings.cs` | Persisted user preferences. |
 | `ThemedDialog.cs` | Themed replacements for `MessageBox` (incl. the multi-choice resolution prompts). |
