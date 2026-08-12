@@ -380,19 +380,24 @@ public partial class MainWindow : Window
         {
             // The file isn't there. Only offer to create it when its folder is valid — otherwise the
             // path itself is bad, so fall through and let LoadFile surface a clear "not found" error.
-            string? dir = null;
-            try { dir = Path.GetDirectoryName(Path.GetFullPath(path)); } catch { /* malformed path */ }
-            if (dir is not null && Directory.Exists(dir))
+            string? full = null, dir = null;
+            try { full = Path.GetFullPath(path); dir = Path.GetDirectoryName(full); }
+            catch { /* malformed path */ }
+            if (full is not null && dir is not null && Directory.Exists(dir))
             {
+                // Show the *full* path, not just the file name. Where the file would be created is
+                // exactly what you need to see here: a bare name hides a mis-quoted command line
+                // (which silently splits one path into two) and hides that a relative name lands in
+                // the working directory rather than the folder you had in mind.
                 var choice = ThemedDialog.Show(this,
-                    $"Cannot find '{Path.GetFileName(path)}'.\n\nDo you want to create a new file?",
+                    $"Cannot find:\n{full}\n\nDo you want to create a new file?",
                     "NotepadRedo",
                     MessageBoxButton.YesNo, MessageBoxImage.Question);
                 if (choice != MessageBoxResult.Yes)
                     return false;
 
                 var created = CreateBlankView();
-                created.PrepareNewFile(Path.GetFullPath(path));
+                created.PrepareNewFile(full);
                 AddView(created, select: true);
                 return true;
             }
