@@ -12,6 +12,7 @@
             <ColumnDefinition Width="Auto"/>
             <ColumnDefinition x:Name="TreeColumn" Width="340" MinWidth="80"/>
             <ColumnDefinition x:Name="SearchColumn" Width="0" MinWidth="0"/>
+            <ColumnDefinition x:Name="ReplaceColumn" Width="0" MinWidth="0"/>
         </Grid.ColumnDefinitions>
 
         <!-- IsInactiveSelectionHighlightEnabled: keep the selection visible when the *window* is
@@ -149,8 +150,14 @@
              means the editor keeps its *active* selection while you type here, so the current match
              stays highlighted. (WPF's IsInactiveSelectionHighlightEnabled is no substitute: it resolves
              the brush but paints nothing, because IsSelectionActive has already gone false.) -->
+        <!-- TabNavigation=Cycle: a focus scope is not, by itself, a tab-navigation container, and
+             with the surrounding window as the container Tab does nothing at all from in here.
+             Making the pane its own container both fixes that and gives the right behaviour for a
+             tool pane — Tab walks round its own fields, and Esc is how you leave. -->
         <DockPanel x:Name="SearchPanel" Grid.Column="3" Margin="4" Visibility="Collapsed"
-                   FocusManager.IsFocusScope="True">
+                   FocusManager.IsFocusScope="True"
+                   KeyboardNavigation.TabNavigation="Cycle"
+                   PreviewKeyDown="SearchPanel_PreviewKeyDown">
             <Border DockPanel.Dock="Top" Background="{DynamicResource Theme.PanelBg}" Padding="6" Margin="0,0,0,4"
                     BorderBrush="{DynamicResource Theme.PanelBorder}" BorderThickness="1">
                 <StackPanel>
@@ -171,13 +178,13 @@
                              TextChanged="SearchInput_Changed"
                              PreviewKeyDown="SearchBox_PreviewKeyDown"/>
 
-                    <!-- Proximity item-list mode: shown only while the "near each other" box is checked.
-                         The search box above becomes the entry field — press Enter to add each item;
-                         every added item shows here with an X to remove it and stays editable. -->
+                    <!-- Proximity term-list mode: shown only while the "near each other" box is checked.
+                         The search box above becomes the entry field — press Enter to add each term;
+                         every added term shows here with an X to remove it and stays editable. -->
                     <StackPanel x:Name="TermListPanel" Visibility="Collapsed">
                         <TextBlock x:Name="AddTermHint" Margin="0,4,0,0" FontSize="11"
                                    TextWrapping="Wrap" Foreground="{DynamicResource Theme.TreeMetaFg}"
-                                   Text="Press Enter to add each item to match near the others."/>
+                                   Text="Press Enter to add the box's text as a term. A place matches when every term listed here occurs within the distance set below. A term can contain spaces."/>
                         <!-- Focusable=False + TabNavigation=Continue so Tab from the add box lands on
                              the first item's field, not a focus rectangle around the whole control. -->
                         <ItemsControl x:Name="TermsList" Margin="0,4,0,0"
@@ -188,7 +195,7 @@
                                         <Button DockPanel.Dock="Right" Content="&#x2715;"
                                                 Width="20" Height="20" Padding="0" Margin="4,0,0,0"
                                                 IsTabStop="False"
-                                                Click="RemoveTerm_Click" ToolTip="Remove this item"/>
+                                                Click="RemoveTerm_Click" ToolTip="Remove this term"/>
                                         <TextBox Text="{Binding Text, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
                                                  Background="{DynamicResource Theme.EditorBg}"
                                                  Foreground="{DynamicResource Theme.EditorFg}"
@@ -202,22 +209,33 @@
                         </ItemsControl>
                     </StackPanel>
 
+                    <CheckBox x:Name="RegexCheck" Content="Regular expression" Margin="0,6,0,0"
+                              Foreground="{DynamicResource Theme.TreePreviewFg}"
+                              ToolTip="Match the text above as a .NET regular expression. ^ and $ mean start and end of a line. In proximity mode each term is its own pattern."
+                              Checked="SearchOption_Changed" Unchecked="SearchOption_Changed"/>
+
                     <CheckBox x:Name="CaseSensitiveCheck" Content="Case sensitive" Margin="0,6,0,0"
                               Foreground="{DynamicResource Theme.TreePreviewFg}"
                               Checked="SearchOption_Changed" Unchecked="SearchOption_Changed"/>
 
                     <CheckBox x:Name="WholeWordCheck" Content="Match whole word only" Margin="0,6,0,0"
                               Foreground="{DynamicResource Theme.TreePreviewFg}"
-                              ToolTip="Only match when the term stands alone as a word (not inside a longer word)"
+                              ToolTip="Only match where the term stands alone as a word, not inside a longer one. Works with regular expressions too — it constrains whatever the pattern matched, so you don't have to bracket every branch of an alternation in \b."
                               Checked="SearchOption_Changed" Unchecked="SearchOption_Changed"/>
 
+                    <!-- Proximity mode. The label has to say what the mode *is* while it's still off,
+                         because everything that explains it (the term list, the distance row) only
+                         appears once it's on — so "items near each other" left you guessing what an
+                         item was and how near "near" is. -->
                     <CheckBox x:Name="ProximityCheck" Margin="0,6,0,0"
                               Foreground="{DynamicResource Theme.TreePreviewFg}"
-                              Content="Only where all items are near each other"
+                              Content="Find several terms near each other"
+                              ToolTip="Proximity search: build a list of two or more terms, and match only the places where all of them occur close together — with the distance and how it's measured set below. Terms are entered one at a time, so a term can itself contain spaces and never needs quoting."
                               Checked="Proximity_Changed" Unchecked="Proximity_Changed"/>
 
                     <DockPanel x:Name="ProximityRow" Margin="16,4,0,0" LastChildFill="False"
-                               Visibility="Collapsed">
+                               Visibility="Collapsed"
+                               ToolTip="How close the terms must be. The whole cluster — first term's start to last term's end — has to fit inside this many characters, words, or lines.">
                         <TextBlock Text="within" VerticalAlignment="Center" DockPanel.Dock="Left"
                                    Foreground="{DynamicResource Theme.TreePreviewFg}"/>
                         <TextBox x:Name="ProximityN" Text="40" Width="40" Margin="6,0"
@@ -232,6 +250,9 @@
                             <ComboBoxItem Content="words"/>
                             <ComboBoxItem Content="lines"/>
                         </ComboBox>
+                        <TextBlock Text="of each other" VerticalAlignment="Center" Margin="6,0,0,0"
+                                   DockPanel.Dock="Left"
+                                   Foreground="{DynamicResource Theme.TreePreviewFg}"/>
                     </DockPanel>
 
                     <TextBlock x:Name="SearchStatus" Margin="0,6,0,0" FontSize="11"
@@ -266,6 +287,96 @@
                     </DataTemplate>
                 </ListBox.ItemTemplate>
             </ListBox>
+        </DockPanel>
+
+        <!-- ===================== Replace pane (far right, toggled by Ctrl+H) ===================== -->
+        <!-- Its own column rather than sharing the search pane's, so find-and-replace can be set up
+             while the search pane is still listing occurrences. IsFocusScope for the same reason as
+             the search pane: the editor keeps its selection *active* while you work in here, so the
+             match about to be replaced stays visibly highlighted. -->
+        <DockPanel x:Name="ReplacePanel" Grid.Column="4" Margin="4" Visibility="Collapsed"
+                   FocusManager.IsFocusScope="True"
+                   KeyboardNavigation.TabNavigation="Cycle"
+                   PreviewKeyDown="ReplacePanel_PreviewKeyDown">
+            <Border DockPanel.Dock="Top" Background="{DynamicResource Theme.PanelBg}" Padding="6"
+                    BorderBrush="{DynamicResource Theme.PanelBorder}" BorderThickness="1">
+                <StackPanel>
+                    <DockPanel LastChildFill="False">
+                        <TextBlock Text="Replace" FontWeight="Bold" DockPanel.Dock="Left"
+                                   VerticalAlignment="Center" Foreground="{DynamicResource Theme.TreePreviewFg}"/>
+                        <Button x:Name="ReplaceCloseButton" DockPanel.Dock="Right" Content="&#x2715;"
+                                Width="20" Height="20" Padding="0" ToolTip="Close replace (Esc)"
+                                Click="ReplaceClose_Click"/>
+                    </DockPanel>
+
+                    <TextBlock Text="Find what:" Margin="0,8,0,2"
+                               Foreground="{DynamicResource Theme.TreePreviewFg}"/>
+                    <TextBox x:Name="ReplaceFindBox"
+                             Background="{DynamicResource Theme.EditorBg}"
+                             Foreground="{DynamicResource Theme.EditorFg}"
+                             CaretBrush="{DynamicResource Theme.EditorFg}"
+                             Padding="4,3"
+                             ToolTip="What to look for. Press Enter to highlight the next match without replacing it."
+                             TextChanged="ReplaceInput_Changed"/>
+
+                    <TextBlock Text="Replace with:" Margin="0,8,0,2"
+                               Foreground="{DynamicResource Theme.TreePreviewFg}"/>
+                    <TextBox x:Name="ReplaceWithBox"
+                             Background="{DynamicResource Theme.EditorBg}"
+                             Foreground="{DynamicResource Theme.EditorFg}"
+                             CaretBrush="{DynamicResource Theme.EditorFg}"
+                             Padding="4,3"
+                             ToolTip="What to put in its place. Press Enter to replace the highlighted match."
+                             TextChanged="ReplaceInput_Changed"/>
+
+                    <CheckBox x:Name="ReplaceRegexCheck" Content="Regular expression" Margin="0,8,0,0"
+                              Foreground="{DynamicResource Theme.TreePreviewFg}"
+                              ToolTip="Treat &quot;Find what&quot; as a .NET regular expression. ^ and $ match the start and end of a line; use $1, $2… in the replacement to insert captured groups."
+                              Checked="ReplaceOption_Changed" Unchecked="ReplaceOption_Changed"/>
+
+                    <CheckBox x:Name="ReplaceCaseCheck" Content="Case sensitive" Margin="0,6,0,0"
+                              Foreground="{DynamicResource Theme.TreePreviewFg}"
+                              Checked="ReplaceOption_Changed" Unchecked="ReplaceOption_Changed"/>
+
+                    <CheckBox x:Name="ReplaceWholeWordCheck" Content="Match whole word only" Margin="0,6,0,0"
+                              Foreground="{DynamicResource Theme.TreePreviewFg}"
+                              ToolTip="Only replace where the term stands alone as a word, not inside a longer one. Judged against the whole document, so a selection that cuts through a word doesn't make the fragment count as one."
+                              Checked="ReplaceOption_Changed" Unchecked="ReplaceOption_Changed"/>
+
+                    <TextBlock Text="Replace in:" Margin="0,10,0,2"
+                               Foreground="{DynamicResource Theme.TreePreviewFg}"/>
+                    <!-- No GroupName: WPF groups named radio buttons per *window*, and every open tab
+                         lives in the same window, so a name would make the tabs fight over each
+                         other's setting. Left unnamed, they group by their shared parent instead. -->
+                    <StackPanel>
+                        <RadioButton x:Name="ReplaceScopeAll" Content="The whole document"
+                                     IsChecked="True" Margin="0,2,0,0"
+                                     Foreground="{DynamicResource Theme.TreePreviewFg}"
+                                     Checked="ReplaceScope_Changed"/>
+                        <RadioButton x:Name="ReplaceScopeSelection" Content="The selected text"
+                                     IsEnabled="False" Margin="0,4,0,0"
+                                     Foreground="{DynamicResource Theme.TreePreviewFg}"
+                                     ToolTip="Select some text in the document to enable this."
+                                     Checked="ReplaceScope_Changed"/>
+                    </StackPanel>
+
+                    <UniformGrid Columns="2" Margin="0,10,0,0">
+                        <Button x:Name="ReplaceNextButton" Content="Replace _next" Margin="0,0,3,0"
+                                Padding="4,4" Click="ReplaceNext_Click"
+                                ToolTip="Replace the highlighted match and move to the one after it. With nothing highlighted, just highlights the next match."/>
+                        <Button x:Name="ReplaceAllButton" Content="Replace _all" Margin="3,0,0,0"
+                                Padding="4,4" Click="ReplaceAll_Click"
+                                ToolTip="Replace every match at once, as a single undo step."/>
+                    </UniformGrid>
+
+                    <TextBlock x:Name="ReplaceStatus" Margin="0,8,0,0" FontSize="11"
+                               TextWrapping="Wrap"
+                               Foreground="{DynamicResource Theme.TreeMetaFg}" Text=""/>
+                </StackPanel>
+            </Border>
+
+            <!-- Soaks up the rest of the column so the form stays pinned to the top. -->
+            <Border/>
         </DockPanel>
     </Grid>
 </UserControl>

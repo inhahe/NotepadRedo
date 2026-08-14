@@ -1,4 +1,5 @@
 using System.Text;
+using System.Text.RegularExpressions;
 
 namespace NotepadRedo;
 
@@ -12,6 +13,22 @@ public readonly record struct SearchMatch(int Start, int Length)
 }
 
 /// <summary>
+/// How a term is matched. Bundled into one value rather than passed as a run of three bare bools,
+/// which at a call site are indistinguishable and easy to transpose. Shared by search and replace so
+/// the two features can't drift apart on what an option means.
+/// <para>
+/// The three are deliberately <b>orthogonal</b>: <see cref="Regex"/> reinterprets the term as a
+/// pattern, and <see cref="WholeWord"/> then constrains wherever that term matched to stand alone as
+/// a word. Regex can express word boundaries itself with <c>\b</c>, but the checkbox stays useful
+/// with it — it applies the constraint to an entire alternation without having to bracket every
+/// branch — and keeping the options independent avoids a control that mysteriously greys itself out.
+/// </para>
+/// </summary>
+public readonly record struct MatchOptions(bool CaseSensitive = false,
+                                           bool WholeWord = false,
+                                           bool Regex = false);
+
+/// <summary>
 /// Pure text-search logic (no UI), so it can be unit-tested directly. Two modes:
 ///  • plain — every occurrence of the query, matched <b>literally</b> (exactly the characters typed,
 ///    including spaces and quotes — no tokenising or special syntax);
@@ -23,37 +40,92 @@ public readonly record struct SearchMatch(int Start, int Length)
 /// </summary>
 public static class SearchEngine
 {
-    /// <summary>All (possibly overlapping) occurrences of <paramref name="needle"/> in the text.
-    /// When <paramref name="wholeWord"/> is set, an occurrence only counts if it isn't flanked by a
-    /// word character on either side (so "os" won't match inside "composition").</summary>
-    public static List<SearchMatch> FindAll(string text, string needle, bool caseSensitive,
-                                            bool wholeWord = false)
-    {
-        var results = new List<SearchMatch>();
-        if (string.IsNullOrEmpty(text) || string.IsNullOrEmpty(needle))
-            return results;
+    /// <summary>How long a runaway regex is allowed to chew on the document before we give up.
+    /// Catastrophic backtracking is easy to type by accident, and the search re-runs on every
+    /// keystroke, so an unbounded match would hang the UI mid-word.</summary>
+    public static readonly TimeSpan RegexTimeout = TimeSpan.FromSeconds(2);
 
-        var cmp = caseSensitive ? StringComparison.Ordinal : StringComparison.OrdinalIgnoreCase;
-        int idx = 0;
-        while (idx <= text.Length - needle.Length)
-        {
-            int f = text.IndexOf(needle, idx, cmp);
-            if (f < 0) break;
-            if (!wholeWord || IsWholeWord(text, f, f + needle.Length))
-                results.Add(new SearchMatch(f, needle.Length));
-            idx = f + 1;   // allow overlapping matches
-        }
-        return results;
+    /// <summary>
+    /// Compile a user-typed pattern. <see cref="RegexOptions.Multiline"/> is on because in a text
+    /// editor <c>^</c> and <c>$</c> meaning start/end of a <b>line</b> is what people expect —
+    /// document-wide anchors are the unusual case, and <c>\A</c> / <c>\z</c> still express them.
+    /// </summary>
+    /// <exception cref="ArgumentException">The pattern doesn't parse
+    /// (<see cref="RegexParseException"/> derives from this).</exception>
+    public static Regex BuildRegex(string pattern, bool caseSensitive)
+    {
+        var opts = RegexOptions.Multiline;
+        if (!caseSensitive) opts |= RegexOptions.IgnoreCase;
+        return new Regex(pattern, opts, RegexTimeout);
     }
 
-    /// <summary>True when the char just before <paramref name="start"/> and the char at
-    /// <paramref name="end"/> are both non-word characters (or the text edge) — i.e. the range
-    /// [start, end) stands alone as a word rather than sitting inside a longer run of letters/digits.
-    /// Word characters are letters, digits, and underscore.</summary>
-    private static bool IsWholeWord(string text, int start, int end)
+    /// <summary>
+    /// Every occurrence of one term, in document order — the single place that knows how a term is
+    /// turned into positions, so literal/regex/whole-word behave identically everywhere.
+    /// </summary>
+    /// <param name="allowOverlap">Report matches that overlap a previous one (plain search does, so
+    /// searching "aa" in "aaa" lists two hits; replacing must not, or the splices would collide).
+    /// Regex matching never overlaps — <c>NextMatch</c> resumes at the end of the previous match —
+    /// so this only affects literal matching.</param>
+    /// <exception cref="ArgumentException">Regex mode with a pattern that doesn't parse.</exception>
+    public static IEnumerable<SearchMatch> Occurrences(string text, string term, MatchOptions opt,
+                                                       bool allowOverlap = true)
     {
-        bool leftOk = start <= 0 || !IsWordChar(text[start - 1]);
-        bool rightOk = end >= text.Length || !IsWordChar(text[end]);
+        if (string.IsNullOrEmpty(text) || string.IsNullOrEmpty(term))
+            yield break;
+
+        if (opt.Regex)
+        {
+            var re = BuildRegex(term, opt.CaseSensitive);
+            // NextMatch() resumes after the previous match and knows to step past a zero-width one,
+            // which a hand-rolled "scan from index" loop has to special-case or spin forever on.
+            for (Match m = re.Match(text); m.Success; m = m.NextMatch())
+                if (!opt.WholeWord || IsWholeWord(text, m.Index, m.Index + m.Length))
+                    yield return new SearchMatch(m.Index, m.Length);
+            yield break;
+        }
+
+        var cmp = opt.CaseSensitive ? StringComparison.Ordinal : StringComparison.OrdinalIgnoreCase;
+        int idx = 0;
+        while (idx <= text.Length - term.Length)
+        {
+            int f = text.IndexOf(term, idx, cmp);
+            if (f < 0) break;
+            if (!opt.WholeWord || IsWholeWord(text, f, f + term.Length))
+                yield return new SearchMatch(f, term.Length);
+            idx = allowOverlap ? f + 1 : f + term.Length;
+        }
+    }
+
+    /// <summary>All occurrences of <paramref name="needle"/> in the text, overlaps included.</summary>
+    /// <exception cref="ArgumentException">Regex mode with a pattern that doesn't parse.</exception>
+    public static List<SearchMatch> FindAll(string text, string needle, MatchOptions opt)
+        => Occurrences(text, needle, opt).ToList();
+
+    /// <summary>
+    /// True when the range [start, end) isn't sitting <i>inside</i> a longer run of word characters —
+    /// which is all "match whole word only" can sensibly mean. Word characters are letters, digits
+    /// and underscore.
+    ///
+    /// <para>Each edge is only constrained when it could actually be embedded, i.e. when the match's
+    /// own character at that edge is a word character. A match that <b>begins</b> with a space, a
+    /// bracket or a newline cannot be the tail of a longer word, so demanding a non-word character
+    /// before it as well would reject something the match itself already rules out. Doing that was a
+    /// real trap: with whole-word ticked, a pattern like <c>  \[\d+_\d+\]</c> (or a literal
+    /// <c>" os "</c>) matched <i>nothing</i>, because the character before the leading space is
+    /// nearly always a letter. Terms that do start and end in word characters — the ordinary case,
+    /// and the only one the option is really aimed at — are unaffected.</para>
+    ///
+    /// <para>An empty range has no edge characters of its own, so both edges stay constrained: a
+    /// zero-width match still has to stand between two non-word characters.</para>
+    /// </summary>
+    public static bool IsWholeWord(string text, int start, int end)
+    {
+        bool empty = end <= start;
+        bool leftOk = start <= 0 || !IsWordChar(text[start - 1])
+                                 || (!empty && !IsWordChar(text[start]));
+        bool rightOk = end >= text.Length || !IsWordChar(text[end])
+                                          || (!empty && !IsWordChar(text[end - 1]));
         return leftOk && rightOk;
     }
 
@@ -64,32 +136,21 @@ public static class SearchEngine
     /// other (in the given unit). Each result spans from the first term's start to the last term's
     /// end within the smallest covering window; results don't overlap.
     /// </summary>
+    /// <exception cref="ArgumentException">Regex mode with a term that doesn't parse.</exception>
     public static List<SearchMatch> FindProximity(string text, IReadOnlyList<string> terms,
-                                                  bool caseSensitive, ProximityUnit unit, int n,
-                                                  bool wholeWord = false)
+                                                  MatchOptions opt, ProximityUnit unit, int n)
     {
         var results = new List<SearchMatch>();
         if (string.IsNullOrEmpty(text) || terms.Count == 0)
             return results;
 
-        var cmp = caseSensitive ? StringComparison.Ordinal : StringComparison.OrdinalIgnoreCase;
-
-        // Collect every occurrence of every term, tagged with which term it is.
+        // Collect every occurrence of every term, tagged with which term it is. Each term is matched
+        // by the same rules as a plain search, so "regular expression" and "whole word" mean exactly
+        // what they do in the other mode — each term is simply its own little search.
         var occ = new List<(int start, int end, int term)>();
         for (int t = 0; t < terms.Count; t++)
-        {
-            string term = terms[t];
-            if (term.Length == 0) continue;
-            int idx = 0;
-            while (idx <= text.Length - term.Length)
-            {
-                int f = text.IndexOf(term, idx, cmp);
-                if (f < 0) break;
-                if (!wholeWord || IsWholeWord(text, f, f + term.Length))
-                    occ.Add((f, f + term.Length, t));
-                idx = f + 1;
-            }
-        }
+            foreach (var m in Occurrences(text, terms[t], opt))
+                occ.Add((m.Start, m.End, t));
 
         int termCount = terms.Count(t => t.Length > 0);
         if (termCount == 0) return results;

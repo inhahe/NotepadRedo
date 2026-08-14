@@ -283,11 +283,15 @@ public partial class MainWindow : Window
         NodeStatus.Text = view.NodeText;
         SaveStatus.Text = view.SaveText;
         SaveStatus.Foreground = view.IsDirty ? Brushes.Firebrick : Brushes.ForestGreen;
-        SyncSearchToggle();
+        SyncPaneToggles();
     }
 
-    /// <summary>Keep the toolbar Search toggle in sync with the active view's search pane.</summary>
-    private void SyncSearchToggle() => SearchToggle.IsChecked = ActiveView?.IsSearchOpen == true;
+    /// <summary>Keep the toolbar Search / Replace toggles in sync with the active view's panes.</summary>
+    private void SyncPaneToggles()
+    {
+        SearchToggle.IsChecked = ActiveView?.IsSearchOpen == true;
+        ReplaceToggle.IsChecked = ActiveView?.IsReplaceOpen == true;
+    }
 
     private const string TitleSuffix = " - NotepadRedo";
 
@@ -357,17 +361,24 @@ public partial class MainWindow : Window
             UpdateTabWidths();
     }
 
-    private void View_SearchVisibilityChanged(object? sender, EventArgs e)
+    private void View_SidePaneVisibilityChanged(object? sender, EventArgs e)
     {
         if (ReferenceEquals(sender, ActiveView))
-            SyncSearchToggle();
+            SyncPaneToggles();
     }
 
     /// <summary>Toolbar Search toggle: open/close the active view's search pane.</summary>
     private void ToggleSearch_Click(object sender, RoutedEventArgs e)
     {
         ActiveView?.ToggleSearch();
-        SyncSearchToggle();
+        SyncPaneToggles();
+    }
+
+    /// <summary>Toolbar Replace toggle: open/close the active view's replace pane.</summary>
+    private void ToggleReplace_Click(object sender, RoutedEventArgs e)
+    {
+        ActiveView?.ToggleReplace();
+        SyncPaneToggles();
     }
 
     // ===================== Tab lifecycle =====================
@@ -555,7 +566,7 @@ public partial class MainWindow : Window
     {
         view.StatusChanged += View_Changed;
         view.TitleChanged += View_Changed;
-        view.SearchVisibilityChanged += View_SearchVisibilityChanged;
+        view.SidePaneVisibilityChanged += View_SidePaneVisibilityChanged;
 
         // Stretch the header: when the strip wraps onto several rows the TabPanel widens the tabs in
         // each row to fill it, and centred content would then float in the middle with gaps either
@@ -796,7 +807,7 @@ public partial class MainWindow : Window
         {
             view.StatusChanged -= View_Changed;
             view.TitleChanged -= View_Changed;
-            view.SearchVisibilityChanged -= View_SearchVisibilityChanged;
+            view.SidePaneVisibilityChanged -= View_SidePaneVisibilityChanged;
             ti.Content = null;          // release so the control can be re-parented
             if (dispose)
                 view.Dispose();
@@ -933,6 +944,7 @@ public partial class MainWindow : Window
     private void Find_Click(object sender, RoutedEventArgs e) => ActiveView?.OpenSearch();
     private void FindNext_Click(object sender, RoutedEventArgs e) => ActiveView?.FindNext(backwards: false);
     private void FindPrevious_Click(object sender, RoutedEventArgs e) => ActiveView?.FindNext(backwards: true);
+    private void Replace_Click(object sender, RoutedEventArgs e) => ActiveView?.OpenReplace();
 
     private void WordWrap_Click(object sender, RoutedEventArgs e)
     {
@@ -1279,6 +1291,9 @@ public partial class MainWindow : Window
         Bind(Key.W, ModifierKeys.Control, () => CloseTab(Tabs.SelectedItem as TabItem));
         Bind(Key.F4, ModifierKeys.Control, () => CloseTab(Tabs.SelectedItem as TabItem));
         Bind(Key.F, ModifierKeys.Control, () => ActiveView?.OpenSearch());
+        // Also intercepted in EditorView.Editor_PreviewKeyDown, because a focused TextBox maps Ctrl+H
+        // to Backspace and swallows it before window-level bindings get a look in.
+        Bind(Key.H, ModifierKeys.Control, () => ActiveView?.OpenReplace());
         Bind(Key.F3, ModifierKeys.None, () => ActiveView?.FindNext(backwards: false));
         Bind(Key.F3, ModifierKeys.Shift, () => ActiveView?.FindNext(backwards: true));
         Bind(Key.B, ModifierKeys.Control, ToggleBold);
