@@ -34,7 +34,7 @@ Built with WPF on .NET 8.
 - Running `notepadredo` with **no filename** while a copy is already running just brings that window to the front (restoring it from the tray if need be) instead of opening a second, empty one. Use `--new` to ask for a fresh blank document, or switch to *new instance* mode if you'd rather always get a new process.
 
 ### Recent files
-- **File → Open Recent** lists the last 15 files you opened or saved, newest first, with `Alt`-accessible numbers for the first nine. The list is shared by every window and every running instance, and persists between runs (`%LOCALAPPDATA%\NotepadRedo\recent.json`). **Clear this list** empties it.
+- **File → Open Recent** lists the last 15 files you opened or saved, newest first, with `Alt`-accessible numbers for the first nine. The list is shared by every window and every running instance, and persists between runs (`%LOCALAPPDATA%\NotepadRedo\recent.json`). Entries whose file has gone missing are hidden, but that check runs in the background — so a file that vanished a moment ago may linger in the menu until the next sweep finishes, and one on a temporarily disconnected share is hidden without being forgotten. **Clear this list** empties it.
 
 ### Search
 - Open the search pane with `Ctrl+F` (or **Edit → Find…**, or the toolbar **Search** toggle button); it slides in on the right. The toolbar button stays lit while the pane is open and toggles it closed again.
@@ -176,7 +176,7 @@ On first launch, if a `%LOCALAPPDATA%\TreeNotepad\` folder exists (from before t
 | `DiffEngine.cs` | Pure, testable line + inline diff logic used by the merge viewer. |
 | `DiffMergeWindow.xaml(.cs)` | Side-by-side diff/merge viewer for reconciling external changes. |
 | `SessionStore.cs` | Reads/writes `session.json` for reopening last session's files. |
-| `RecentFiles.cs` | Reads/writes `recent.json` backing the File → Open Recent list (shared across windows and instances). |
+| `RecentFiles.cs` | Reads/writes `recent.json` backing the File → Open Recent list (shared across windows and instances); prunes vanished paths on a background thread so an unreachable one can't stall the UI. |
 | `LeadingEllipsisText.cs` | Attached behavior that truncates a path from the *front* so the file name stays visible (tab headers). |
 | `HistoryStore.cs` | Reads/writes the per-file branching-history sidecars (persistent history). |
 | `AppSettings.cs` | Persisted user preferences. |

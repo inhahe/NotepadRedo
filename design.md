@@ -118,9 +118,9 @@ already gone false by then. Don't reach for it (or for overriding that brush key
 
 | File | Owner | Contents |
 |---|---|---|
-| `settings.json` | `AppSettings` | All options. `Reload()` re-reads on window activation so instances stay in sync — **any new setting must be added to `Reload()` as well as `Save()`**. |
+| `settings.json` | `AppSettings` | All options. `Reload()` re-reads on window activation so instances stay in sync — **any new setting must be added to `Reload()` as well as `Save()`**. Gated by a `FileSystemWatcher` dirty flag, so the usual activation costs no I/O (see below). |
 | `session.json` | `SessionStore` | Paths of open *saved* files, for session restore. |
-| `recent.json` | `RecentFiles` | Up to 15 most-recently-opened paths for File → Open Recent. Re-read before each write so concurrent instances merge instead of clobbering; raises `Changed` so open windows rebuild their submenu. |
+| `recent.json` | `RecentFiles` | Up to 15 most-recently-opened paths for File → Open Recent. Re-read before each write so concurrent instances merge instead of clobbering; raises `Changed` so open windows rebuild their submenu. **`Changed` may be raised on a background thread** — handlers that touch UI must marshal to the dispatcher. |
 | `recovery\` | `EditorView` | Crash-recovery snapshots — this is where *unsaved* and untitled work lives, including for titled documents. |
 | `history\` | `HistoryStore` | Optional persisted undo trees, keyed to the file's on-disk content; pruned after 90 days. |
 | `crash.log` | `CrashLog` | Every unhandled exception with a full traceback. |
@@ -134,6 +134,34 @@ Session rules worth remembering:
   structural-change state rather than being rewritten at exit.
 - Restore runs before command-line files are opened, so the named file lands on top as the active
   tab; `RequestOpenFile` de-dupes against what restore already reopened.
+
+## Never touch the filesystem on the activation path
+
+`MainWindow.Activated` runs inside `WM_ACTIVATE`, on the UI thread, with the message pump stopped.
+Anything slow there freezes the window outright. This bit us: `RebuildRecentMenu` used to call a
+`RecentFiles.Load()` that did `File.Exists` on every remembered path, and `File.Exists` on a path
+that lives on a disconnected network share, an unmounted drive, or a spun-down disk blocks for *tens
+of seconds* at 0% CPU. A dump taken mid-freeze showed exactly that stack
+(`GetFileAttributesEx` → `File.Exists` → `RecentFiles.Load` → `RebuildRecentMenu` → `Window.WmActivate`).
+
+What made it a *constant* symptom rather than a rare one is a second window — a tab torn off into its
+own window. With one window, activation happens only when you alt-tab back into the app; with two, it
+happens every time focus moves between them, so the same latent cost fires orders of magnitude more
+often. Reproduce by putting an unroutable UNC path (e.g. `\\192.0.2.1\share\x.txt`, TEST-NET-1) at
+the head of `recent.json`; note that Windows negative-caches the host afterwards, which is why the
+real-world symptom is intermittent.
+
+So, the rule: **the `Activated` handler does no I/O.**
+
+- `RebuildRecentMenu` renders `RecentFiles.Existing`, a cached snapshot that costs nothing to read.
+  `RecentFiles.Refresh()` does the existence sweep on a threadpool thread (guarded so only one runs)
+  and raises `Changed` only when the result differs; `MainWindow` marshals that back to the
+  dispatcher. Paths that fail to probe are dropped from the cache but *kept in the file*, so a
+  briefly-unreachable share isn't forgotten.
+- `AppSettings.Reload()` returns immediately unless a static `FileSystemWatcher` on `settings.json`
+  saw a change. If the watcher can't be created, or reports an error, the flag is forced on and we
+  fall back to re-reading every time — stale settings would be worse than the old cost, and
+  `settings.json` is always local anyway.
 
 ## Dialogs
 

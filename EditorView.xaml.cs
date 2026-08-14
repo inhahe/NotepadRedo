@@ -125,11 +125,7 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
         // bubbles up to the Editor — also on the internal PART_ContentHost ScrollViewer once the
         // template is applied.
         Editor.RequestBringIntoView += Editor_RequestBringIntoView;
-        Editor.Loaded += (_, _) =>
-        {
-            if (Editor.Template?.FindName("PART_ContentHost", Editor) is ScrollViewer sv)
-                sv.RequestBringIntoView += Editor_RequestBringIntoView;
-        };
+        Editor.Loaded += (_, _) => HookContentHost();
 
         _autosave.Tick += (_, _) => WriteRecovery();
 
@@ -1989,6 +1985,27 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
     {
         if (_dragScrollActive)
             e.Handled = true;
+    }
+
+    /// <summary>The template's inner ScrollViewer we've attached to, so we never attach twice.</summary>
+    private ScrollViewer? _hookedContentHost;
+
+    /// <summary>
+    /// Attach <see cref="Editor_RequestBringIntoView"/> to the template's PART_ContentHost. Must be
+    /// idempotent: <c>Loaded</c> fires again on every TabControl tab switch and again when the view
+    /// is re-parented (a tab torn off into its own window), so a bare <c>+=</c> would pile up
+    /// duplicate handlers for the lifetime of the process.
+    /// </summary>
+    private void HookContentHost()
+    {
+        var sv = Editor.Template?.FindName("PART_ContentHost", Editor) as ScrollViewer;
+        if (ReferenceEquals(sv, _hookedContentHost))
+            return;
+        if (_hookedContentHost is not null)
+            _hookedContentHost.RequestBringIntoView -= Editor_RequestBringIntoView;
+        _hookedContentHost = sv;
+        if (sv is not null)
+            sv.RequestBringIntoView += Editor_RequestBringIntoView;
     }
 
     private void DragScrollTick()
