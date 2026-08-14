@@ -119,6 +119,7 @@ things (a click in the result list vs. an arrow key in it).
 |---|---|---|
 | F3 / Shift+F3, Edit-menu Find Next/Previous | `false` | Landing in the document with a real caret *is* the point. F3 keeps cycling because it is a window-level `InputBinding`, so it fires with focus in the editor. |
 | Enter / Shift+Enter in the search box | `true` | The box must survive so it can be pressed again. |
+| Down / Up in the search box | `true` | Same reason. These exist because the result list is otherwise unreachable from the keyboard — it sits after the options and the term list in tab order, so Tab-walking to it passes through every checkbox — and because a box with a list beneath it reads as a completion popup, so the arrows are the reflex. They *step* rather than move focus into the list, which keeps the query editable and works in proximity mode, where Enter is taken by "add this term" and the arrows are the only stepping keys left. A single-line `TextBox` ignores Down/Up, so nothing is being taken away. |
 | Arrow keys down the result list (`Results_SelectionChanged`) | `true` | Moving focus on the first press would make the second arrow key move the caret instead. |
 | Click on a result (`Results_MouseUp`) | `false` | A click is a deliberate "take me there", so it hands the keyboard to the document. Handled separately since a click and an arrow key are indistinguishable inside `SelectionChanged` — and because re-clicking the current row fires no `SelectionChanged` at all. |
 

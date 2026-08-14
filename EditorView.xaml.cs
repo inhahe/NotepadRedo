@@ -1617,17 +1617,19 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
 
     /// <summary>Keep the search box's tooltip honest about what it will do with what you type — the
     /// two options that change that (proximity, regex) are independent, so all four combinations get
-    /// their own sentence rather than a generic one that's wrong in three of them.</summary>
+    /// their own sentence rather than a generic one that's wrong in three of them. The stepping keys
+    /// are tacked on because they differ too: Enter steps results in plain mode but adds a term in
+    /// proximity mode, where the arrows become the only way to step.</summary>
     private void UpdateSearchBoxHint()
     {
         bool prox = ProximityCheck.IsChecked == true;
         bool rx = RegexCheck.IsChecked == true;
         SearchBox.ToolTip = (prox, rx) switch
         {
-            (true, true) => "Type a regular expression and press Enter to add it as a term. Results are the places where every term matches close together.",
-            (true, false) => "Type a term and press Enter to add it. Matched exactly as typed, so a term may contain spaces. Results are the places where every term appears close together.",
-            (false, true) => "A .NET regular expression to find. ^ and $ mean the start and end of a line.",
-            (false, false) => "Type text to find — matched exactly as typed.",
+            (true, true) => "Type a regular expression and press Enter to add it as a term. Results are the places where every term matches close together. Down and Up step through them.",
+            (true, false) => "Type a term and press Enter to add it. Matched exactly as typed, so a term may contain spaces. Results are the places where every term appears close together. Down and Up step through them.",
+            (false, true) => "A .NET regular expression to find. ^ and $ mean the start and end of a line. Enter or Down steps to the next match, Shift+Enter or Up to the previous one.",
+            (false, false) => "Type text to find — matched exactly as typed. Enter or Down steps to the next match, Shift+Enter or Up to the previous one.",
         };
     }
 
@@ -1791,6 +1793,22 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
             // as F3 / Shift+F3 do, wrapping at the ends. Focus stays in the box so it can be pressed
             // repeatedly; the match stays highlighted because the pane is its own focus scope.
             FindNext(backwards: (Keyboard.Modifiers & ModifierKeys.Shift) != 0, keepFocus: true);
+            e.Handled = true;
+        }
+        else if (e.Key == Key.Down || e.Key == Key.Up)
+        {
+            // Down/Up step the results, the same as Enter/Shift+Enter. Without this the result list
+            // is unreachable from the keyboard: it comes after the options and the term list in tab
+            // order, and Tab is how you get at *those*, so walking to the results means passing
+            // through every checkbox. The arrows are also the reflex — a box with a list under it
+            // reads as a completion popup — and they are free here, because a single-line TextBox
+            // does nothing with them (Home/End already do the within-line moves).
+            //
+            // Deliberately stepping rather than moving focus into the list: it leaves you able to
+            // keep editing the query, and it works identically in proximity mode, where Enter is
+            // taken by "add this term" and the arrows are the only stepping keys left.
+            _searchDebounce?.Stop();
+            FindNext(backwards: e.Key == Key.Up, keepFocus: true);
             e.Handled = true;
         }
     }
