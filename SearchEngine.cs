@@ -102,14 +102,30 @@ public static class SearchEngine
     public static List<SearchMatch> FindAll(string text, string needle, MatchOptions opt)
         => Occurrences(text, needle, opt).ToList();
 
-    /// <summary>True when the char just before <paramref name="start"/> and the char at
-    /// <paramref name="end"/> are both non-word characters (or the text edge) — i.e. the range
-    /// [start, end) stands alone as a word rather than sitting inside a longer run of letters/digits.
-    /// Word characters are letters, digits, and underscore.</summary>
+    /// <summary>
+    /// True when the range [start, end) isn't sitting <i>inside</i> a longer run of word characters —
+    /// which is all "match whole word only" can sensibly mean. Word characters are letters, digits
+    /// and underscore.
+    ///
+    /// <para>Each edge is only constrained when it could actually be embedded, i.e. when the match's
+    /// own character at that edge is a word character. A match that <b>begins</b> with a space, a
+    /// bracket or a newline cannot be the tail of a longer word, so demanding a non-word character
+    /// before it as well would reject something the match itself already rules out. Doing that was a
+    /// real trap: with whole-word ticked, a pattern like <c>  \[\d+_\d+\]</c> (or a literal
+    /// <c>" os "</c>) matched <i>nothing</i>, because the character before the leading space is
+    /// nearly always a letter. Terms that do start and end in word characters — the ordinary case,
+    /// and the only one the option is really aimed at — are unaffected.</para>
+    ///
+    /// <para>An empty range has no edge characters of its own, so both edges stay constrained: a
+    /// zero-width match still has to stand between two non-word characters.</para>
+    /// </summary>
     public static bool IsWholeWord(string text, int start, int end)
     {
-        bool leftOk = start <= 0 || !IsWordChar(text[start - 1]);
-        bool rightOk = end >= text.Length || !IsWordChar(text[end]);
+        bool empty = end <= start;
+        bool leftOk = start <= 0 || !IsWordChar(text[start - 1])
+                                 || (!empty && !IsWordChar(text[start]));
+        bool rightOk = end >= text.Length || !IsWordChar(text[end])
+                                          || (!empty && !IsWordChar(text[end - 1]));
         return leftOk && rightOk;
     }
 

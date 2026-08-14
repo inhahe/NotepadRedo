@@ -211,6 +211,17 @@ already do `\b`, so whole-word is redundant":
 Because whole-word is applied *after* matching rather than baked into the pattern, it is a single
 predicate, `SearchEngine.IsWholeWord(text, start, end)` — public so `ReplaceEngine` shares it.
 
+That predicate constrains **only the edges that could actually be embedded**, i.e. those where the
+match's own first/last character is a word character. Checking both edges unconditionally (the
+obvious implementation, and the original one) is subtly wrong once the option composes with regex:
+a match beginning with a space, a bracket or a newline cannot be the tail of a longer word, so
+requiring a non-word character *before* it too asks for something the match already guarantees.
+In practice it meant `  \[\d+_\d+\]` with whole-word ticked matched nothing at all, since the
+character before the leading space is nearly always a letter — a silent empty result with no hint
+as to why. Terms that begin and end in word characters, which is what the option is really for,
+behave exactly as before. An empty range has no characters of its own, so both of its edges stay
+constrained.
+
 ### One place that knows how a term is scanned
 
 `SearchEngine.Occurrences(text, term, opt, allowOverlap)` is the sole enumerator: plain search,
