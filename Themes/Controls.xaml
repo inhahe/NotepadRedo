@@ -19,8 +19,12 @@
                             BorderBrush="{TemplateBinding BorderBrush}"
                             BorderThickness="{TemplateBinding BorderThickness}"
                             SnapsToDevicePixels="True">
+                        <!-- RecognizesAccessKey defaults to False on a bare ContentPresenter, so
+                             without this a button captioned "Replace _all" would render the
+                             underscore literally and register no Alt+A access key. -->
                         <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"
-                                          Margin="{TemplateBinding Padding}"/>
+                                          Margin="{TemplateBinding Padding}"
+                                          RecognizesAccessKey="True"/>
                     </Border>
                     <ControlTemplate.Triggers>
                         <Trigger Property="IsDefault" Value="True">
@@ -63,7 +67,7 @@
                     <Border x:Name="bd" CornerRadius="6" Background="Transparent"
                             BorderBrush="Transparent" BorderThickness="1"
                             Padding="{TemplateBinding Padding}" SnapsToDevicePixels="True">
-                        <ContentPresenter VerticalAlignment="Center"/>
+                        <ContentPresenter VerticalAlignment="Center" RecognizesAccessKey="True"/>
                     </Border>
                     <ControlTemplate.Triggers>
                         <Trigger Property="IsMouseOver" Value="True">

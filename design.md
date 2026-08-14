@@ -41,9 +41,11 @@ document verbs use a bounded timeout so a wedged sibling can't hang a launch.
 - **`MainWindow`** — shell: menu, toolbar, status bar and a `TabControl` of documents. Multiple
   windows per process are supported; tabs drag between them, and across processes via the `CLOSE`
   verb (the origin drops its copy after the move).
-- **`EditorView`** — one document: text box, undo tree, search pane, autosave, external-change
-  watching. Raises `StatusChanged` / `TitleChanged` / `SearchVisibilityChanged`, which the shell
-  reflects into its chrome.
+- **`EditorView`** — one document: text box, undo tree, search pane, replace pane, autosave,
+  external-change watching. Raises `StatusChanged` / `TitleChanged` / `SidePaneVisibilityChanged`,
+  which the shell reflects into its chrome. (That last one was `SearchVisibilityChanged` until the
+  replace pane arrived — it drives `MainWindow.SyncPaneToggles`, which lights *both* toolbar
+  toggles, so it is no longer search-specific.)
 - `RemoveTab(ti, dispose)` distinguishes a **real close** (`dispose: true`, view destroyed, session
   may be cleared) from a **tear-off** (`dispose: false`, the view lives on and re-registers itself
   in its new home).
@@ -130,6 +132,24 @@ candidate: measured on .NET 8 it resolves `SystemColors.InactiveSelectionHighlig
 coerces `SelectionBrush` from it correctly, but paints nothing, because `IsSelectionActive` has
 already gone false by then. Don't reach for it (or for overriding that brush key) if this regresses.
 
+#### Tab and Alt inside a focus-scope pane
+
+`FocusManager.IsFocusScope="True"` earns its place (above), but it costs two things that had to be
+put back by hand — both were latent in the search pane long before the replace pane existed:
+
+- **Tab navigation dies.** A focus scope is not, by itself, a tab-navigation *container*; with the
+  window as the container, Tab from inside the pane goes nowhere at all and the keystroke is simply
+  swallowed by the focused `TextBox`. `KeyboardNavigation.TabNavigation="Cycle"` on the pane is
+  necessary but — measured — **not sufficient**. The working fix is the shared helper
+  `TabNavigateWithin(pane, e)`, called from each pane's tunnelling `PreviewKeyDown`, which does the
+  `MoveFocus` itself. Cycle-within-the-pane is also the right *behaviour* for a tool pane: Tab walks
+  round its own fields and Esc is how you leave.
+- **Access keys were never registered** — this one is not the focus scope's fault at all, but it
+  surfaced here first because these are the only buttons in the app with an `_` in their caption.
+  The themed `Button` template in `Themes/Controls.xaml` used a bare `<ContentPresenter/>`, and
+  `ContentPresenter.RecognizesAccessKey` **defaults to `False`**, so `"Replace _all"` rendered the
+  underscore literally and `Alt+A` did nothing. Fixed on the template, so it holds for every button.
+
 ### The view stays put when the editor is re-laid out
 
 A `ScrollViewer` keeps its offset in **pixels**. With word wrap on, how many visual rows the text
@@ -166,6 +186,72 @@ which reports the **visual row**. With word wrap on the two diverge wildly (a 10
 reported "Ln 2496"), and the visual number contradicted the search pane, which has always listed the
 logical line of each match. `MemoryExtensions.Count` + `LastIndexOf` keep it O(n) with vectorised
 scans, which is cheap enough for the per-keystroke call.
+
+## Replace
+
+`ReplaceEngine` is pure and UI-free, the same shape as `SearchEngine`: `Find(text, find,
+replacement, regex, caseSensitive, scopeStart, scopeLength)` returns `ReplaceMatch(Start, Length,
+Replacement)` records with each match's replacement text **already resolved** (so `$1` is expanded
+once, where the `Match` object is still in hand), and `Apply` splices them in.
+
+It is deliberately *not* `SearchEngine.FindAll`. Two differences matter:
+
+- **Matches must not overlap.** `FindAll` advances `idx = f + 1` so it can report overlapping hits
+  to the results list; a replace scan advances past the whole match. Replacing overlapping matches
+  is meaningless.
+- **A zero-width regex match must still advance the scan**, or Replace All spins forever.
+
+The regex scan uses `re.Match(text, startat)` + `NextMatch()`, **not** the
+`Match(text, beginning, length)` overload. That overload redefines where the string begins and ends
+as far as the engine is concerned, so with `RegexOptions.Multiline` on, `^` would match at the first
+character of the selection even mid-line, and `\b` / lookbehind would stop seeing the surrounding
+document. `NextMatch()` also handles stepping past a zero-width match. Matches that *straddle* the
+end of the scope are skipped rather than truncated. `Multiline` is on because `^`/`$` meaning
+line start/end is what a text-editor user expects; a 2 s `RegexTimeout` guards catastrophic
+backtracking.
+
+`BuildRegex` throws `ArgumentException` for a bad pattern (`RegexParseException` derives from it),
+and `Match.Result` throws the same type for a bad `$`-construct in the *replacement* — which is why
+the pane says "Invalid regular expression: …" rather than "Invalid pattern".
+
+### Its own column
+
+The replace pane is a **fifth grid column**, not a second tenant of the search column, so both panes
+can be open at once. Everything that measures the chrome beside the editor (`Splitter_MouseMove`)
+sums both columns' widths.
+
+### The selection scope is captured, not read live
+
+`_replaceScope` is a stored `(Start, Length)`, not a read of `Editor.SelectionLength` at replace
+time. It has to be: stepping to the next match *is itself* a selection change, so a live read would
+see the scope collapse to the single match on the first Replace Next.
+
+- `_programmaticSelection` brackets every selection the app makes, so only the **user's** selection
+  changes redefine the scope (or, when they clear it, disable "The selected text" and fall back to
+  the whole document).
+- `ShiftReplaceScope(delta)` keeps the captured range correct across each edit. `ApplyReplacementText`
+  deliberately does **not** re-derive the scope from the selection afterwards — a single Replace
+  Next leaves a bare caret, which would read back as "the user cleared their selection" and throw
+  the scope away mid-run.
+- The scope radios have **no `GroupName`**: `RadioButton` groups by name per *visual root*, and every
+  tab shares one window, so a name would make all open documents' radios one group. Without one they
+  group by their shared parent panel, which is what's wanted.
+
+### One undo node per replace
+
+Both buttons route through `SetEditorText`, which suppresses `TextChanged` — that is what makes a
+whole Replace All a single node in the undo tree. The price is that everything which normally rides
+on `TextChanged` has to be re-run by hand afterwards (`RunSearch`, `RaiseAll`, and the scroll
+position). Assigning `Editor.Text` also scrolls the view to the top, so `ApplyReplacementText` queues
+a `BringIntoView(caret)` at `DispatcherPriority.Background`; Replace Next queues its own scroll to
+the *following* match after that, which lands later in the queue and therefore wins, as it should.
+
+### Highlight, then replace
+
+Replace Next is a two-press cycle by design: it replaces only the match that is **currently
+selected**, so the first press (when the selection isn't a match) merely highlights and scrolls to
+the next one. You always see what you are about to change. `HighlightRange` is shared with the
+search pane, so both features put you on text identically.
 
 ## Persistence (all under `%LOCALAPPDATA%\NotepadRedo`)
 

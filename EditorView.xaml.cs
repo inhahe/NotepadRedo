@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.IO;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -70,6 +71,19 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
     private DispatcherTimer? _searchDebounce;
     private bool _suppressResultNav;       // ignore the SelectionChanged fired while we repopulate
     private const double SearchPaneWidth = 320;
+
+    // ----- Replace pane -----
+    private DispatcherTimer? _replaceDebounce;
+    private const double ReplacePaneWidth = 320;
+    /// <summary>The region replacements are confined to while "the selected text" is chosen;
+    /// null means the whole document. Held as a range rather than re-read from the editor's live
+    /// selection because stepping through matches *is* a selection change — see
+    /// <see cref="_programmaticSelection"/>.</summary>
+    private (int Start, int Length)? _replaceScope;
+    /// <summary>Set while we move the editor's selection ourselves (highlighting a match, landing a
+    /// replacement), so our own selection changes aren't mistaken for the user re-selecting — or
+    /// clearing — the region that "the selected text" refers to.</summary>
+    private bool _programmaticSelection;
 
     // ----- Drag-select auto-scroll -----
     // WPF's built-in auto-scroll while drag-selecting past the top/bottom edge lurches in big
@@ -339,9 +353,11 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
         _debounce.Start();
         RaiseAll();
 
-        // Keep search results in sync with edits made while the pane is open.
+        // Keep the side panes in sync with edits made while they're open.
         if (SearchPanel.Visibility == Visibility.Visible)
             QueueSearch();
+        if (ReplacePanel.Visibility == Visibility.Visible)
+            QueueReplaceRefresh();
     }
 
     private void Debounce_Tick(object? sender, EventArgs e)
@@ -796,11 +812,12 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
         }
 
         double splitter = Splitter.ActualWidth;
-        // The search pane (when open) sits to the right of the tree, so its width is reserved space
-        // the tree column must not include.
-        double rightExtra = SearchPanel.Visibility == Visibility.Visible ? SearchColumn.ActualWidth : 0;
+        // The search and replace panes (when open) sit to the right of the tree, so their widths are
+        // reserved space the tree column must not include.
+        double rightExtra = (SearchPanel.Visibility == Visibility.Visible ? SearchColumn.ActualWidth : 0)
+                          + (ReplacePanel.Visibility == Visibility.Visible ? ReplaceColumn.ActualWidth : 0);
         // Cursor X within this control; the tree fills everything to the right of the cursor
-        // except the reserved search pane.
+        // except the reserved panes.
         double cursorX = e.GetPosition(this).X;
         double target = ActualWidth - cursorX - splitter / 2 - rightExtra;
 
@@ -931,7 +948,14 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
 
     // ===================== Status =====================
 
-    private void Editor_SelectionChanged(object sender, RoutedEventArgs e) => RaiseAll();
+    private void Editor_SelectionChanged(object sender, RoutedEventArgs e)
+    {
+        RaiseAll();
+        // A selection change the *user* made redefines (or dissolves) what "the selected text" means
+        // to the replace pane. Ours don't — stepping onto a match is a selection change too.
+        if (!_programmaticSelection && ReplacePanel.Visibility == Visibility.Visible)
+            UserSelectionChangedForReplace();
+    }
 
     /// <summary>
     /// Route Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z to the history tree ourselves. The editor's built-in
@@ -944,6 +968,13 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
         if (Keyboard.Modifiers == ModifierKeys.Control && e.Key == Key.F)
         {
             ShowSearch(true);
+            e.Handled = true;
+        }
+        // Ctrl+H has to be caught here for a second reason beyond the window binding: WPF maps it to
+        // EditingCommands.Backspace inside a TextBox, so left alone it would eat a character.
+        else if (Keyboard.Modifiers == ModifierKeys.Control && e.Key == Key.H)
+        {
+            ShowReplace(true);
             e.Handled = true;
         }
         else if (Keyboard.Modifiers == ModifierKeys.Control && e.Key == Key.Z)
@@ -1332,11 +1363,15 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
     }
 
     /// <summary>Programmatically set the editor text and commit it as a single history node.</summary>
-    private void SetEditorText(string text)
+    /// <param name="caret">Where to leave the caret; by default the current position, clamped.</param>
+    /// <param name="selLen">Length to select from <paramref name="caret"/> (0 = a bare caret). The
+    /// selection is set *before* the commit so the history node records the right caret position.</param>
+    private void SetEditorText(string text, int? caret = null, int selLen = 0)
     {
         _suppressTextChange = true;
         Editor.Text = text;
-        Editor.CaretIndex = Math.Clamp(Editor.CaretIndex, 0, text.Length);
+        int at = Math.Clamp(caret ?? Editor.CaretIndex, 0, text.Length);
+        Editor.Select(at, Math.Clamp(selLen, 0, text.Length - at));
         _suppressTextChange = false;
         _typingNode = null;
         CommitPending();
@@ -1449,8 +1484,9 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
     /// <summary>True while the search pane is showing.</summary>
     public bool IsSearchOpen => SearchPanel.Visibility == Visibility.Visible;
 
-    /// <summary>Raised when the search pane is shown or hidden (for toolbar toggle sync).</summary>
-    public event EventHandler? SearchVisibilityChanged;
+    /// <summary>Raised when a side pane (search or replace) is shown or hidden, so the shell can
+    /// re-sync its toolbar toggles.</summary>
+    public event EventHandler? SidePaneVisibilityChanged;
 
     /// <summary>Open the search pane if closed, close it if open (toolbar toggle).</summary>
     public void ToggleSearch() => ShowSearch(!IsSearchOpen);
@@ -1562,7 +1598,7 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
             SearchColumn.Width = new GridLength(0);
             Editor.Focus();
         }
-        SearchVisibilityChanged?.Invoke(this, EventArgs.Empty);
+        SidePaneVisibilityChanged?.Invoke(this, EventArgs.Empty);
     }
 
     private void SearchClose_Click(object sender, RoutedEventArgs e) => ShowSearch(false);
@@ -1710,6 +1746,11 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
         }
         return null;
     }
+
+    /// <summary>Pane-wide key handling for search: just Tab, which WPF won't do for us here
+    /// (see <see cref="TabNavigateWithin"/>). Esc and Enter belong to the search box itself.</summary>
+    private void SearchPanel_PreviewKeyDown(object sender, KeyEventArgs e)
+        => TabNavigateWithin(SearchPanel, e);
 
     private void SearchBox_PreviewKeyDown(object sender, KeyEventArgs e)
     {
@@ -1876,15 +1917,30 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
     /// active (see SearchPanel in EditorView.xaml).</param>
     private void NavigateToMatch(SearchResultVM r, bool keepFocus = false)
     {
-        int len = Editor.Text.Length;
-        int start = Math.Clamp(r.Start, 0, len);
-        int selLen = Math.Clamp(r.Length, 0, len - start);
-
         if (!keepFocus)
             Editor.Focus();
-        // Select() highlights the match and leaves the caret at its end. (Don't set
-        // CaretIndex afterwards — doing so collapses the selection, hiding the match.)
-        Editor.Select(start, selLen);
+        HighlightRange(r.Start, r.Length);
+    }
+
+    /// <summary>Select a range in the document, scroll it into view, and refresh the status bar —
+    /// the one way anything in the side panes puts you on a piece of text. Shared by the search pane's
+    /// navigation and the replace pane's stepping so both behave identically.</summary>
+    private void HighlightRange(int start, int length)
+    {
+        int len = Editor.Text.Length;
+        start = Math.Clamp(start, 0, len);
+        length = Math.Clamp(length, 0, len - start);
+
+        // Flagged as ours so the replace pane doesn't read this as the user re-selecting (or, for a
+        // zero-width regex match, clearing) the region it is scoped to.
+        _programmaticSelection = true;
+        try
+        {
+            // Select() highlights the match and leaves the caret at its end. (Don't set
+            // CaretIndex afterwards — doing so collapses the selection, hiding the match.)
+            Editor.Select(start, length);
+        }
+        finally { _programmaticSelection = false; }
 
         // Defer the scroll to Background priority so the TextBox runs a layout pass
         // after being focused/selected first. Queried before that pass,
@@ -1936,6 +1992,368 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
             else if (rect.X > Editor.ViewportWidth - margin)
                 Editor.ScrollToHorizontalOffset(contentX - Editor.ViewportWidth + margin);
         }
+    }
+
+    /// <summary>
+    /// Move the keyboard between a side pane's own controls on Tab / Shift+Tab.
+    ///
+    /// <para>WPF's built-in tab navigation is dead inside these panes: they are focus scopes (which
+    /// is what keeps the editor's selection highlighted while you work in them — see SearchPanel in
+    /// EditorView.xaml), and the automatic Tab handling never moves focus out of the box you started
+    /// in. Rather than give up the highlighting, we drive the navigation ourselves from the tunneling
+    /// preview, before anything can swallow the key. Combined with
+    /// <c>KeyboardNavigation.TabNavigation="Cycle"</c> on the pane, Tab walks round the pane's own
+    /// fields and never escapes into the document — Esc is how you leave.</para>
+    /// </summary>
+    /// <returns>True when the key was Tab and has been dealt with.</returns>
+    private static bool TabNavigateWithin(FrameworkElement pane, KeyEventArgs e)
+    {
+        if (e.Key != Key.Tab)
+            return false;
+
+        var dir = (Keyboard.Modifiers & ModifierKeys.Shift) != 0
+            ? FocusNavigationDirection.Previous
+            : FocusNavigationDirection.Next;
+
+        // Move from whatever holds focus; fall back to the pane itself if that can't be resolved
+        // (then First/Last, since Next/Previous are meaningless from a container).
+        if (Keyboard.FocusedElement is FrameworkElement focused && pane.IsAncestorOf(focused))
+            focused.MoveFocus(new TraversalRequest(dir));
+        else
+            pane.MoveFocus(new TraversalRequest(
+                dir == FocusNavigationDirection.Next ? FocusNavigationDirection.First
+                                                     : FocusNavigationDirection.Last));
+        e.Handled = true;
+        return true;
+    }
+
+    // ===================== Replace =====================
+
+    /// <summary>Open the replace pane and focus its input (called by Ctrl+H and the Edit menu).</summary>
+    public void OpenReplace() => ShowReplace(true);
+
+    /// <summary>True while the replace pane is showing.</summary>
+    public bool IsReplaceOpen => ReplacePanel.Visibility == Visibility.Visible;
+
+    /// <summary>Open the replace pane if closed, close it if open (toolbar toggle).</summary>
+    public void ToggleReplace() => ShowReplace(!IsReplaceOpen);
+
+    private void ShowReplace(bool show)
+    {
+        if (show)
+        {
+            ReplacePanel.Visibility = Visibility.Visible;
+            ReplaceColumn.MinWidth = 200;
+            ReplaceColumn.Width = new GridLength(ReplacePaneWidth);
+
+            // Seed "find what" from the selection, as every editor does — but only for a short,
+            // single-line one. A multi-line selection is far more likely to be the *region* you mean
+            // to replace within than the thing you mean to replace.
+            string sel = Editor.SelectedText;
+            if (sel.Length is > 0 and <= 200 && !sel.Contains('\n'))
+                ReplaceFindBox.Text = sel;
+
+            SyncReplaceScopeAvailability();
+            ReplaceFindBox.Focus();
+            ReplaceFindBox.SelectAll();
+            RefreshReplaceStatus();
+        }
+        else
+        {
+            ReplacePanel.Visibility = Visibility.Collapsed;
+            ReplaceColumn.MinWidth = 0;
+            ReplaceColumn.Width = new GridLength(0);
+            Editor.Focus();
+        }
+        SidePaneVisibilityChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    private void ReplaceClose_Click(object sender, RoutedEventArgs e) => ShowReplace(false);
+
+    private void ReplaceInput_Changed(object sender, TextChangedEventArgs e) => QueueReplaceRefresh();
+
+    private void ReplaceOption_Changed(object sender, RoutedEventArgs e)
+    {
+        if (IsLoaded) RefreshReplaceStatus();
+    }
+
+    /// <summary>Recount matches after a pause, so typing a pattern doesn't re-scan the document (and,
+    /// in regex mode, recompile it) on every keystroke.</summary>
+    private void QueueReplaceRefresh()
+    {
+        if (_replaceDebounce is null)
+        {
+            _replaceDebounce = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(180) };
+            _replaceDebounce.Tick += (_, _) => { _replaceDebounce!.Stop(); RefreshReplaceStatus(); };
+        }
+        _replaceDebounce.Stop();
+        _replaceDebounce.Start();
+    }
+
+    private void ReplacePanel_PreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        if (TabNavigateWithin(ReplacePanel, e))
+            return;
+        if (e.Key == Key.Escape)
+        {
+            ShowReplace(false);
+            e.Handled = true;
+        }
+        // Only from the text boxes: a focused button already answers to Enter, and stealing that
+        // would make tabbing to "Replace all" and pressing Enter do something else entirely.
+        else if (e.Key == Key.Enter && Keyboard.FocusedElement is TextBox)
+        {
+            _replaceDebounce?.Stop();
+            // Enter means "the obvious next thing for the box I'm in": from the pattern, show me what
+            // it matches; from the replacement, apply it.
+            if (ReferenceEquals(Keyboard.FocusedElement, ReplaceWithBox))
+                ReplaceNext();
+            else
+                HighlightNextReplaceMatch();
+            e.Handled = true;
+        }
+    }
+
+    // ----- Scope ("the whole document" / "the selected text") -----
+
+    private void ReplaceScope_Changed(object sender, RoutedEventArgs e)
+    {
+        if (!IsLoaded) return;
+        CaptureReplaceScope();
+        RefreshReplaceStatus();
+    }
+
+    /// <summary>Take the document's current selection as the region replacements are confined to
+    /// (or drop the confinement when "the whole document" is chosen).</summary>
+    private void CaptureReplaceScope()
+    {
+        if (ReplaceScopeSelection.IsChecked == true && Editor.SelectionLength > 0)
+            _replaceScope = (Editor.SelectionStart, Editor.SelectionLength);
+        else
+            _replaceScope = null;
+    }
+
+    /// <summary>Enable "the selected text" only when there is some — and if the option was on when
+    /// the selection went away, fall back to the whole document rather than silently replacing
+    /// nothing.</summary>
+    private void SyncReplaceScopeAvailability()
+    {
+        ReplaceScopeSelection.IsEnabled = Editor.SelectionLength > 0;
+        if (!ReplaceScopeSelection.IsEnabled && ReplaceScopeSelection.IsChecked == true)
+            ReplaceScopeAll.IsChecked = true;   // raises ReplaceScope_Changed, which clears the scope
+        else
+            CaptureReplaceScope();
+    }
+
+    /// <summary>The user moved the caret or made a new selection: that is the authoritative statement
+    /// of what "the selected text" means, so re-read it.</summary>
+    private void UserSelectionChangedForReplace()
+    {
+        SyncReplaceScopeAvailability();
+        RefreshReplaceStatus();
+    }
+
+    /// <summary>The half-open character range replacements may touch, clamped to the live text.</summary>
+    private (int Start, int Length) ReplaceRange()
+    {
+        int len = Editor.Text.Length;
+        if (_replaceScope is not { } scope)
+            return (0, len);
+        int start = Math.Clamp(scope.Start, 0, len);
+        return (start, Math.Clamp(scope.Length, 0, len - start));
+    }
+
+    // ----- Matching -----
+
+    /// <summary>
+    /// Every replacement the current pane settings would make, in document order.
+    /// </summary>
+    /// <returns><c>null</c> when there is nothing to search for or the pattern is unusable; the
+    /// status line has already been set to explain which.</returns>
+    private List<ReplaceMatch>? CurrentReplaceMatches()
+    {
+        if (ReplaceFindBox.Text.Length == 0)
+        {
+            ReplaceStatus.Text = "";
+            return null;
+        }
+
+        var (start, length) = ReplaceRange();
+        try
+        {
+            return ReplaceEngine.Find(Editor.Text, ReplaceFindBox.Text, ReplaceWithBox.Text,
+                                      regex: ReplaceRegexCheck.IsChecked == true,
+                                      caseSensitive: ReplaceCaseCheck.IsChecked == true,
+                                      scopeStart: start, scopeLength: length);
+        }
+        catch (ArgumentException ex)
+        {
+            // A malformed pattern (RegexParseException derives from ArgumentException), or a
+            // replacement string referring to a group that doesn't exist. Either way the message names
+            // the offending construct and where it is, which is what you need to fix it.
+            ReplaceStatus.Text = "Invalid regular expression: " + FirstLine(ex.Message);
+            return null;
+        }
+        catch (RegexMatchTimeoutException)
+        {
+            ReplaceStatus.Text = "That pattern is taking too long on this document — try a simpler one.";
+            return null;
+        }
+    }
+
+    private static string FirstLine(string s)
+    {
+        int nl = s.IndexOfAny(new[] { '\r', '\n' });
+        return nl < 0 ? s : s[..nl];
+    }
+
+    /// <summary>Re-count matches and say so in the pane (leaving any error message in place).</summary>
+    private void RefreshReplaceStatus()
+    {
+        if (ReplacePanel.Visibility != Visibility.Visible)
+            return;
+        var matches = CurrentReplaceMatches();
+        if (matches is null)
+            return;
+
+        string where = _replaceScope is null ? "" : " in the selection";
+        ReplaceStatus.Text = matches.Count switch
+        {
+            0 => "No matches" + where,
+            1 => "1 match" + where,
+            _ => $"{matches.Count} matches{where}",
+        };
+    }
+
+    /// <summary>Show the next match at or after the caret (wrapping at the end), changing nothing.</summary>
+    private void HighlightNextReplaceMatch()
+    {
+        var matches = CurrentReplaceMatches();
+        if (matches is null) return;
+        if (matches.Count == 0) { RefreshReplaceStatus(); return; }
+
+        // Step *past* a match we're already standing on, so repeated Enter walks the document.
+        int from = Editor.SelectionStart + (Editor.SelectionLength > 0 ? 1 : 0);
+        int idx = matches.FindIndex(m => m.Start >= from);
+        if (idx < 0) idx = 0;
+
+        HighlightRange(matches[idx].Start, matches[idx].Length);
+        ReplaceStatus.Text = $"{idx + 1} of {matches.Count}";
+    }
+
+    // ----- Doing it -----
+
+    private void ReplaceNext_Click(object sender, RoutedEventArgs e) => ReplaceNext();
+
+    /// <summary>
+    /// Replace the match you are standing on, then move onto the next one — the two halves of the
+    /// "click again and again to work down the document" loop.
+    ///
+    /// <para>It only replaces when the editor's selection is <i>exactly</i> one of the current
+    /// matches, which is the state the previous click (or Enter in the find box) left you in.
+    /// Otherwise it just highlights the next match: the first click after opening the pane, or after
+    /// clicking about in the document, shows you what is going to change before changing it.</para>
+    /// </summary>
+    private void ReplaceNext()
+    {
+        _replaceDebounce?.Stop();
+        var matches = CurrentReplaceMatches();
+        if (matches is null) return;
+        if (matches.Count == 0) { RefreshReplaceStatus(); return; }
+
+        int selStart = Editor.SelectionStart, selLen = Editor.SelectionLength;
+        int hit = matches.FindIndex(m => m.Start == selStart && m.Length == selLen);
+        if (hit < 0)
+        {
+            HighlightNextReplaceMatch();
+            return;
+        }
+
+        var target = matches[hit];
+        string newText = ReplaceEngine.Apply(Editor.Text, new[] { target });
+        int caretAfter = target.Start + target.Replacement.Length;
+        ShiftReplaceScope(target.Replacement.Length - target.Length);
+        ApplyReplacementText(newText, caretAfter, 0);
+
+        // Re-scan the changed document — the replacement may itself have created or destroyed
+        // matches — and step onto the next one so another click carries straight on.
+        var after = CurrentReplaceMatches();
+        if (after is null) return;
+        if (after.Count == 0)
+        {
+            ReplaceStatus.Text = "Replaced \u00b7 no matches left";
+            return;
+        }
+
+        int idx = after.FindIndex(m => m.Start >= caretAfter);
+        if (idx < 0) idx = 0;                       // wrap round to the top
+        HighlightRange(after[idx].Start, after[idx].Length);
+        ReplaceStatus.Text = $"Replaced \u00b7 now on {idx + 1} of {after.Count}";
+    }
+
+    private void ReplaceAll_Click(object sender, RoutedEventArgs e)
+    {
+        _replaceDebounce?.Stop();
+        var matches = CurrentReplaceMatches();
+        if (matches is null) return;
+        if (matches.Count == 0) { RefreshReplaceStatus(); return; }
+
+        var (start, length) = ReplaceRange();
+        string newText = ReplaceEngine.Apply(Editor.Text, matches);
+        int delta = ReplaceEngine.Delta(matches);
+
+        if (_replaceScope is not null)
+        {
+            // Stay scoped to the same region — it has just grown or shrunk by the net change — and
+            // leave it selected, so what was affected is plain to see.
+            _replaceScope = (start, length + delta);
+            ApplyReplacementText(newText, start, length + delta);
+        }
+        else
+        {
+            ApplyReplacementText(newText, Math.Min(Editor.CaretIndex, newText.Length), 0);
+        }
+
+        ReplaceStatus.Text = matches.Count == 1
+            ? "Replaced 1 match"
+            : $"Replaced {matches.Count} matches";
+    }
+
+    /// <summary>Slide the scoped region's length by a replacement's net change so it keeps covering
+    /// the same text.</summary>
+    private void ShiftReplaceScope(int delta)
+    {
+        if (_replaceScope is { } scope)
+            _replaceScope = (scope.Start, Math.Max(0, scope.Length + delta));
+    }
+
+    /// <summary>
+    /// Land replaced text in the document as a single history node, with the caret/selection where the
+    /// caller wants it.
+    ///
+    /// <para>Everything here that would normally happen by itself has to be done by hand:
+    /// <see cref="SetEditorText"/> suppresses <c>TextChanged</c> (that is what makes the whole sweep
+    /// one undo step instead of one per match), so the search pane's results and the status bar would
+    /// otherwise be left describing the document as it was.</para>
+    /// </summary>
+    private void ApplyReplacementText(string newText, int caret, int selLen)
+    {
+        _programmaticSelection = true;
+        try { SetEditorText(newText, caret, selLen); }
+        finally { _programmaticSelection = false; }
+
+        // Deliberately *not* re-deriving the scope from the selection here: a single Replace Next
+        // leaves a bare caret, and reading that back would look like the user had cleared their
+        // selection and would throw the scope away mid-run. ShiftReplaceScope has already kept it
+        // correct; only the user's own selection changes redefine it.
+        if (SearchPanel.Visibility == Visibility.Visible)
+            RunSearch();
+        RaiseAll();
+
+        // Assigning Editor.Text scrolls the view back to the top, so put it back on the text the user
+        // was looking at. (Replace Next queues its own scroll to the *following* match afterwards,
+        // which lands later in the dispatcher queue and therefore wins — as it should.)
+        Dispatcher.BeginInvoke(new Action(() => BringIntoView(caret)), DispatcherPriority.Background);
     }
 
     // ===================== Drag-select auto-scroll =====================

@@ -45,6 +45,17 @@ Built with WPF on .NET 8.
 - Results are listed with a one/two-line preview ending in an ellipsis when truncated; **clicking a result moves the caret and selection to that match** and scrolls it into view. That holds every time you click it, including when it's already the highlighted result — so after clicking around in the document you can click the same result again to jump straight back to it.
 - **Cycle through matches with `F3`** (next) and **`Shift+F3`** (previous), wrapping around at the ends. `Enter` and `Shift+Enter` do the same from the search box, and the arrow keys walk the result list. Stepping starts from wherever the caret is, so you can click into the document and carry on from there — and it re-scans first, so matches stay correct after an edit. `F3` keeps working **after the pane is closed**, and with nothing searched for yet it just opens the pane. `F3` puts the caret on the match in the document; stepping from the search box or the result list instead leaves the keyboard where it is, so you can keep pressing — the match stays selected and visible in the document either way.
 
+### Replace
+- Open the replace pane with `Ctrl+H` (or **Edit → Replace…**, or the toolbar **Replace** toggle button); it slides in on the right, in its **own** column, so search and replace can be open side by side. If you have a short one-line selection when you open it, that text is pre-filled into **Find what**.
+- **Find what** / **Replace with**, plus a live count of how many matches the current query has (`5 matches`, `No matches`, or `3 matches in the selection`) that re-counts as you type and after every edit.
+- **Regular expression** toggle: treats *Find what* as a .NET regular expression, and *Replace with* as a .NET replacement string — so `$1`, `$2` … substitute captured groups. `^` and `$` mean start/end of a **line**, not of the whole document. An unparseable pattern (or replacement) is reported inline as `Invalid regular expression: …` rather than doing anything. Runaway patterns are cut off after two seconds.
+- **Case sensitive** toggle.
+- **Replace in**: **The whole document**, or **The selected text** — the latter is greyed out until you actually select something. The scope is captured when you select it and **follows the edits**, so replacing inside a selection keeps working through a whole run; selecting something else in the document redefines it, and clearing the selection drops back to the whole document.
+- **Replace _next** (`Alt+N`, or `Enter` from either text box) works highlight-then-replace: the first press highlights and scrolls to the next match from the caret, and the next press replaces *that* match and moves on to the following one, reporting `Replaced · now on 3 of 7`. It wraps around at the end.
+- **Replace _all** (`Alt+A`) replaces every match in scope in one go and reports `Replaced 4 matches`.
+- Both buttons make **one undo step**: a single `Ctrl+Z` takes back an entire Replace All, not one match at a time.
+- `Esc` closes the pane and leaves the caret on the match you were looking at. `Tab` / `Shift+Tab` cycle round the pane's own fields.
+
 ### Autosave, crash recovery & session restore
 - Periodic background autosave (configurable interval, or off) parks in-progress work so an unexpected crash or forced quit doesn't lose unsaved changes.
 - Unsaved/recovered work is offered for restoration on the next launch.
@@ -96,6 +107,7 @@ Choose what the window's **X** button does:
 | `Ctrl+W` / `Ctrl+F4` | Close current tab (prompts to save if there are unsaved changes) |
 | `Ctrl+F` | Find… (open the search pane) |
 | `F3` / `Shift+F3` | Find next / previous match (also `Enter` / `Shift+Enter` in the search box) |
+| `Ctrl+H` | Replace… (open the replace pane) |
 | `Ctrl+Z` | Undo (walk up the history tree) |
 | `Ctrl+Y` / `Ctrl+Shift+Z` | Redo (walk down the history tree) |
 | `Ctrl+X` / `Ctrl+C` / `Ctrl+V` | Cut / copy / paste |
@@ -174,6 +186,7 @@ On first launch, if a `%LOCALAPPDATA%\TreeNotepad\` folder exists (from before t
 | `UndoTree.cs` | The branching undo/redo model (`UndoTree` / `UndoNode`). |
 | `Ipc.cs` | Named-pipe IPC for cross-instance coordination. |
 | `SearchEngine.cs` | Pure, testable text-search logic (plain find + proximity clustering). |
+| `ReplaceEngine.cs` | Pure, testable replace logic: finds the non-overlapping literal/regex matches in a scope, resolves each one's replacement text, and applies them. |
 | `DiffEngine.cs` | Pure, testable line + inline diff logic used by the merge viewer. |
 | `DiffMergeWindow.xaml(.cs)` | Side-by-side diff/merge viewer for reconciling external changes. |
 | `SessionStore.cs` | Reads/writes `session.json` for reopening last session's files. |
