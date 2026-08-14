@@ -19,6 +19,30 @@
 
 ## Bugs
 
+### Esc after a search appeared to move the caret off the match (fixed 2026-08-14, 1.0.20)
+- **Symptom:** search for something, press Enter so the match is highlighted (no clicking a result in
+  the pane), then press Esc — and the document is showing somewhere else entirely, so it looks like
+  the caret was thrown away.
+- **Root cause:** the caret never moved at all. Closing the pane widens the editor by 320px; with word
+  wrap on the text re-wraps into far fewer visual rows while the `ScrollViewer` keeps its offset in
+  *pixels*, so the same offset now points hundreds of paragraphs further on. Verified by screenshot:
+  the status bar read `Ln 500, Col 131` both before and after Esc while the view jumped from para 500
+  to para 826. The same jump happened on every other re-layout — opening the pane, toggling the
+  history tree, dragging the divider, resizing the window, toggling word wrap.
+- **Fix:** `EditorView` now pins the character at the top of the viewport across width changes (and
+  across a word-wrap toggle). See "The view stays put when the editor is re-laid out" in `design.md`.
+- **Regression test (manual):** with word wrap on, open a document of a few hundred wrapped
+  paragraphs, search for a term far down it, press Enter, then Esc — the match must still be on
+  screen, in the same place. Repeat with word wrap off, and repeat toggling wrap from View → Word Wrap.
+
+### Status bar reported wrapped rows as "Ln" (fixed 2026-08-14, 1.0.20)
+- **Symptom:** with word wrap on, the caret on logical line 500 of a 1000-line file showed as
+  `Ln 2496` in the status bar, while the search pane listed the same match as `Ln 500`.
+- **Root cause:** `RaiseAll` used `Editor.GetLineIndexFromCharacterIndex`, which returns the *visual*
+  row; `RunSearch` used the text-counting `LineOf`. Only the search pane was right.
+- **Fix:** `RaiseAll` counts `'\n'` in the text (vectorised `MemoryExtensions.Count`) and derives the
+  column from `LastIndexOf('\n')`.
+
 ### NullReferenceException in font live-preview across windows (defensively fixed 2026-07-17)
 - **Symptom:** A `System.NullReferenceException` was logged once (crash.log, 2026-07-17 21:01)
   during `Font_Click` → `PreviewFont` → `AllOpenViews()+MoveNext()`. It was swallowed by the

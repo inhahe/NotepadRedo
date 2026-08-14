@@ -78,7 +78,8 @@ Choose what the window's **X** button does:
 - Every prompt is themed to match the editor, comes to the front with its default button already focused (so a prompt raised by a launch from a console can't hide behind the console window), and answers to bare keys with no clicking first: **Y**/**N**/**O**/**C** on Yes-No-OK-Cancel prompts, **S**/**A**/**D**/**C** on the save-before-closing prompt, and **1**–**9** on the multi-choice prompts. **Esc** always takes the safe way out (Cancel, else No).
 
 ### Other
-- Word wrap toggle.
+- Word wrap toggle. Toggling it — like opening or closing the search pane or the history tree, dragging the divider, or resizing the window — **keeps you where you were reading**: the line at the top of the view stays at the top instead of the text re-flowing under a fixed scroll position and dropping you somewhere else in the document.
+- The status bar's **Ln / Col** counts real lines (the ones you made by pressing Enter), so it agrees with the line numbers in the search results whether word wrap is on or off.
 - Standard editing: cut / copy / paste.
 - **`.txt` file association**: on launch NotepadRedo registers itself (per-user, no admin) as a program *capable* of opening `.txt` files, so it appears in **Open with** with an **"Always use this app"** option and in **Settings → Default apps**. It never hijacks the association — it only makes itself selectable, so you can set it as your default text editor if you want. The optional `associate-txt.bat` helper *asks first*, then registers and opens Default Apps to help you finish (Windows guards the final `.txt` default with a hashed key, so the last click is always yours).
 
