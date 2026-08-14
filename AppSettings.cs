@@ -126,6 +126,43 @@ public sealed class AppSettings
 
     public static AppSettings Current { get; } = Load();
 
+    /// <summary>
+    /// Set whenever <c>settings.json</c> changes on disk (or when we can't watch it, in which case
+    /// every <see cref="Reload"/> re-reads as before). Starts true so the first activation syncs.
+    /// </summary>
+    private static int _dirty = 1;
+
+    /// <summary>
+    /// Watches the settings file so <see cref="Reload"/> only pays for I/O when something actually
+    /// changed. Activation runs inside <c>WM_ACTIVATE</c> — with a second window open (a torn-off
+    /// tab) that happens on every focus change between the two — so the activation path is kept free
+    /// of filesystem work. Held in a static field to keep the watcher alive for the process.
+    /// </summary>
+    private static readonly FileSystemWatcher? Watcher = CreateWatcher();
+
+    private static FileSystemWatcher? CreateWatcher()
+    {
+        try
+        {
+            Directory.CreateDirectory(Dir);
+            var w = new FileSystemWatcher(Dir, "settings.json")
+            {
+                NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.FileName | NotifyFilters.Size,
+            };
+            FileSystemEventHandler mark = (_, _) => Volatile.Write(ref _dirty, 1);
+            w.Changed += mark;
+            w.Created += mark;
+            w.Deleted += mark;
+            w.Renamed += (_, _) => Volatile.Write(ref _dirty, 1);
+            // A dropped notification would strand us on stale settings, so fall back to always
+            // re-reading rather than never noticing.
+            w.Error += (_, _) => Volatile.Write(ref _dirty, 1);
+            w.EnableRaisingEvents = true;
+            return w;
+        }
+        catch { return null; }
+    }
+
     private static AppSettings Load()
     {
         try
@@ -139,10 +176,13 @@ public sealed class AppSettings
 
     /// <summary>
     /// Re-read settings from disk into this singleton, picking up changes saved by other
-    /// instances. Called when a window is activated (brought to the foreground).
+    /// instances. Called when a window is activated (brought to the foreground), so it does nothing
+    /// at all unless the watcher saw the file change — the common case is a plain flag read.
     /// </summary>
     public void Reload()
     {
+        if (Watcher is not null && Interlocked.Exchange(ref _dirty, 0) == 0)
+            return;
         try
         {
             if (!File.Exists(FilePath))

@@ -51,20 +51,27 @@ public partial class MainWindow : Window
             // as soon as this window gets focus.
             AppSettings.Current.Reload();
             SyncOptionMenus();
-            // Another instance may have opened files while we were in the background.
-            RebuildRecentMenu();
+            // Another instance may have opened files while we were in the background. Kick off a
+            // background re-scan; it raises RecentFiles.Changed if anything actually moved. Nothing
+            // here may touch a document path — activation runs inside WM_ACTIVATE, where a probe of
+            // an unreachable path would freeze the window for as long as the filesystem takes.
+            RecentFiles.Refresh();
         };
 
         RecentFiles.Changed += OnRecentFilesChanged;
         Closed += (_, _) => RecentFiles.Changed -= OnRecentFilesChanged;
         RebuildRecentMenu();
+        RecentFiles.Refresh();
     }
 
-    private void OnRecentFilesChanged(object? sender, EventArgs e) => RebuildRecentMenu();
+    /// <summary>Changed may arrive on the sweep's background thread, so hop to the UI thread.</summary>
+    private void OnRecentFilesChanged(object? sender, EventArgs e) =>
+        Dispatcher.BeginInvoke(new Action(RebuildRecentMenu));
 
     /// <summary>
     /// Fill File &gt; Open Recent from the shared store. Rebuilt rather than bound because the list is
     /// process-wide state that other windows (and other instances) change behind this window's back.
+    /// Reads the cached snapshot only — see <see cref="RecentFiles"/> for why this must not do I/O.
     /// </summary>
     private void RebuildRecentMenu()
     {
@@ -72,7 +79,7 @@ public partial class MainWindow : Window
             return;
         RecentMenu.Items.Clear();
 
-        var files = RecentFiles.Load();
+        var files = RecentFiles.Existing;
         if (files.Count == 0)
         {
             RecentMenu.Items.Add(new MenuItem { Header = "(none)", IsEnabled = false });
