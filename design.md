@@ -187,10 +187,78 @@ reported "Ln 2496"), and the visual number contradicted the search pane, which h
 logical line of each match. `MemoryExtensions.Count` + `LastIndexOf` keep it O(n) with vectorised
 scans, which is cheap enough for the per-keystroke call.
 
+## How a term becomes matches
+
+Both panes offer the same three matching options — **case sensitive**, **match whole word only**,
+**regular expression** — and they are carried as one `MatchOptions` record struct rather than three
+positional `bool` parameters. Three bare bools in a row are indistinguishable at a call site and
+trivially transposed; naming them at construction makes that impossible, and having *one* type shared
+by search and replace is what stops the two features drifting apart on what an option means.
+
+### The options are orthogonal
+
+Regex reinterprets the term as a pattern; whole-word then constrains **wherever that term matched**
+to stand alone as a word. Neither disables the other, and that is a deliberate answer to "regex can
+already do `\b`, so whole-word is redundant":
+
+- With an alternation, the checkbox applies the constraint to the whole pattern — `cat|dog|bird`
+  rather than `\b(?:cat|dog|bird)\b` — so it stays useful *with* regex on.
+- Proximity mode genuinely needs it (see below), and that mode is where most people meet it.
+- Removing it would push the commonest refinement of a search into regex syntax, and a checkbox that
+  greys itself out when another one is ticked is worse than one that composes.
+
+Because whole-word is applied *after* matching rather than baked into the pattern, it is a single
+predicate, `SearchEngine.IsWholeWord(text, start, end)` — public so `ReplaceEngine` shares it.
+
+### One place that knows how a term is scanned
+
+`SearchEngine.Occurrences(text, term, opt, allowOverlap)` is the sole enumerator: plain search,
+proximity search (each term is simply its own little search) and the engine's own `FindAll` all go
+through it, so literal / regex / whole-word cannot behave differently in one mode than another.
+
+`allowOverlap` is the one axis where search and replace legitimately differ, so it is a parameter
+rather than a fork: browsing wants "aa" in "aaa" to list two hits (`idx = f + 1`), splicing must not
+(`idx = f + term.Length`). It only affects literal matching — regex `NextMatch()` never overlaps.
+
+`ReplaceEngine` deliberately keeps its **own** scan loop instead of consuming `Occurrences`. It needs
+the live `Match` object to expand `$1` via `Match.Result`, and it needs a scope; the honest shared
+seam is therefore the *predicates* (`IsWholeWord`, `BuildRegex`), not the iteration. `BuildRegex`
+lives in `SearchEngine` and is called by both, so `RegexOptions.Multiline`, `IgnoreCase` and the 2 s
+timeout can't diverge between the panes.
+
+### A bad pattern is the normal state, not an error
+
+The search re-runs on **every keystroke**, and you necessarily pass through `(` on the way to
+`(a|b)` — so an unparseable pattern is what the box holds most of the time it is being typed into.
+`RunSearch` therefore catches `ArgumentException` (which `RegexParseException` derives from) and
+`RegexMatchTimeoutException` and writes them into the pane's status line, leaving the previous
+results cleared. It is a status message, not a dialog and not an exception that reaches the shell.
+
+### The proximity label has to work while the mode is off
+
+The checkbox used to read *"Only where items are near each other"*, which answers none of the
+questions it raises: what is an item, does it split on spaces or commas, can a term *be* a whole
+string, and how near is near. The reason it read that way is a UI-ordering trap — everything that
+would explain the mode (the term list, the `within [40] [characters] of each other` row) is
+`Collapsed` **until the mode is on**, so the label is read in the one state where no explanation is
+visible.
+
+So the label states the mode's shape by itself — **"Find several terms near each other"** — the
+distance row is a visible, editable option rather than a hidden constant, and the tooltip says that
+terms are entered one at a time and may therefore contain spaces (which is also why no quoting or
+delimiter syntax exists, and why "search for the entire string" is just a term with spaces in it).
+`UpdateSearchBoxHint` spells out all four combinations of proximity × regex in the search box's
+tooltip rather than one generic sentence that would be wrong in three of them.
+
+Entering proximity mode turns whole-word **on** by default (terms in a proximity query are nearly
+always words; without it `op` and `po` both match inside `opposite` and every such word is a false
+cluster). `_wholeWordBeforeProximity` restores the user's own setting on the way out, and
+`_syncingWholeWord` stops that programmatic toggle from re-entering `SearchOption_Changed`.
+
 ## Replace
 
 `ReplaceEngine` is pure and UI-free, the same shape as `SearchEngine`: `Find(text, find,
-replacement, regex, caseSensitive, scopeStart, scopeLength)` returns `ReplaceMatch(Start, Length,
+replacement, opt, scopeStart, scopeLength)` returns `ReplaceMatch(Start, Length,
 Replacement)` records with each match's replacement text **already resolved** (so `$1` is expanded
 once, where the `Match` object is still in hand), and `Apply` splices them in.
 
@@ -200,6 +268,9 @@ It is deliberately *not* `SearchEngine.FindAll`. Two differences matter:
   to the results list; a replace scan advances past the whole match. Replacing overlapping matches
   is meaningless.
 - **A zero-width regex match must still advance the scan**, or Replace All spins forever.
+
+Whole-word is judged against the **whole document**, not against the scope: restricting a replace to
+a selection that cuts through the middle of a word must not make that fragment look like a word.
 
 The regex scan uses `re.Match(text, startat)` + `NextMatch()`, **not** the
 `Match(text, beginning, length)` overload. That overload redefines where the string begins and ends

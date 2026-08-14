@@ -27,10 +27,6 @@ public readonly record struct ReplaceMatch(int Start, int Length, string Replace
 /// </summary>
 public static class ReplaceEngine
 {
-    /// <summary>Cap on how long one regex match attempt may run, so a pathological pattern
-    /// (catastrophic backtracking) surfaces as an error message instead of hanging the UI thread.</summary>
-    private static readonly TimeSpan RegexTimeout = TimeSpan.FromSeconds(2);
-
     /// <summary>
     /// Every place in <paramref name="text"/> that would be replaced, in document order, restricted to
     /// the half-open range [<paramref name="scopeStart"/>, scopeStart + <paramref name="scopeLength"/>).
@@ -39,8 +35,7 @@ public static class ReplaceEngine
     /// <exception cref="ArgumentException">The regex pattern is invalid (message is the parse error).</exception>
     /// <exception cref="RegexMatchTimeoutException">The pattern took too long against this text.</exception>
     public static List<ReplaceMatch> Find(string text, string find, string replacement,
-                                          bool regex, bool caseSensitive,
-                                          int scopeStart, int scopeLength)
+                                          MatchOptions opt, int scopeStart, int scopeLength)
     {
         var results = new List<ReplaceMatch>();
         if (string.IsNullOrEmpty(text) || string.IsNullOrEmpty(find))
@@ -51,32 +46,35 @@ public static class ReplaceEngine
         if (scopeStart >= scopeEnd)
             return results;
 
-        if (regex)
-            FindRegex(text, find, replacement, caseSensitive, scopeStart, scopeEnd, results);
+        if (opt.Regex)
+            FindRegex(text, find, replacement, opt, scopeStart, scopeEnd, results);
         else
-            FindLiteral(text, find, replacement, caseSensitive, scopeStart, scopeEnd, results);
+            FindLiteral(text, find, replacement, opt, scopeStart, scopeEnd, results);
 
         return results;
     }
 
-    private static void FindLiteral(string text, string find, string replacement, bool caseSensitive,
+    private static void FindLiteral(string text, string find, string replacement, MatchOptions opt,
                                     int scopeStart, int scopeEnd, List<ReplaceMatch> results)
     {
-        var cmp = caseSensitive ? StringComparison.Ordinal : StringComparison.OrdinalIgnoreCase;
+        var cmp = opt.CaseSensitive ? StringComparison.Ordinal : StringComparison.OrdinalIgnoreCase;
         int idx = scopeStart;
         while (idx <= scopeEnd - find.Length)
         {
             int f = text.IndexOf(find, idx, scopeEnd - idx, cmp);
             if (f < 0) break;
-            results.Add(new ReplaceMatch(f, find.Length, replacement));
+            // Whole-word is judged against the whole document, not the scope: a selection that cuts
+            // through the middle of a word shouldn't make that fragment look like a standalone word.
+            if (!opt.WholeWord || SearchEngine.IsWholeWord(text, f, f + find.Length))
+                results.Add(new ReplaceMatch(f, find.Length, replacement));
             idx = f + find.Length;   // non-overlapping: resume past what we just claimed
         }
     }
 
-    private static void FindRegex(string text, string pattern, string replacement, bool caseSensitive,
+    private static void FindRegex(string text, string pattern, string replacement, MatchOptions opt,
                                   int scopeStart, int scopeEnd, List<ReplaceMatch> results)
     {
-        var re = BuildRegex(pattern, caseSensitive);
+        var re = BuildRegex(pattern, opt.CaseSensitive);
 
         // Match against the whole text and merely *start* at the scope, rather than using the
         // (beginning, length) overload: that one redefines where the string begins and ends as far as
@@ -90,22 +88,20 @@ public static class ReplaceEngine
                 break;
             if (m.Index + m.Length > scopeEnd)
                 continue;   // straddles the end of the selection — not wholly inside it
+            if (opt.WholeWord && !SearchEngine.IsWholeWord(text, m.Index, m.Index + m.Length))
+                continue;
             results.Add(new ReplaceMatch(m.Index, m.Length, m.Result(replacement)));
         }
     }
 
     /// <summary>Compile the user's pattern, turning a bad one into an <see cref="ArgumentException"/>
-    /// whose message is safe to show in the pane.</summary>
-    /// <remarks><see cref="RegexOptions.Multiline"/> is on because in a text editor "^" and "$"
-    /// meaning "start/end of line" is what people expect and what makes line-oriented replacements
-    /// (indenting, stripping prefixes) possible at all.</remarks>
+    /// whose message is safe to show in the pane. Delegates to <see cref="SearchEngine.BuildRegex"/> so
+    /// a pattern means the same thing in both panes.</summary>
     public static Regex BuildRegex(string pattern, bool caseSensitive)
     {
-        var opts = RegexOptions.Multiline;
-        if (!caseSensitive) opts |= RegexOptions.IgnoreCase;
         try
         {
-            return new Regex(pattern, opts, RegexTimeout);
+            return SearchEngine.BuildRegex(pattern, caseSensitive);
         }
         catch (ArgumentException ex)
         {

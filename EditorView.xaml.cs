@@ -1611,7 +1611,24 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
         // Skip while Proximity_Changed is programmatically flipping the whole-word box; it runs the
         // search itself afterward, so we'd otherwise search twice.
         if (_syncingWholeWord) return;
+        UpdateSearchBoxHint();
         if (IsLoaded) RunSearch();
+    }
+
+    /// <summary>Keep the search box's tooltip honest about what it will do with what you type — the
+    /// two options that change that (proximity, regex) are independent, so all four combinations get
+    /// their own sentence rather than a generic one that's wrong in three of them.</summary>
+    private void UpdateSearchBoxHint()
+    {
+        bool prox = ProximityCheck.IsChecked == true;
+        bool rx = RegexCheck.IsChecked == true;
+        SearchBox.ToolTip = (prox, rx) switch
+        {
+            (true, true) => "Type a regular expression and press Enter to add it as a term. Results are the places where every term matches close together.",
+            (true, false) => "Type a term and press Enter to add it. Matched exactly as typed, so a term may contain spaces. Results are the places where every term appears close together.",
+            (false, true) => "A .NET regular expression to find. ^ and $ mean the start and end of a line.",
+            (false, false) => "Type text to find — matched exactly as typed.",
+        };
     }
 
     // Remembers the user's "match whole word only" choice from before proximity mode auto-forced it
@@ -1627,9 +1644,7 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
         bool prox = ProximityCheck.IsChecked == true;
         TermListPanel.Visibility = prox ? Visibility.Visible : Visibility.Collapsed;
         ProximityRow.Visibility = prox ? Visibility.Visible : Visibility.Collapsed;
-        SearchBox.ToolTip = prox
-            ? "Type an item and press Enter to add it; results match where all items appear near each other."
-            : "Type text to find — matched exactly as typed.";
+        UpdateSearchBoxHint();
 
         // Proximity items are conceptually whole words (searching "op" and "po" shouldn't match
         // inside "opposite"), so default "match whole word only" ON when entering proximity mode.
@@ -1834,6 +1849,12 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
         _searchDebounce.Start();
     }
 
+    /// <summary>The search pane's matching checkboxes as one value.</summary>
+    private MatchOptions SearchOptions() => new(
+        CaseSensitive: CaseSensitiveCheck.IsChecked == true,
+        WholeWord: WholeWordCheck.IsChecked == true,
+        Regex: RegexCheck.IsChecked == true);
+
     /// <param name="force">Scan even with the pane collapsed. Normally there is no point (nothing
     /// would display the results), but F3 navigates the match list with the pane closed.</param>
     private void RunSearch(bool force = false)
@@ -1845,48 +1866,64 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
         _searchResults.Clear();
         _suppressResultNav = false;
 
-        bool caseSensitive = CaseSensitiveCheck.IsChecked == true;
-        bool wholeWord = WholeWordCheck.IsChecked == true;
+        var opt = SearchOptions();
         bool proximity = ProximityCheck.IsChecked == true;
 
         string text = Editor.Text;
         List<SearchMatch> matches;
 
-        if (proximity)
+        // A half-typed pattern is invalid far more often than it's valid — you pass through "(" on the
+        // way to "(a|b)" — and the search re-runs on every keystroke, so this is the normal state of
+        // affairs rather than an error. Say what's wrong and leave the previous results cleared.
+        try
         {
-            // Match near-each-other over the explicit item list, plus whatever's currently typed in
-            // the box as a provisional item so results narrow live before you press Enter to add it.
-            var terms = _searchTerms.Select(t => t.Text).Where(s => s.Length > 0).ToList();
-            if (!string.IsNullOrEmpty(SearchBox.Text))
-                terms.Add(SearchBox.Text);
-
-            if (terms.Count == 0)
+            if (proximity)
             {
-                SearchStatus.Text = "";
-                return;
+                // Match near-each-other over the explicit term list, plus whatever's currently typed in
+                // the box as a provisional term so results narrow live before you press Enter to add it.
+                var terms = _searchTerms.Select(t => t.Text).Where(s => s.Length > 0).ToList();
+                if (!string.IsNullOrEmpty(SearchBox.Text))
+                    terms.Add(SearchBox.Text);
+
+                if (terms.Count == 0)
+                {
+                    SearchStatus.Text = "";
+                    return;
+                }
+
+                ProximityUnit unit = ProximityUnitBox.SelectedIndex switch
+                {
+                    1 => ProximityUnit.Words,
+                    2 => ProximityUnit.Lines,
+                    _ => ProximityUnit.Characters,
+                };
+                if (!int.TryParse(ProximityN.Text, out int n) || n < 0)
+                    n = 0;
+
+                matches = SearchEngine.FindProximity(text, terms, opt, unit, n);
             }
-
-            ProximityUnit unit = ProximityUnitBox.SelectedIndex switch
+            else
             {
-                1 => ProximityUnit.Words,
-                2 => ProximityUnit.Lines,
-                _ => ProximityUnit.Characters,
-            };
-            if (!int.TryParse(ProximityN.Text, out int n) || n < 0)
-                n = 0;
-
-            matches = SearchEngine.FindProximity(text, terms, caseSensitive, unit, n, wholeWord);
+                // Plain mode: match the box text exactly as typed (spaces, quotes, and all), unless
+                // the regex box is ticked.
+                string query = SearchBox.Text;
+                if (string.IsNullOrEmpty(query))
+                {
+                    SearchStatus.Text = "";
+                    return;
+                }
+                matches = SearchEngine.FindAll(text, query, opt);
+            }
         }
-        else
+        catch (ArgumentException ex)
         {
-            // Plain mode: match the box text exactly as typed (spaces, quotes, and all).
-            string query = SearchBox.Text;
-            if (string.IsNullOrEmpty(query))
-            {
-                SearchStatus.Text = "";
-                return;
-            }
-            matches = SearchEngine.FindAll(text, query, caseSensitive, wholeWord);
+            SearchStatus.Text = "Invalid regular expression: " + FirstLine(ex.Message);
+            return;
+        }
+        catch (RegexMatchTimeoutException)
+        {
+            SearchStatus.Text = "That pattern is taking too long — try a more specific one.";
+            return;
         }
 
         foreach (var m in matches)
@@ -2182,9 +2219,7 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
         try
         {
             return ReplaceEngine.Find(Editor.Text, ReplaceFindBox.Text, ReplaceWithBox.Text,
-                                      regex: ReplaceRegexCheck.IsChecked == true,
-                                      caseSensitive: ReplaceCaseCheck.IsChecked == true,
-                                      scopeStart: start, scopeLength: length);
+                                      ReplaceOptions(), scopeStart: start, scopeLength: length);
         }
         catch (ArgumentException ex)
         {
@@ -2200,6 +2235,12 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
             return null;
         }
     }
+
+    /// <summary>The replace pane's matching checkboxes as one value.</summary>
+    private MatchOptions ReplaceOptions() => new(
+        CaseSensitive: ReplaceCaseCheck.IsChecked == true,
+        WholeWord: ReplaceWholeWordCheck.IsChecked == true,
+        Regex: ReplaceRegexCheck.IsChecked == true);
 
     private static string FirstLine(string s)
     {
