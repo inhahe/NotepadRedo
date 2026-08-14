@@ -704,8 +704,19 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
 
     // ===================== View options =====================
 
-    public void ApplyWordWrap(bool wrap) =>
-        Editor.TextWrapping = wrap ? TextWrapping.Wrap : TextWrapping.NoWrap;
+    public void ApplyWordWrap(bool wrap)
+    {
+        var mode = wrap ? TextWrapping.Wrap : TextWrapping.NoWrap;
+        if (Editor.TextWrapping == mode)
+            return;
+        Editor.TextWrapping = mode;
+        // Turning wrap on multiplies the number of visual rows (and off divides it) while the
+        // ScrollViewer keeps its offset in pixels, so without this the view lands somewhere else in
+        // the document entirely. Same correction as a width change — see Editor_ScrollChanged — but it
+        // has to be asked for explicitly, since re-wrapping changes only the extent's *height* and
+        // height-only changes are the ones we must not fight (that's the editor following the caret).
+        RestoreScrollAnchor();
+    }
 
     /// <summary>Apply the shared editor-font preference to this document's text area. The size is
     /// given in points (as stored/picked) and converted to WPF's device-independent pixels here so
@@ -983,13 +994,17 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
         int line = 0, col = 0;
         try
         {
-            int caret = Math.Max(0, Math.Min(Editor.CaretIndex, Editor.Text.Length));
-            line = Editor.GetLineIndexFromCharacterIndex(caret);
-            if (line < 0) line = 0;
-            int lineStart = Editor.GetCharacterIndexFromLineIndex(line);
+            // Count *logical* lines (hard breaks) from the text rather than asking the TextBox, whose
+            // GetLineIndexFromCharacterIndex reports the visual row: with word wrap on the two diverge
+            // wildly (a 1000-paragraph document reported "Ln 2496"), and the visual number disagreed
+            // with the search pane, which has always listed the logical line of each match.
+            string text = Editor.Text;
+            int caret = Math.Max(0, Math.Min(Editor.CaretIndex, text.Length));
+            line = text.AsSpan(0, caret).Count('\n');
+            int lineStart = caret > 0 ? text.LastIndexOf('\n', caret - 1) + 1 : 0;
             col = Math.Max(0, caret - lineStart);
         }
-        catch { /* line metrics not ready — fall back to Ln 1, Col 1 for this tick */ }
+        catch { /* text/caret raced a reset — fall back to Ln 1, Col 1 for this tick */ }
         CaretText = $"Ln {line + 1}, Col {col + 1}";
         CountText = $"{Editor.Text.Length} chars";
         NodeText = $"node #{_tree.Current.Id}";
@@ -2039,10 +2054,96 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
         if (ReferenceEquals(sv, _hookedContentHost))
             return;
         if (_hookedContentHost is not null)
+        {
             _hookedContentHost.RequestBringIntoView -= Editor_RequestBringIntoView;
+            _hookedContentHost.ScrollChanged -= Editor_ScrollChanged;
+        }
         _hookedContentHost = sv;
         if (sv is not null)
+        {
             sv.RequestBringIntoView += Editor_RequestBringIntoView;
+            sv.ScrollChanged += Editor_ScrollChanged;
+        }
+    }
+
+    // ===================== Scroll anchoring across width changes =====================
+
+    /// <summary>The character sitting at the top of the viewport, re-read on every ordinary scroll so
+    /// it can be pinned back after a re-wrap. -1 when the line metrics weren't readable.</summary>
+    private int _scrollAnchorChar = -1;
+
+    /// <summary>Set while we are re-scrolling to the anchor, so our own scroll isn't mistaken for the
+    /// user's and doesn't re-record the anchor half-way through the correction.</summary>
+    private bool _restoringAnchor;
+
+    /// <summary>
+    /// Keep the top of the view on the same <i>character</i> whenever the editor's width changes.
+    ///
+    /// <para>With word wrap on, how many visual rows the text occupies depends on the width, but the
+    /// ScrollViewer keeps its vertical offset in <i>pixels</i>. So anything that narrows or widens the
+    /// editor — showing/hiding the search pane or the history tree, dragging the divider, resizing or
+    /// maximising the window — re-wraps the text under a fixed pixel offset and silently drops you
+    /// somewhere else entirely in the document.</para>
+    ///
+    /// <para>That is what made "search, press Enter, press Esc" look like it threw the caret away: the
+    /// match was still selected and the caret had not moved at all, but closing the pane re-wrapped the
+    /// text 320px wider, so the same offset now pointed hundreds of paragraphs further on.</para>
+    ///
+    /// <para>Height-only changes are deliberately left alone: when the text grows as you type, the
+    /// editor scrolling to follow the caret is exactly right, and re-anchoring would fight it.</para>
+    /// </summary>
+    private void Editor_ScrollChanged(object sender, ScrollChangedEventArgs e)
+    {
+        // During a drag-select auto-scroll we are the sole authority on the offset (see DragScrollTick).
+        if (_dragScrollActive || _restoringAnchor)
+            return;
+
+        if (e.ViewportWidthChange != 0)
+            RestoreScrollAnchor();
+        else
+            RecordScrollAnchor();
+    }
+
+    private void RecordScrollAnchor()
+    {
+        try
+        {
+            int line = Editor.GetFirstVisibleLineIndex();
+            _scrollAnchorChar = line >= 0 ? Editor.GetCharacterIndexFromLineIndex(line) : -1;
+        }
+        catch { _scrollAnchorChar = -1; }   // metrics not measured yet (mid text-reset)
+    }
+
+    private void RestoreScrollAnchor()
+    {
+        int anchor = _scrollAnchorChar;
+        if (anchor < 0 || anchor > Editor.Text.Length)
+            return;
+
+        _restoringAnchor = true;
+        // Both steps wait for a layout pass. Before the first, the line metrics still describe the old
+        // wrapping (this is called from ApplyWordWrap before anything has been re-measured); before the
+        // second, the scroll ScrollToLine asked for hasn't been applied, so the character's position
+        // can't be measured yet. ScrollToLine only promises the line is *somewhere* in view, hence the
+        // second step aligning it exactly to the top.
+        Dispatcher.BeginInvoke(new Action(() =>
+        {
+            try { Editor.ScrollToLine(Math.Max(0, Editor.GetLineIndexFromCharacterIndex(anchor))); }
+            catch { }
+
+            Dispatcher.BeginInvoke(new Action(() =>
+            {
+                try
+                {
+                    Rect r = Editor.GetRectFromCharacterIndex(anchor);
+                    if (!r.IsEmpty)
+                        Editor.ScrollToVerticalOffset(
+                            Math.Max(0, Editor.VerticalOffset + r.Y - Editor.Padding.Top));
+                }
+                catch { }
+                finally { _restoringAnchor = false; }
+            }), DispatcherPriority.Loaded);
+        }), DispatcherPriority.Loaded);
     }
 
     private void DragScrollTick()

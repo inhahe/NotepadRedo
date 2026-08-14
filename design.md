@@ -130,6 +130,43 @@ candidate: measured on .NET 8 it resolves `SystemColors.InactiveSelectionHighlig
 coerces `SelectionBrush` from it correctly, but paints nothing, because `IsSelectionActive` has
 already gone false by then. Don't reach for it (or for overriding that brush key) if this regresses.
 
+### The view stays put when the editor is re-laid out
+
+A `ScrollViewer` keeps its offset in **pixels**. With word wrap on, how many visual rows the text
+occupies depends on the editor's *width* — so every width change re-wraps the text under an offset
+that no longer means the same thing, and silently lands you somewhere else in the document. Showing
+or hiding the search pane or the history tree, dragging the divider, and resizing or maximising the
+window all do this; so does toggling word wrap (which changes the row count without changing the
+width).
+
+That is what made **"search, press Enter, press Esc" look like it threw the caret away**: nothing had
+touched the selection — the caret was still exactly on the match — but closing the pane re-wrapped the
+text 320px wider and scrolled the view hundreds of paragraphs past it.
+
+So `EditorView` anchors the view to a **character**, not a pixel offset:
+
+- `Editor_ScrollChanged` (hooked on the template's `PART_ContentHost`, alongside
+  `Editor_RequestBringIntoView`) records the character at the top of the viewport on every ordinary
+  scroll, and puts that character back at the top when the event carries a `ViewportWidthChange`.
+- `ApplyWordWrap` asks for the same correction explicitly, because re-wrapping changes only the
+  extent's *height*.
+- **Height-only changes are deliberately left alone.** The extent also grows as you type, and there
+  the editor scrolling to follow the caret is exactly right — re-anchoring would fight it. That is the
+  reason the trigger is the width change and not "the extent changed".
+- `RestoreScrollAnchor` runs in two `DispatcherPriority.Loaded` hops: line metrics still describe the
+  old wrapping until a layout pass has run, and `ScrollToLine` only promises the line is *somewhere*
+  in view, so the exact top alignment can only be measured after that scroll has been applied.
+- Drag-select auto-scroll opts out (`_dragScrollActive`) — it is the sole authority on the offset
+  while a drag is in flight.
+
+### Ln / Col are logical lines
+
+`RaiseAll` counts newlines in the text rather than calling `Editor.GetLineIndexFromCharacterIndex`,
+which reports the **visual row**. With word wrap on the two diverge wildly (a 1000-paragraph document
+reported "Ln 2496"), and the visual number contradicted the search pane, which has always listed the
+logical line of each match. `MemoryExtensions.Count` + `LastIndexOf` keep it O(n) with vectorised
+scans, which is cheap enough for the per-keystroke call.
+
 ## Persistence (all under `%LOCALAPPDATA%\NotepadRedo`)
 
 | File | Owner | Contents |
