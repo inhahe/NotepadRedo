@@ -34,6 +34,21 @@
 - **Status:** Not deterministically reproduced. If it recurs, capture the exact repro (multi-window
   tear-off + font preview timing) and revisit whether a deeper ordering fix is warranted.
 
+### Clicking the already-selected search result did nothing (fixed 2026-08-14, 1.0.19)
+- **Symptom:** The search pane showed a result highlighted ("2 of 3") while the caret was somewhere
+  else and no match was highlighted in the document. Clicking that highlighted row didn't fix it.
+- **Root cause:** navigation hung off `Results_SelectionChanged`, and clicking the row that is
+  *already* selected raises no `SelectionChanged`. `Results_MouseUp` only called `Editor.Focus()`.
+  So the one click you make after wandering off in the document — "take me back to the match I was
+  on" — was the exact click that did nothing.
+- **Fix:** `SelectResult(idx, keepFocus)` is now the single place that makes a result current (row
+  highlight + counter + caret/selection together), `Results_SelectionChanged` routes through it, and
+  `Results_MouseUp` navigates unconditionally to the row under the pointer. See "One result is
+  current, in the list *and* in the text" in `design.md`.
+- **Regression test (manual):** click a result, click elsewhere in the document, click the same
+  result again — the caret must land on the match. Then click the empty space below the last row —
+  nothing must move.
+
 ### Window freezes for seconds at a time, worse with a torn-off tab (fixed 2026-08-14, 1.0.18)
 - **Symptom:** The window stopped responding for several seconds at a time, at 0% CPU. It started
   only after a tab was dragged out into its own window, and had never happened before the Open

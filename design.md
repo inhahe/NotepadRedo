@@ -91,6 +91,22 @@ two Edit-menu items. Two decisions shape it:
   last starting before it, and both wrap. So F3 does the obvious thing after you have clicked
   somewhere else in the document, and it works with the pane closed.
 
+#### One result is current, in the list *and* in the text
+
+`SelectResult(idx, keepFocus)` is the **only** thing that makes a result current. Highlighting the
+row, scrolling it into view, updating the "n of m" counter, and putting the caret/selection on the
+match in the document are one operation, not four — split apart they drift, and you end up with the
+pane saying "2 of 3" while the caret sits somewhere else entirely. `Results_SelectionChanged` routes
+straight back through it rather than doing its own navigation, so nothing can move the list's
+selection without the document following.
+
+That divergence was a real bug: **clicking the row that is already selected raises no
+`SelectionChanged` at all**, so it used to do nothing but move focus. That is exactly the click you
+make after wandering off in the document and wanting to get back to the match you were on. So
+`Results_MouseUp` navigates unconditionally, and resolves the row *under the pointer* (walking up the
+tree from the hit-test source) rather than reading `SelectedIndex` — otherwise a click on the empty
+space below the last row would teleport the caret to the current match.
+
 #### Where the focus goes
 
 `NavigateToMatch(r, keepFocus)` takes the decision as an explicit argument rather than sniffing
@@ -102,7 +118,7 @@ things (a click in the result list vs. an arrow key in it).
 | F3 / Shift+F3, Edit-menu Find Next/Previous | `false` | Landing in the document with a real caret *is* the point. F3 keeps cycling because it is a window-level `InputBinding`, so it fires with focus in the editor. |
 | Enter / Shift+Enter in the search box | `true` | The box must survive so it can be pressed again. |
 | Arrow keys down the result list (`Results_SelectionChanged`) | `true` | Moving focus on the first press would make the second arrow key move the caret instead. |
-| Click on a result (`Results_MouseUp`) | — focuses after | A click is a deliberate "take me there". Handled separately since a click and an arrow key are indistinguishable inside `SelectionChanged`. |
+| Click on a result (`Results_MouseUp`) | `false` | A click is a deliberate "take me there", so it hands the keyboard to the document. Handled separately since a click and an arrow key are indistinguishable inside `SelectionChanged` — and because re-clicking the current row fires no `SelectionChanged` at all. |
 
 Keeping the match *visible* while focus stays in the pane is what
 `FocusManager.IsFocusScope="True"` on `SearchPanel` is for. The pane is a tool beside the document,

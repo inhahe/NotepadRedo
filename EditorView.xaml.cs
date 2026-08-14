@@ -1491,11 +1491,29 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
             if (idx < 0) idx = 0;                                  // wrap past the bottom
         }
 
-        // Move the list's highlight without letting it navigate for us — we do that below, so the
-        // behaviour is identical whether the pane is visible or collapsed.
+        SelectResult(idx, keepFocus);
+    }
+
+    /// <summary>
+    /// Make result <paramref name="idx"/> the current one: highlight its row, scroll the row into
+    /// view, update the "n of m" counter, and put the caret/selection on the match in the document.
+    ///
+    /// <para><b>This is the only place that any of that happens.</b> Highlighting a result and
+    /// standing on it in the text are one operation, not two — split apart, they drift out of sync
+    /// and you get a row highlighted in the list while the caret is somewhere else entirely. The
+    /// list's own <c>SelectionChanged</c> is deliberately routed back through here (rather than
+    /// doing its own thing) so that stays true no matter what moved the selection.</para>
+    /// </summary>
+    private void SelectResult(int idx, bool keepFocus)
+    {
+        if (idx < 0 || idx >= _searchResults.Count)
+            return;
+
+        // Setting SelectedIndex re-enters Results_SelectionChanged; suppress it rather than let it
+        // navigate, since we are about to do exactly that ourselves (and with the right keepFocus).
         _suppressResultNav = true;
-        ResultsList.SelectedIndex = idx;
-        _suppressResultNav = false;
+        try { ResultsList.SelectedIndex = idx; }
+        finally { _suppressResultNav = false; }
         ResultsList.ScrollIntoView(ResultsList.SelectedItem);
 
         ShowMatchPosition(idx);
@@ -1710,23 +1728,42 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
     {
         if (_suppressResultNav)
             return;
-        if (ResultsList.SelectedItem is SearchResultVM r)
-        {
-            ShowMatchPosition(ResultsList.SelectedIndex);
-            // Keep the keyboard on the list so the arrow keys can keep walking it — moving focus into
-            // the document on the first press would make the second arrow key move the caret instead.
-            // Clicking a result is handled separately (Results_MouseUp) and does move focus.
-            NavigateToMatch(r, keepFocus: true);
-        }
+        // Keep the keyboard on the list so the arrow keys can keep walking it — moving focus into
+        // the document on the first press would make the second arrow key move the caret instead.
+        // Clicking a result is handled separately (Results_MouseUp) and does move focus.
+        SelectResult(ResultsList.SelectedIndex, keepFocus: true);
     }
 
-    /// <summary>A click on a result is a deliberate "take me there", so unlike arrowing down the list
-    /// it hands the keyboard to the document. Runs after the selection change, so the caret is already
-    /// on the match by now.</summary>
+    /// <summary>
+    /// A click on a result is a deliberate "take me there", so unlike arrowing down the list it hands
+    /// the keyboard to the document.
+    ///
+    /// <para>It navigates unconditionally instead of relying on the selection change, because
+    /// clicking the row that is <i>already</i> selected raises no <c>SelectionChanged</c> at all —
+    /// and that is precisely the click you make after wandering off in the document and wanting to go
+    /// back to the match you were on. Before this, that click highlighted nothing new and left the
+    /// caret where it was, so the pane showed "2 of 3" while the document sat somewhere else.</para>
+    /// </summary>
     private void Results_MouseUp(object sender, MouseButtonEventArgs e)
     {
-        if (ResultsList.SelectedItem is SearchResultVM)
-            Editor.Focus();
+        // Resolve the row actually under the pointer rather than trusting SelectedIndex: a click on
+        // the empty space below the last row must not teleport the caret to the current match.
+        if (ItemUnder(e.OriginalSource as DependencyObject) is not ListBoxItem item)
+            return;
+        SelectResult(ResultsList.ItemContainerGenerator.IndexFromContainer(item), keepFocus: false);
+    }
+
+    /// <summary>Walk up from a hit-tested element to the <see cref="ListBoxItem"/> containing it,
+    /// or null when the click landed outside every row.</summary>
+    private static ListBoxItem? ItemUnder(DependencyObject? d)
+    {
+        while (d is not null and not ListBoxItem)
+            // A hit can land on a non-visual (a Run inside the preview TextBlock), which
+            // VisualTreeHelper refuses; step through the logical tree for those.
+            d = d is System.Windows.Media.Visual or System.Windows.Media.Media3D.Visual3D
+                ? System.Windows.Media.VisualTreeHelper.GetParent(d)
+                : LogicalTreeHelper.GetParent(d);
+        return d as ListBoxItem;
     }
 
     /// <summary>Debounce rapid input so we don't re-scan the whole document on every keystroke.</summary>
