@@ -64,6 +64,12 @@ Built with WPF on .NET 8.
 - **Session restore**: the set of open files is remembered between runs, so relaunching can reopen the same tabs where you left off. The behaviour is configurable (Options → *Reopen last session's files at startup*): **Ask me first** (the default — lists the files and prompts, so a stale session can't silently clobber edits you made elsewhere), **Always reopen**, or **Never reopen**. Launching NotepadRedo with a file still restores the previous session too — the named file just opens on top, as the active tab. Only a requested blank (`--new`) starts fresh, and in *new instance* mode a secondary instance opens just what it was given (the first instance is the one that restores the session).
 - All unhandled exceptions are logged with full stack traces; UI-thread glitches are caught and swallowed to keep your documents alive rather than crashing.
 
+### Line endings
+- The line ending a file uses (**CRLF**, **LF** or **CR**) is detected when it's opened, shown in the status bar, and **written back unchanged** when you save. Editing a Unix file in NotepadRedo leaves it a Unix file.
+- Change it for the current document under **Format → Line endings** (*Windows (CRLF)* / *Unix (LF)* / *Classic Mac (CR)*). The document goes dirty so you can save the conversion; nothing on disk changes until you do.
+- A file that arrives with a **mixture** of endings is unified to its dominant style on the next save. The status-bar tooltip says so when that applies.
+- If another program rewrites the file with different endings but the same text, NotepadRedo now just **adopts the new style silently** instead of raising the "changed on disk" prompt for a difference you can't see.
+
 ### External-change detection & diff/merge
 - When enabled (Options → *Watch for changes made by other programs*, on by default), NotepadRedo watches every open file and notices when another program modifies it on disk. It then asks what to do:
   - **Reload from disk** (dropping your unsaved edits),
@@ -72,6 +78,7 @@ Built with WPF on .NET 8.
   - **Save the disk version to another file**, then keep yours, or
   - **Show a diff and merge…** — open a side-by-side merge viewer.
 - The **merge viewer** shows the two versions with changed/added/removed lines tinted and the differing text painted red. The intra-line diff is refined to the **character level** (UltraCompare-style): shared words stay anchored on a word/whitespace alignment, but within a changed run only the differing *characters* are reddened — so `composition` → `compositions` highlights just the trailing "s" rather than the whole word. You pick which side to **keep** — it's outlined and freely editable (copy/paste enabled) — and pull individual red lines across from the other side by **double-clicking** them (or via the right-click menu, which can also replace/insert/remove a line). You can flip which side is kept at any time, re-diff after hand-editing, then save the assembled result back to the file. **Save kept side** writes the kept side to the file and discards the other; **Save both** also writes the kept side to the file but preserves the other side alongside it as a timestamped sibling file (so nothing is lost).
+- If the two versions differ only in something a line diff can't show — line endings, trailing whitespace, other invisible characters — the viewer says so in a banner at the top, rather than presenting two panes that look identical with no explanation.
 - If the file changes on disk **again** while you're merging, a banner appears and you can fold the new version into the viewer, ignore it, stash it to a file, or save both versions off and bail out.
 - **Lock open files** (Options → *Lock open files from outside changes*, off by default): while a file is open, hold it with a deny-write lock so other programs can read it but can't modify or delete it. Saving writes through the held handle.
 

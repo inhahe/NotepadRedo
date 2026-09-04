@@ -17,6 +17,15 @@
             </DockPanel>
         </Border>
 
+        <!-- Shown when the two sides differ but a line diff can't show it (line endings,
+             trailing whitespace, invisible characters) — otherwise the viewer would present two
+             panes that look identical with no explanation at all. -->
+        <Border x:Name="InvisibleNotice" DockPanel.Dock="Top" Visibility="Collapsed"
+                Background="#333B82F6" Padding="10,6" BorderBrush="#3B82F6" BorderThickness="0,0,0,1">
+            <TextBlock x:Name="InvisibleNoticeText" TextWrapping="Wrap"
+                       Foreground="{DynamicResource Theme.EditorFg}"/>
+        </Border>
+
         <!-- Toolbar -->
         <Border DockPanel.Dock="Top" Background="{DynamicResource Theme.PanelBg}"
                 BorderBrush="{DynamicResource Theme.PanelBorder}" BorderThickness="0,0,0,1" Padding="10,6">

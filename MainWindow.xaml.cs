@@ -269,6 +269,26 @@ public partial class MainWindow : Window
         ActiveView?.FocusEditor();
     }
 
+    /// <summary>Tick the entry matching the active document, since the choice is per document
+    /// rather than a global setting (unlike the font, which is why this can't be done once).</summary>
+    private void LineEndings_Opened(object sender, RoutedEventArgs e)
+    {
+        var style = ActiveView?.LineEnding ?? LineEndingStyle.Crlf;
+        EndingCrlfItem.IsChecked = style == LineEndingStyle.Crlf;
+        EndingLfItem.IsChecked = style == LineEndingStyle.Lf;
+        EndingCrItem.IsChecked = style == LineEndingStyle.Cr;
+    }
+
+    private void LineEnding_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not MenuItem mi || mi.Tag is not string tag ||
+            !Enum.TryParse<LineEndingStyle>(tag, out var style))
+            return;
+        ActiveView?.SetLineEnding(style);
+        LineEndings_Opened(sender, e);   // keep the ticks right if the menu stays open
+        UpdateChrome();
+    }
+
     private void UpdateChrome()
     {
         var view = ActiveView;
@@ -281,6 +301,8 @@ public partial class MainWindow : Window
         CaretStatus.Text = view.CaretText;
         CountStatus.Text = view.CountText;
         NodeStatus.Text = view.NodeText;
+        EndingStatus.Text = view.LineEndingText;
+        EndingStatus.ToolTip = view.LineEndingTooltip;
         SaveStatus.Text = view.SaveText;
         SaveStatus.Foreground = view.IsDirty ? Brushes.Firebrick : Brushes.ForestGreen;
         SyncPaneToggles();

@@ -336,6 +336,62 @@ selected**, so the first press (when the selection isn't a match) merely highlig
 the next one. You always see what you are about to change. `HighlightRange` is shared with the
 search pane, so both features put you on text identically.
 
+## Line endings: two representations, converted at the edges
+
+A document exists in two forms and they must never be confused. **On disk** it has whatever endings
+it came with; **in the editor** it is always CRLF. The second half is not a choice — WPF's `TextBox`
+inserts `\r\n` whenever the user presses Enter, whatever the surrounding buffer uses. Holding an LF
+file verbatim therefore produces a *mixed* buffer the moment anyone types in it, and that mixture is
+what gets written back.
+
+`LineEndings` owns the conversion; `EditorView` calls it at exactly two places, `ReadDocumentText`
+(disk → buffer, remembering the file's style) and `WriteTextToFile` (buffer → disk, re-applying it).
+Everything between them can assume a uniform buffer.
+
+### What this actually fixed
+
+An LF file was rewritten by another program as CRLF. The raw strings differed, so
+`HandleExternalChange` raised the five-way "changed on disk" prompt — but `DiffEngine.SplitLines`
+normalises CRLF/CR to LF *before* splitting, so the merge viewer computed **zero** differing rows and
+showed two panes that were, visibly, identical. The user was asked to resolve a conflict that could
+not be seen. Reconstructing that document's own undo tree from its history sidecar showed the whole
+mechanism: the file loaded with 0 CR / 12 LF, gained a CR at every node where Enter had been pressed,
+and at the node where the prompt fired the buffer was line-for-line identical to disk while differing
+from it in eleven bytes.
+
+Three separate defects sat behind that, and all three are fixed by converting at the edges:
+
+- the app **created** mixed-ending files by typing into non-CRLF ones;
+- it **compared bytes** where it meant to compare content, so an ending-only rewrite raised a prompt;
+- the merge viewer could **render nothing** and say nothing about it.
+
+### The rules
+
+- **The style follows the file.** If something else rewrites the file as LF, the next save keeps it
+  LF rather than flipping it back and starting a tug-of-war. `AdoptDiskLineEnding` is called from
+  every path that reads the file. The one thing that outranks the file is an explicit, unsaved
+  **Format → Line endings** choice, which is why `_lineEnding` (what we will write) and
+  `_savedLineEnding` (what is on disk) are separate fields.
+- **A pending style change counts as dirty**, even though the text is untouched — otherwise the Save
+  that would apply it is a no-op and the menu appears to do nothing.
+- **An ending-only change on disk is adopted silently.** It is not a conflict: the content is
+  identical and there is nothing for the user to resolve.
+- **Reads that don't go through the file** — a tab moved from another process, a crash-recovery
+  snapshot — normalise their carried text and take the style from the file they point at
+  (`DetectLineEndingFromDisk`).
+- **The history stamp is taken over the converted text.** Sidecars written before this existed no
+  longer match for LF files, so those documents start from a fresh root once — the same self-healing
+  path a file edited outside the app already took.
+
+### The merge viewer never shows an unexplained blank diff
+
+`UpdateInvisibleNotice` runs on every render: when no op is anything but `Equal` while the two texts
+differ, `LineEndings.DescribeInvisibleDifference` names the reason — line endings (with each side's
+style), trailing whitespace and on how many lines, or invisible characters and the offset of the
+first one — and a banner says so. This is deliberately a *fallback* rather than something folded into
+the diff itself: normalising endings before splitting is the right behaviour for reading a diff, and
+the notice covers the case where that normalisation is precisely what hides the answer.
+
 ## Persistence (all under `%LOCALAPPDATA%\NotepadRedo`)
 
 | File | Owner | Contents |
