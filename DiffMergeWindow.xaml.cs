@@ -60,8 +60,14 @@ public partial class DiffMergeWindow : Window
         return b;
     }
 
-    public DiffMergeWindow(Window? owner, string filePath, string mineText, string diskText)
+    /// <summary>The style the host will write the file with, so the sibling snapshots this window
+    /// writes itself match the document rather than defaulting to CRLF.</summary>
+    private readonly LineEndingStyle _lineEnding;
+
+    public DiffMergeWindow(Window? owner, string filePath, string mineText, string diskText,
+                           LineEndingStyle lineEnding = LineEndingStyle.Crlf)
     {
+        _lineEnding = lineEnding;
         InitializeComponent();
         Owner = owner;
         _filePath = filePath;
@@ -80,6 +86,33 @@ public partial class DiffMergeWindow : Window
         RightBox.AddHandler(ScrollViewer.ScrollChangedEvent, new ScrollChangedEventHandler(RightBox_ScrollChanged));
 
         Render();
+    }
+
+    /// <summary>
+    /// Say so when the two sides differ but the diff has nothing to show — the viewer would
+    /// otherwise present two panes that look character-for-character identical and leave the user
+    /// to guess, which is exactly what an LF-vs-CRLF rewrite used to do. The line diff normalises
+    /// line endings before splitting, and it can only render what a line <i>contains</i>, so
+    /// trailing spaces and other invisible characters vanish the same way.
+    /// </summary>
+    private void UpdateInvisibleNotice(IReadOnlyList<DiffOp> ops)
+    {
+        bool anythingVisible = false;
+        foreach (var op in ops)
+            if (op.Kind != DiffOpKind.Equal) { anythingVisible = true; break; }
+
+        string? why = anythingVisible ? null : LineEndings.DescribeInvisibleDifference(_leftWork, _rightWork);
+        if (why is null)
+        {
+            InvisibleNotice.Visibility = Visibility.Collapsed;
+            return;
+        }
+
+        InvisibleNoticeText.Text =
+            "These two versions look the same because they only differ in " + why +
+            ". Keeping either side gives you the same text on screen; the side you keep decides how "
+            + "the file is stored.";
+        InvisibleNotice.Visibility = Visibility.Visible;
     }
 
     private bool _syncingScroll;
@@ -122,6 +155,8 @@ public partial class DiffMergeWindow : Window
         var leftLines = DiffEngine.SplitLines(_leftWork);
         var rightLines = DiffEngine.SplitLines(_rightWork);
         var ops = DiffEngine.DiffLines(leftLines, rightLines);
+
+        UpdateInvisibleNotice(ops);
 
         var leftDoc = new FlowDocument { PagePadding = new Thickness(4) };
         var rightDoc = new FlowDocument { PagePadding = new Thickness(4) };
@@ -459,7 +494,7 @@ public partial class DiffMergeWindow : Window
             if (string.IsNullOrEmpty(stem)) stem = "untitled";
             string stamp = DateTime.Now.ToString("yyyyMMdd-HHmmss");
             string path = Path.Combine(dir, $"{stem}.{suffix}-{stamp}{ext}");
-            File.WriteAllText(path, text);
+            File.WriteAllText(path, LineEndings.FromEditor(text, _lineEnding));
             return path;
         }
         catch (Exception ex)

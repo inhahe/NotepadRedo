@@ -58,6 +58,15 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
     private long _diskLength = -1;                     // last disk size we consider "ours"
     private DateTime _suppressUntil;                   // ignore watcher events until this time (our own writes)
     private bool _resolving;                           // an external-change prompt is on screen
+
+    // ----- line endings (per document) -----
+    // The buffer is always CRLF (WPF's TextBox inserts a CRLF on Enter regardless), so the file's
+    // own style is remembered here and re-applied on save. Without that, typing in an LF file
+    // silently produced a mixed file — and a file rewritten elsewhere with different endings looked
+    // "changed" while the diff viewer, which normalises endings, showed two identical panes.
+    private LineEndingStyle _lineEnding = LineEndingStyle.Crlf;
+    private LineEndingStyle _savedLineEnding = LineEndingStyle.Crlf;   // what is on disk right now
+    private bool _loadedMixed;                                         // the file itself was mixed
     private string? _pendingWhileResolving;            // a newer disk version that arrived mid-prompt
     private DiffMergeWindow? _mergeWindow;             // open merge viewer (so re-changes route to it)
     private FileStream? _lockStream;                   // deny-write lock held while open (optional)
@@ -168,7 +177,9 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
     // ===================== Public surface for the shell =====================
 
     public string? FilePath => _currentPath;
-    public bool IsDirty => Editor.Text != _savedText;
+    // A pending line-ending change counts as dirty even though the text is untouched: it is a real,
+    // savable change to the file, and without this the Save that would apply it is a no-op.
+    public bool IsDirty => Editor.Text != _savedText || _lineEnding != _savedLineEnding;
 
     /// <summary>Full path (or "Untitled") plus a trailing * when there are unsaved changes.</summary>
     public string TabTitle =>
@@ -177,6 +188,38 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
     public string CaretText { get; private set; } = "Ln 1, Col 1";
     public string CountText { get; private set; } = "0 chars";
     public string NodeText { get; private set; } = "node #0";
+
+    /// <summary>The line ending this document will be written with, for the status bar.</summary>
+    public string LineEndingText => LineEndings.Label(_lineEnding);
+
+    /// <summary>Explains the indicator, including the case that made it worth showing: a file that
+    /// arrived with more than one kind of break, which saving will unify.</summary>
+    public string LineEndingTooltip
+    {
+        get
+        {
+            string s = $"Lines are saved with {LineEndings.LongLabel(_lineEnding)}.";
+            if (_lineEnding != _savedLineEnding)
+                s += $" The file on disk currently uses {LineEndings.Label(_savedLineEnding)}; saving will convert it.";
+            else if (_loadedMixed)
+                s += " The file arrived with mixed line endings; saving will make them consistent.";
+            return s + " Change it under Format → Line endings.";
+        }
+    }
+
+    /// <summary>The document's current line-ending choice (for the Format menu's check marks).</summary>
+    public LineEndingStyle LineEnding => _lineEnding;
+
+    /// <summary>Choose the line ending this document is saved with. The text doesn't change, so the
+    /// choice is recorded as a pending difference from what is on disk — which is what makes the
+    /// document dirty and gives the user something to save.</summary>
+    public void SetLineEnding(LineEndingStyle style)
+    {
+        if (_lineEnding == style)
+            return;
+        _lineEnding = style;
+        RaiseAll();
+    }
 
     public string SaveText => IsDirty
         ? (_lastAutosave is DateTime t ? $"Not saved \u00b7 autosaved {t:HH:mm:ss}" : "Not saved")
@@ -198,12 +241,14 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
     /// <summary>Load a file's contents into this (blank) view.</summary>
     public void LoadFile(string path)
     {
-        var text = ReadAllTextShared(path);
+        var text = ReadDocumentText(path);
         _currentPath = path;
         _savedText = text;
         DeleteRecovery();
         // Restore the persisted branching history when enabled and the sidecar still matches the
-        // file on disk; otherwise start a fresh single-root tree from the disk text.
+        // file on disk; otherwise start a fresh single-root tree from the disk text. The stamp is
+        // taken over the *converted* text, so sidecars written before line-ending normalisation
+        // existed no longer match for LF files and those documents start from a fresh root once.
         if (!(AppSettings.Current.PersistHistory && TryRestoreHistory(path, text)))
             ResetTree(text);
         OnPathEstablished();
@@ -303,15 +348,16 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
     public void LoadTransferred(DocDto dto)
     {
         _currentPath = dto.Path;
-        _savedText = dto.SavedText;
+        _savedText = LineEndings.ToEditor(dto.SavedText);
         _tree = UndoTree.Deserialize(dto.Tree);
-        _currentText = dto.CurrentText;
+        _currentText = LineEndings.ToEditor(dto.CurrentText);
+        DetectLineEndingFromDisk();
         _typingNode = null;
         RebuildHistoryRows();
 
         _suppressTextChange = true;
-        Editor.Text = dto.CurrentText;
-        Editor.CaretIndex = Math.Clamp(_tree.Current.CaretIndex, 0, dto.CurrentText.Length);
+        Editor.Text = _currentText;
+        Editor.CaretIndex = Math.Clamp(_tree.Current.CaretIndex, 0, _currentText.Length);
         _suppressTextChange = false;
 
         _lastAutosave = null;
@@ -329,8 +375,9 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
     {
         RecoveryId = data.Id;
         _currentPath = data.Path;
-        _savedText = data.SavedText;
-        ResetTree(data.Text);
+        _savedText = LineEndings.ToEditor(data.SavedText);
+        DetectLineEndingFromDisk();
+        ResetTree(LineEndings.ToEditor(data.Text));
         WriteRecovery();   // re-establish the recovery file immediately
         OnPathEstablished();
     }
@@ -631,6 +678,7 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
             WriteTextToFile(path, Editor.Text);
             _currentPath = path;
             _savedText = Editor.Text;
+            _savedLineEnding = _lineEnding;
             _lastAutosave = null;
             DeleteRecovery();
             OnPathEstablished();       // (re)start the watcher, capture the new disk stamp, (re)apply the lock
@@ -1259,13 +1307,22 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
             return;
         }
 
-        string diskText;
-        try { diskText = ReadAllTextShared(_currentPath); }
+        string raw;
+        try { raw = ReadAllTextShared(_currentPath); }
         catch { return; }   // mid-write by the other program; the next event will settle
+
+        // Compare the *content*. A file rewritten with different line endings is a different pile of
+        // bytes but the same document, and prompting for it was worse than useless: the resolution
+        // dialog offered five ways to fix a difference the diff viewer could not even show, because
+        // it normalises endings before comparing lines. Adopt the file's new style instead, so our
+        // next save agrees with whatever rewrote it, and say nothing.
+        string diskText = LineEndings.ToEditor(raw);
+        AdoptDiskLineEnding(raw);
 
         if (diskText == Editor.Text)
         {
-            _diskWriteTimeUtc = wt; _diskLength = len;   // content identical (e.g. touched) — nothing to do
+            _diskWriteTimeUtc = wt; _diskLength = len;
+            RaiseAll();   // the indicator may have just changed
             return;
         }
 
@@ -1333,7 +1390,7 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
     private void OpenMerge(string diskText)
     {
         var owner = Window.GetWindow(this);
-        var win = new DiffMergeWindow(owner, _currentPath ?? "", Editor.Text, diskText);
+        var win = new DiffMergeWindow(owner, _currentPath ?? "", Editor.Text, diskText, _lineEnding);
         _mergeWindow = win;
         try { win.ShowDialog(); }
         finally { _mergeWindow = null; }
@@ -1346,7 +1403,7 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
         else if (win.ExitAndReload)
         {
             // Both versions were saved to sibling files; reload the current on-disk version fresh.
-            try { ReloadFromDisk(ReadAllTextShared(_currentPath!)); } catch { }
+            try { ReloadFromDisk(ReadDocumentText(_currentPath!)); } catch { }
         }
     }
 
@@ -1354,6 +1411,7 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
     private void ReloadFromDisk(string diskText)
     {
         _savedText = diskText;
+        // The style was adopted when the file was read (AdoptDiskLineEnding); nothing to do here.
         DeleteRecovery();
         ResetTree(diskText);
         CaptureDiskStamp();
@@ -1389,7 +1447,7 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
             if (string.IsNullOrEmpty(stem)) stem = "untitled";
             string stamp = DateTime.Now.ToString("yyyyMMdd-HHmmss");
             string path = Path.Combine(dir, $"{stem}.{suffix}-{stamp}{ext}");
-            File.WriteAllText(path, text);
+            File.WriteAllText(path, LineEndings.FromEditor(text, _lineEnding));
             ThemedDialog.Show(Window.GetWindow(this), $"Saved to:\n{path}", "Saved",
                 MessageBoxButton.OK, MessageBoxImage.Information);
             return path;
@@ -1445,6 +1503,10 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
     /// <summary>Write text to a path, going through the held lock handle when it owns that path.</summary>
     private void WriteTextToFile(string path, string text)
     {
+        // The buffer is CRLF; the file gets whatever style it came with (and is never left mixed,
+        // even if a paste brought foreign endings in).
+        text = LineEndings.FromEditor(text, _lineEnding);
+
         if (_lockStream is not null && PathsEqual(_lockedPath, path))
         {
             _lockStream.Position = 0;
@@ -1460,6 +1522,49 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
     }
 
     /// <summary>Read a file without locking out other readers/writers (tolerant of concurrent access).</summary>
+    /// <summary>
+    /// Read a file into the editor's internal form, remembering the line-ending style it uses so a
+    /// later save puts the same style back. Everything that loads or re-reads the document goes
+    /// through here, so the buffer is uniformly CRLF and every comparison against disk is about
+    /// content rather than invisible bytes.
+    /// </summary>
+    private string ReadDocumentText(string path)
+    {
+        string raw = ReadAllTextShared(path);
+        AdoptDiskLineEnding(raw);
+        return LineEndings.ToEditor(raw);
+    }
+
+    /// <summary>Adopt the style of the file this document points at, for the paths that rebuild a
+    /// document without reading it (a tab moved from another process, a crash-recovery snapshot).
+    /// A missing file — a recovered document whose target was never written — keeps the default.</summary>
+    private void DetectLineEndingFromDisk()
+    {
+        if (string.IsNullOrEmpty(_currentPath))
+            return;
+        try
+        {
+            if (File.Exists(_currentPath))
+                AdoptDiskLineEnding(ReadAllTextShared(_currentPath));
+        }
+        catch { /* unreadable — the default is as good a guess as any */ }
+    }
+
+    /// <summary>
+    /// Take on the line-ending style of the file as it currently is on disk. The style follows the
+    /// file: if something else rewrote it as LF, our next save keeps it LF rather than flipping it
+    /// back and starting a tug-of-war. The one thing that outranks the file is an explicit choice
+    /// the user has made from the Format menu and not yet saved.
+    /// </summary>
+    private void AdoptDiskLineEnding(string raw)
+    {
+        bool pendingChoice = _lineEnding != _savedLineEnding;
+        _savedLineEnding = LineEndings.Detect(raw);
+        if (!pendingChoice)
+            _lineEnding = _savedLineEnding;
+        _loadedMixed = LineEndings.IsMixed(raw);
+    }
+
     private static string ReadAllTextShared(string path)
     {
         using var fs = new FileStream(path, FileMode.Open, FileAccess.Read,

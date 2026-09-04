@@ -36,6 +36,14 @@
             </MenuItem>
             <MenuItem Header="F_ormat">
                 <MenuItem Header="_Font..." Click="Font_Click"/>
+                <MenuItem Header="_Line endings" SubmenuOpened="LineEndings_Opened">
+                    <MenuItem x:Name="EndingCrlfItem" Header="_Windows (CRLF)" IsCheckable="True"
+                              Tag="Crlf" Click="LineEnding_Click"/>
+                    <MenuItem x:Name="EndingLfItem" Header="_Unix (LF)" IsCheckable="True"
+                              Tag="Lf" Click="LineEnding_Click"/>
+                    <MenuItem x:Name="EndingCrItem" Header="Classic _Mac (CR)" IsCheckable="True"
+                              Tag="Cr" Click="LineEnding_Click"/>
+                </MenuItem>
                 <Separator/>
                 <MenuItem x:Name="BoldItem"   Header="_Bold"   IsCheckable="True"
                           InputGestureText="Ctrl+B" Click="Bold_Click"/>
@@ -193,6 +201,10 @@
             <Separator/>
             <StatusBarItem>
                 <TextBlock x:Name="NodeStatus" Text="node #0"/>
+            </StatusBarItem>
+            <Separator/>
+            <StatusBarItem>
+                <TextBlock x:Name="EndingStatus" Text="CRLF"/>
             </StatusBarItem>
             <StatusBarItem HorizontalAlignment="Right">
                 <TextBlock x:Name="SaveStatus" Text="Saved" FontWeight="Bold" Foreground="ForestGreen"/>
