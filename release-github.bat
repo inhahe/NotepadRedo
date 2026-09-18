@@ -77,7 +77,6 @@ if defined DIRTY (
     echo WARNING: you have uncommitted changes. The released exe is built from your
     echo current working tree, so it may not correspond to any committed revision.
     echo Press Ctrl+C to abort, or
-    pause
 )
 
 echo.
@@ -113,8 +112,6 @@ if errorlevel 1 (
 )
 
 echo.
-echo Done. Release %TAG% is live. Opening it in your browser...
-gh release view %TAG% --repo %REPO% --web
 endlocal
 exit /b 0
 

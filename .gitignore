@@ -4,3 +4,11 @@ publish/
 release/
 *.exe
 *.pdb
+
+# Local-only. We publish straight from this directory now instead of copying an
+# allowlisted subset into D:\github, so what copy-to-github.bat used to filter
+# is excluded here. These were also purged from history.
+copy-to-github.bat
+go.bat
+todo.txt
+CLAUDE.md
