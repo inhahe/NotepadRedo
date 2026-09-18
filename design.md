@@ -392,6 +392,41 @@ first one — and a banner says so. This is deliberately a *fallback* rather tha
 the diff itself: normalising endings before splitting is the right behaviour for reading a diff, and
 the notice covers the case where that normalisation is precisely what hides the answer.
 
+## The merge viewer's two panes are levelled, not merely paired
+
+The two documents are built row for row — a diff op contributes one paragraph to each side, with a
+one-space spacer standing in where a side has no line. That pairs the rows but **does not align
+them**, because a row's height depends on how its line wraps: the spacer is one visual row while the
+line opposite it may wrap to four. Every wrapped line therefore pushes one side down relative to the
+other, the error accumulates downwards, and past the first screenful the panes have nothing to do
+with each other — measured on a 600-row diff, identical text ended up **1300 px apart**, which is what
+"the matching text portions are supposed to be aligned" was reporting.
+
+`AlignRows` levels each pair after layout by giving the shorter paragraph bottom **padding** (not
+margin — padding is inside the `Background`, so a tinted row's colour fills the added space and the
+block still reads as one unit). Two passes are unavoidable: the correction is the difference between
+two heights that only exist once WPF has laid the text out. Previous padding is cleared first so each
+pass measures natural heights rather than compounding the last one, and because padding never changes
+how text *wraps*, one corrective pass always converges.
+
+Three things keep it honest:
+
+- **It re-runs whenever wrapping can change** — either pane resizing (the window or the splitter) and
+  edits to the kept side — debounced, because a resize drag raises `SizeChanged` continuously.
+- **Rows are levelled independently**, which is what makes the cheap path correct: when the user
+  types, only the caret's paragraph can have changed height, so fixing *that* row restores the whole
+  column. A keystroke costs four measurements instead of re-measuring the document (10 ms vs. a
+  visible stall on a 600-row diff). Structural edits — Enter, Backspace joining two paragraphs, a
+  multi-line paste — change the paragraph count and fall back to the full pass.
+- **The full pass probes each paragraph once**, at its top, taking its height as the distance to the
+  next paragraph's top (they are stacked with no margin, so that distance *is* the height). Resolving
+  a text pointer against laid-out text costs about an eighth of a millisecond — nothing once, a third
+  of a second across both sides of a 600-row diff.
+
+`_aligning` guards re-entrancy: setting a `Block`'s padding raises `TextChanged`, which would
+otherwise re-enter through the edit path forever. `_rendering` does the same for the `TextChanged`
+storm raised by swapping the documents, which is not the user typing.
+
 ## Persistence (all under `%LOCALAPPDATA%\NotepadRedo`)
 
 | File | Owner | Contents |

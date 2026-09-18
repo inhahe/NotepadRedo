@@ -4,6 +4,7 @@ using System.Windows.Controls;
 using System.Windows.Documents;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Threading;
 
 namespace NotepadRedo;
 
@@ -45,6 +46,18 @@ public partial class DiffMergeWindow : Window
     // One rendered diff line: the source op plus where it maps on the kept side.
     private sealed record Row(DiffOp Op, int KeptLineIndex, int KeptInsertPos, bool KeptHasLine);
 
+    // ----- row alignment -----
+    // The two documents are built row for row, which lines them up only if each pair occupies the
+    // same *height*. With word wrap on it usually doesn't: a spacer paragraph is one visual row
+    // while the line it stands in for can wrap to three or four, so every wrapped line pushes one
+    // side down relative to the other. The error accumulates, and by the middle of a real document
+    // identical text sits hundreds of pixels apart on the two sides — the panes look unrelated.
+    // Paragraphs are therefore paired here and levelled after layout (see AlignRows).
+    private readonly List<(Paragraph Left, Paragraph Right)> _pairs = new();
+    private readonly DispatcherTimer _alignDebounce;
+    private bool _aligning;    // re-entrancy guard: padding a Block raises TextChanged
+    private bool _rendering;   // documents are being swapped; the TextChanged storm isn't the user
+
     // ----- palette -----
     private static readonly Brush Red        = Frozen(Color.FromRgb(0xD1, 0x34, 0x38));
     private static readonly Brush ChangeBg   = Frozen(Color.FromArgb(0x22, 0x2E, 0xA0, 0x8A));
@@ -84,6 +97,16 @@ public partial class DiffMergeWindow : Window
         // onto the other keeps corresponding lines level.
         LeftBox.AddHandler(ScrollViewer.ScrollChangedEvent, new ScrollChangedEventHandler(LeftBox_ScrollChanged));
         RightBox.AddHandler(ScrollViewer.ScrollChangedEvent, new ScrollChangedEventHandler(RightBox_ScrollChanged));
+
+        // Re-level the rows whenever anything that changes how text wraps happens: the window or the
+        // splitter resizing a pane, or the user typing into the editable side. Debounced because a
+        // resize drag raises SizeChanged continuously and each pass re-measures the whole document.
+        _alignDebounce = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(200) };
+        _alignDebounce.Tick += (_, _) => { _alignDebounce.Stop(); AlignRows(); };
+        LeftBox.SizeChanged += (_, e) => { if (e.WidthChanged) QueueAlign(); };
+        RightBox.SizeChanged += (_, e) => { if (e.WidthChanged) QueueAlign(); };
+        LeftBox.TextChanged += (_, _) => TextEdited(LeftBox);
+        RightBox.TextChanged += (_, _) => TextEdited(RightBox);
 
         Render();
     }
@@ -161,6 +184,7 @@ public partial class DiffMergeWindow : Window
         var leftDoc = new FlowDocument { PagePadding = new Thickness(4) };
         var rightDoc = new FlowDocument { PagePadding = new Thickness(4) };
         _rows.Clear();
+        _pairs.Clear();
 
         int keptCount = 0;   // running index into the kept side's real lines
         foreach (var op in ops)
@@ -181,10 +205,22 @@ public partial class DiffMergeWindow : Window
 
             leftDoc.Blocks.Add(lp);
             rightDoc.Blocks.Add(rp);
+            _pairs.Add((lp, rp));
         }
 
-        LeftBox.Document = leftDoc;
-        RightBox.Document = rightDoc;
+        _rendering = true;
+        try
+        {
+            LeftBox.Document = leftDoc;
+            RightBox.Document = rightDoc;
+        }
+        finally { _rendering = false; }
+
+        // Level the rows once the new documents have actually been laid out — the heights being
+        // matched don't exist until then. Loaded priority runs after that layout pass, so the panes
+        // are never painted in the misaligned state.
+        _alignDebounce.Stop();
+        Dispatcher.BeginInvoke(new Action(AlignRows), DispatcherPriority.Loaded);
 
         LeftBox.IsReadOnly = !_keepLeft;
         RightBox.IsReadOnly = _keepLeft;
@@ -206,6 +242,161 @@ public partial class DiffMergeWindow : Window
             Dispatcher.BeginInvoke(new Action(() => keptBox.Focus()),
                                    System.Windows.Threading.DispatcherPriority.Input);
         }
+    }
+
+    private void QueueAlign()
+    {
+        if (_aligning || _rendering || !_rendered)
+            return;
+        _alignDebounce.Stop();
+        _alignDebounce.Start();
+    }
+
+    /// <summary>
+    /// Re-level after the user types into the editable side. Only the paragraph holding the caret can
+    /// have changed height, and since the rows are stacked and each is levelled on its own, putting
+    /// that one row right restores the whole column — so a keystroke costs four measurements rather
+    /// than a re-measure of every row in the document. Anything that changes the row <i>structure</i>
+    /// (Enter splitting a line, Backspace joining two, a multi-line paste) falls back to a full pass.
+    /// </summary>
+    private void TextEdited(RichTextBox box)
+    {
+        if (_aligning || _rendering || !_rendered)
+            return;
+        if (box != (_keepLeft ? LeftBox : RightBox))
+            return;   // the read-only side; nothing the user did
+
+        if (box.Document.Blocks.Count != _pairs.Count)
+        {
+            QueueAlign();
+            return;
+        }
+
+        int i = IndexOfPair(box.CaretPosition?.Paragraph);
+        if (i < 0) QueueAlign();
+        else AlignPair(i);
+    }
+
+    private int IndexOfPair(Paragraph? p)
+    {
+        if (p is null)
+            return -1;
+        for (int i = 0; i < _pairs.Count; i++)
+            if (ReferenceEquals(_pairs[i].Left, p) || ReferenceEquals(_pairs[i].Right, p))
+                return i;
+        return -1;
+    }
+
+    /// <summary>Level a single row. Same rule as <see cref="AlignRows"/>, one pair at a time.</summary>
+    private void AlignPair(int i)
+    {
+        _aligning = true;
+        try
+        {
+            var (l, r) = _pairs[i];
+            l.Padding = default;
+            r.Padding = default;
+            LeftBox.UpdateLayout();
+            RightBox.UpdateLayout();
+
+            double lh = HeightOf(l), rh = HeightOf(r);
+            if (double.IsNaN(lh) || double.IsNaN(rh))
+                return;
+
+            double diff = lh - rh;
+            if (diff > 0.5) r.Padding = new Thickness(0, 0, 0, diff);
+            else if (diff < -0.5) l.Padding = new Thickness(0, 0, 0, -diff);
+        }
+        finally { _aligning = false; }
+    }
+
+    /// <summary>Height of one paragraph on its own (top of its first character to the bottom of its
+    /// last), for when a single row is being re-levelled rather than the whole document.</summary>
+    private static double HeightOf(Paragraph p)
+    {
+        Rect top = p.ContentStart.GetCharacterRect(LogicalDirection.Forward);
+        Rect bottom = p.ContentEnd.GetCharacterRect(LogicalDirection.Backward);
+        if (top.IsEmpty || bottom.IsEmpty)
+            return double.NaN;
+        return bottom.Bottom - top.Top;
+    }
+
+    /// <summary>
+    /// Make each diff row occupy the same height on both sides, so row N is level in both panes.
+    ///
+    /// <para>Pairing the paragraphs is not enough on its own, because a line's height depends on how
+    /// it wraps: the one-space spacer that stands in for a missing line is a single visual row, while
+    /// the line opposite it may wrap to three. The same goes for a changed line that is longer on one
+    /// side, and for equal lines once the splitter makes the panes different widths. Whatever the
+    /// cause, the shorter paragraph is padded out to the taller one's height — as <b>padding</b>
+    /// rather than margin, so a tinted row's colour fills the added space and the block still reads
+    /// as one unit.</para>
+    ///
+    /// <para>Two passes are unavoidable: the padding to add is the difference between two heights
+    /// that only exist once WPF has laid the text out. Previous padding is cleared first so each pass
+    /// measures natural heights — otherwise a re-level after a resize would compound the last one.
+    /// Padding never changes how text wraps, so one corrective pass always converges.</para>
+    /// </summary>
+    private void AlignRows()
+    {
+        if (_aligning || _pairs.Count == 0)
+            return;
+
+        _aligning = true;
+        try
+        {
+            foreach (var (l, r) in _pairs)
+            {
+                l.Padding = default;
+                r.Padding = default;
+            }
+            LeftBox.UpdateLayout();
+            RightBox.UpdateLayout();
+
+            double[] lh = MeasureHeights(_pairs.Select(p => p.Left));
+            double[] rh = MeasureHeights(_pairs.Select(p => p.Right));
+
+            for (int i = 0; i < _pairs.Count; i++)
+            {
+                double diff = lh[i] - rh[i];
+                if (double.IsNaN(diff))
+                    continue;   // not laid out — leave this row alone rather than guessing at it
+
+                if (diff > 0.5) _pairs[i].Right.Padding = new Thickness(0, 0, 0, diff);
+                else if (diff < -0.5) _pairs[i].Left.Padding = new Thickness(0, 0, 0, -diff);
+            }
+        }
+        finally { _aligning = false; }
+    }
+
+    /// <summary>
+    /// The rendered height of every paragraph, NaN where one isn't laid out.
+    ///
+    /// <para>Each paragraph is probed <b>once</b>, at its top, and its height taken as the distance
+    /// to the next paragraph's top — they are stacked with no margin, so that distance is the height.
+    /// Probing top <i>and</i> bottom instead would read more obviously, but resolving a text pointer
+    /// against laid-out text costs about an eighth of a millisecond: nothing once, and a third of a
+    /// second across both sides of a six-hundred-row diff, which is a visible stall on every resize.
+    /// One probe per paragraph halves it.</para>
+    /// </summary>
+    private static double[] MeasureHeights(IEnumerable<Paragraph> paragraphs)
+    {
+        var paras = paragraphs.ToList();
+        var tops = new double[paras.Count + 1];
+        for (int i = 0; i < paras.Count; i++)
+        {
+            Rect r = paras[i].ContentStart.GetCharacterRect(LogicalDirection.Forward);
+            tops[i] = r.IsEmpty ? double.NaN : r.Top;
+        }
+
+        // The last paragraph has no successor to measure against, so it gets the one extra probe.
+        Rect end = paras[^1].ContentEnd.GetCharacterRect(LogicalDirection.Backward);
+        tops[^1] = end.IsEmpty ? double.NaN : end.Bottom;
+
+        var heights = new double[paras.Count];
+        for (int i = 0; i < paras.Count; i++)
+            heights[i] = tops[i + 1] - tops[i];
+        return heights;
     }
 
     private static Paragraph BuildParagraph(DiffOp op, bool leftSide)
