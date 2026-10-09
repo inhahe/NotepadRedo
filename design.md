@@ -188,6 +188,59 @@ reported "Ln 2496"), and the visual number contradicted the search pane, which h
 logical line of each match. `MemoryExtensions.Count` + `LastIndexOf` keep it O(n) with vectorised
 scans, which is cheap enough for the per-keystroke call.
 
+### The font is a display setting, so it has no shortcut
+
+Bold and italic exist only inside **Format → Font…**. There used to be top-level Format → Bold /
+Italic toggles on `Ctrl+B` / `Ctrl+I`, and they were a trap: a `.txt` file stores no formatting, so the
+only thing they could ever do is restyle the shared display font — every document in every window at
+once — yet sitting in a Format menu on word-processor shortcuts they read as "italicise what I'm
+typing". `B` is beside `V` and `N`; one slip and every tab went italic, with no visible cause but a
+check mark. In the Font dialog, next to the family and size, it is unmistakably a property of how the
+text is *shown*, which is also where Notepad puts it.
+
+## The history tree
+
+Every node stores one `TextEdit` — a single contiguous splice (`Pos`, `OldText`, `NewText`) from its
+parent's text to its own — and `UndoTree.Materialize` rebuilds any node's text by replaying splices
+down from the immutable `RootText`. Undo, redo and a click in the history pane are all
+`EditorView.NavigateTo(node)`.
+
+### Undo lands on the change
+
+`ChangeSite` decides where the caret goes after a move, and the answer is **on the change itself**:
+
+- one step back (`Ctrl+Z`) selects the text the undo put back — the undone node's `OldText` span;
+- one step forward (`Ctrl+Y`) selects the text the redo put back — the redone node's `NewText` span;
+- a step that only took text away leaves a bare caret where that text was;
+- a jump across several nodes lands on the first difference between the two texts (`TextEdit.Diff`)
+  and selects **nothing**, because the net difference between distant versions can cover most of the
+  document, and a selection that size is one keystroke away from replacing it.
+
+It used to restore the caret recorded on the destination node — where the caret happened to be when
+that *earlier* state was committed. Undo a line typed at the bottom of a file and the caret leapt to
+wherever the previous edit had been, often off screen, so there was no way to see what the undo had
+done. Selecting the restored text is the Win32 edit-control and Word convention, and it makes "did
+that undo exactly what I meant?" answerable at a glance.
+
+The selection is set under `_programmaticSelection`, and a visible replace pane is explicitly reset to
+"the whole document": a scope captured as character offsets doesn't survive the text being swapped
+wholesale. That reset always happened, as a side effect of undo leaving a bare caret that read as the
+user clearing their selection; with undo now leaving a selection it has to be deliberate.
+
+### A typing burst is one contiguous edit
+
+Typing within the coalescing window is folded into one node (`UndoTree.Coalesce`), but **only an edit
+that touches the burst's own region joins it**. Without that rule, typing a word, jumping to another
+paragraph and typing again inside the window produced a node whose single splice stretched from the
+first place to the second: one `Ctrl+Z` undid both, and the "what changed" selection would have swept
+up all the untouched text between them.
+
+The check can only see edits once they are committed, and commits are debounced by half a second —
+type, press `Ctrl+End`, type again quickly, and the *pending* diff already spans both places. So
+`FlushTypingBeforeCaretMove` commits pending typing the moment a click or navigation key is about to
+move the caret. It does not end the burst: stepping back over a typo and carrying on is still one
+step, because the correction touches the text just typed.
+
 ## How a term becomes matches
 
 Both panes offer the same three matching options — **case sensitive**, **match whole word only**,

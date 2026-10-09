@@ -11,7 +11,9 @@ Built with WPF on .NET 8.
 ### Branching history tree
 - Every edit becomes a node in a visual history tree shown in a side pane.
 - Undo/redo walks the tree; making a new edit after undoing starts a **new branch** instead of discarding the future you undid.
-- Click any node to instantly jump the document to that state.
+- **Undo and redo put you on the change they made**, scrolled into view: text that `Ctrl+Z` brings back is **selected**, so you can see exactly what came back, and where it only took text away, the caret is left where that text was. `Ctrl+Y` does the same for what it puts back. (Previously the caret jumped to wherever it had been when the earlier state was saved — often nowhere near the change.)
+- **One undo step = one place in the document.** Typing you do in quick succession is grouped into a single step only while it stays in one spot: click or arrow elsewhere and type, and that's a separate step, even within the typing pause. Going back a character to fix a typo and carrying on still counts as the same spot.
+- Click any node to instantly jump the document to that state; the caret lands on the first place the text differs from what you were looking at (nothing is selected, since a distant version can differ almost everywhere).
 - **Condensed by default**: to keep a long typing session from burying the pane in one row per keystroke, the tree shows only the *interesting* nodes — **branch points, tips, and your current position** — collapsing each straight run of edits into a single row. Undo/redo stay fully granular (every keystroke group is still its own step); only the *display* condenses. An in-pane **Show all edits** toggle (top-right of the history pane) reveals every edit as its own row; the choice is shared across all windows and persisted.
 - The current node is highlighted; each node shows a text preview and metadata.
 - Preview text can either show a **fixed number of characters** (adjustable with a slider) or **fit to the pane width** with a trailing ellipsis (toggleable).
@@ -91,9 +93,8 @@ Choose what the window's **X** button does:
 
 ### Font & formatting
 - **Format** menu with a **Font…** picker (family, size, and style in one dialog) that **previews live in the editor as you browse** — the text updates instantly as you change family/size/bold/italic, and reverts if you cancel.
-- Quick toggles for **Bold** (`Ctrl+B`) and **Italic** (`Ctrl+I`).
 - A **Size** submenu for common point sizes.
-- The chosen font is a shared, persisted preference applied to the editor in every tab and window.
+- The chosen font is a shared, persisted preference applied to the editor in every tab and window. It's the **display** font: a `.txt` file stores no formatting, so bold or italic can't apply to just some of the text — they restyle how every document is shown. That's why they live only inside **Font…** (as in Notepad), with no menu toggle or `Ctrl+B` / `Ctrl+I` shortcut that a slip of the finger could hit.
 
 ### Dialogs
 - Every prompt is themed to match the editor, comes to the front with its default button already focused (so a prompt raised by a launch from a console can't hide behind the console window), and answers to bare keys with no clicking first: **Y**/**N**/**O**/**C** on Yes-No-OK-Cancel prompts, **S**/**A**/**D**/**C** on the save-before-closing prompt, and **1**–**9** on the multi-choice prompts. **Esc** always takes the safe way out (Cancel, else No).
@@ -121,8 +122,6 @@ Choose what the window's **X** button does:
 | `Ctrl+Z` | Undo (walk up the history tree) |
 | `Ctrl+Y` / `Ctrl+Shift+Z` | Redo (walk down the history tree) |
 | `Ctrl+X` / `Ctrl+C` / `Ctrl+V` | Cut / copy / paste |
-| `Ctrl+B` | Toggle bold |
-| `Ctrl+I` | Toggle italic |
 
 ---
 

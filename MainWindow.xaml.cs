@@ -1023,21 +1023,6 @@ public partial class MainWindow : Window
                     yield return v;
     }
 
-    private void Bold_Click(object sender, RoutedEventArgs e)   => ToggleBold();
-    private void Italic_Click(object sender, RoutedEventArgs e) => ToggleItalic();
-
-    private void ToggleBold()
-    {
-        AppSettings.Current.FontBold = !AppSettings.Current.FontBold;
-        ApplyFontEverywhere();
-    }
-
-    private void ToggleItalic()
-    {
-        AppSettings.Current.FontItalic = !AppSettings.Current.FontItalic;
-        ApplyFontEverywhere();
-    }
-
     private void FontSize_Click(object sender, RoutedEventArgs e)
     {
         if (sender is not MenuItem mi || mi.Tag is not string tag || !double.TryParse(tag, out double pt))
@@ -1271,8 +1256,6 @@ public partial class MainWindow : Window
         LockFileItem.IsChecked     = s.LockFileWhileOpen;
         PersistHistoryItem.IsChecked = s.PersistHistory;
 
-        BoldItem.IsChecked   = s.FontBold;
-        ItalicItem.IsChecked = s.FontItalic;
         foreach (var item in FontSizeMenu.Items.OfType<MenuItem>())
             item.IsChecked = item.Tag is string t && double.TryParse(t, out double pt) && pt == s.FontSize;
 
@@ -1318,8 +1301,7 @@ public partial class MainWindow : Window
         Bind(Key.H, ModifierKeys.Control, () => ActiveView?.OpenReplace());
         Bind(Key.F3, ModifierKeys.None, () => ActiveView?.FindNext(backwards: false));
         Bind(Key.F3, ModifierKeys.Shift, () => ActiveView?.FindNext(backwards: true));
-        Bind(Key.B, ModifierKeys.Control, ToggleBold);
-        Bind(Key.I, ModifierKeys.Control, ToggleItalic);
+        // Deliberately no Ctrl+B / Ctrl+I: see the note in the Format menu (MainWindow.xaml).
     }
 
     // ===================== Tab drag: tear-off & reattach =====================

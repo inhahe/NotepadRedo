@@ -44,11 +44,12 @@
                     <MenuItem x:Name="EndingCrItem" Header="Classic _Mac (CR)" IsCheckable="True"
                               Tag="Cr" Click="LineEnding_Click"/>
                 </MenuItem>
-                <Separator/>
-                <MenuItem x:Name="BoldItem"   Header="_Bold"   IsCheckable="True"
-                          InputGestureText="Ctrl+B" Click="Bold_Click"/>
-                <MenuItem x:Name="ItalicItem" Header="_Italic" IsCheckable="True"
-                          InputGestureText="Ctrl+I" Click="Italic_Click"/>
+                <!-- No top-level Bold / Italic here, and no Ctrl+B / Ctrl+I. A .txt file has
+                     nowhere to store formatting, so these could only ever restyle the display font
+                     for every document at once — yet sitting in a Format menu with word-processor
+                     shortcuts they read as "italicise what I'm typing", and one slip of the finger
+                     turned every open tab italic. Bold and italic stay available as part of the
+                     display font, in Format > Font..., which is where Notepad keeps them too. -->
                 <Separator/>
                 <MenuItem x:Name="FontSizeMenu" Header="_Size">
                     <MenuItem Header="8"  IsCheckable="True" Tag="8"  Click="FontSize_Click"/>

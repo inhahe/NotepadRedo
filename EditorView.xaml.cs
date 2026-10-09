@@ -435,7 +435,7 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
                                && ReferenceEquals(_tree.Current, _typingNode)
                                && (DateTime.Now - _lastEditTime).TotalMilliseconds <= windowMs;
 
-            if (canCoalesce && _tree.Coalesce(Editor.Text, Editor.CaretIndex))
+            if (canCoalesce && _tree.Coalesce(_currentText, Editor.Text, Editor.CaretIndex))
             {
                 _currentText = Editor.Text;
                 _lastEditTime = DateTime.Now;
@@ -477,11 +477,14 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
             // to it. This depends on nothing we currently hold materialised, so a stale or
             // corrupted _currentText can't derail the jump or lose the document — clicking any
             // node always restores that node's exact text.
+            var from = _tree.Current;
+            string before = Editor.Text;
             string text = _tree.Materialize(target);
             _tree.SetCurrent(target);
             _currentText = text;
             _typingNode = null;   // a jump ends the current typing burst — next edit starts anew
-            ApplyNode(target, text);
+            var (selStart, selLength) = ChangeSite(from, target, before, text);
+            ApplyNode(target, text, selStart, selLength);
             HideTreeIfTemporary();   // a branch was chosen — collapse a pane revealed only to pick it
         }
         catch (Exception ex)
@@ -494,23 +497,75 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
         }
     }
 
-    private void ApplyNode(UndoNode node, string text)
+    /// <summary>
+    /// Where the caret belongs after moving through the history: <b>on the change itself</b>.
+    ///
+    /// <para>It used to go to the caret position stored on the node being moved to — where the caret
+    /// happened to be when that <i>earlier</i> state was committed. Undo the line you just typed at
+    /// the bottom of a document and the caret leapt to wherever you had been typing before that,
+    /// often a screen or more away, so you couldn't see what the undo had actually done.</para>
+    ///
+    /// <para>One step back (Ctrl+Z) selects the text the undo put back; one step forward (Ctrl+Y)
+    /// selects the text the redo put back. When the step only removed text there is nothing to
+    /// select, so the caret is left where the text was. That is the Notepad and Word convention, and
+    /// it answers "did that undo exactly what I meant?" at a glance. Each node is one contiguous edit
+    /// (see <see cref="UndoTree.Coalesce"/>), so the selection never sweeps up untouched text.</para>
+    ///
+    /// <para>A jump across several nodes (clicking an entry in the history pane) lands on the first
+    /// place the text differs, but selects nothing: the net difference between distant versions can
+    /// cover most of the document, and a selection that size is one keystroke from replacing it.</para>
+    /// </summary>
+    private static (int Start, int Length) ChangeSite(UndoNode from, UndoNode to, string before, string after)
     {
+        if (ReferenceEquals(to, from.Parent) && from.Edit is { } undone)
+            return (undone.Pos, undone.OldText.Length);
+        if (ReferenceEquals(from, to.Parent) && to.Edit is { } redone)
+            return (redone.Pos, redone.NewText.Length);
+
+        var diff = TextEdit.Diff(before, after);
+        return diff is null ? (to.CaretIndex, 0) : (diff.Pos, 0);
+    }
+
+    private void ApplyNode(UndoNode node, string text, int selStart, int selLength)
+    {
+        selStart = Math.Clamp(selStart, 0, text.Length);
+        selLength = Math.Clamp(selLength, 0, text.Length - selStart);
+
         _suppressTextChange = true;
-        Editor.Text = text;
-        int caret = Math.Clamp(node.CaretIndex, 0, text.Length);
-        Editor.CaretIndex = caret;
-        _suppressTextChange = false;
+        // Ours, not the user's: without the flag the replace pane would read the selection as the
+        // user choosing a new region to replace within.
+        _programmaticSelection = true;
+        try
+        {
+            Editor.Text = text;
+            Editor.Select(selStart, selLength);
+        }
+        finally
+        {
+            _programmaticSelection = false;
+            _suppressTextChange = false;
+        }
+
+        // The whole text has just been swapped, so a replace scope captured as character offsets no
+        // longer reliably covers the same words. Fall back to the whole document. (This always
+        // happened, as a side effect of undo leaving a bare caret; now that undo leaves a selection
+        // it has to be done on purpose.)
+        if (ReplacePanel.Visibility == Visibility.Visible)
+        {
+            ReplaceScopeAll.IsChecked = true;
+            SyncReplaceScopeAvailability();
+            RefreshReplaceStatus();
+        }
 
         SetCurrent(node);
         RaiseAll();
         Editor.Focus();
 
-        // Replacing the whole text resets the editor's scroll, and a programmatic CaretIndex doesn't
-        // reliably scroll the caret into view — so jumping to a node could leave the changed region
-        // off-screen. Bring the node's caret (where the edit happened) into view, centered, once the
-        // TextBox has laid out the new text. Deferred to Background so the layout pass has run.
-        Dispatcher.BeginInvoke(new Action(() => BringIntoView(caret, center: true)),
+        // Replacing the whole text resets the editor's scroll, and a programmatic selection doesn't
+        // reliably scroll into view — so the change could be left off-screen, which is the whole
+        // point defeated. Centre it once the TextBox has laid out the new text (Background priority,
+        // so that layout pass has run).
+        Dispatcher.BeginInvoke(new Action(() => BringIntoView(selStart, center: true)),
                                DispatcherPriority.Background);
     }
 
@@ -1013,6 +1068,10 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
     /// </summary>
     private void Editor_PreviewKeyDown(object sender, KeyEventArgs e)
     {
+        if (e.Key is Key.Left or Key.Right or Key.Up or Key.Down
+                  or Key.Home or Key.End or Key.PageUp or Key.PageDown)
+            FlushTypingBeforeCaretMove();
+
         if (Keyboard.Modifiers == ModifierKeys.Control && e.Key == Key.F)
         {
             ShowSearch(true);
@@ -1043,6 +1102,22 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
             // becomes a fresh undo step. (Per-character mode already splits every keystroke.)
             Dispatcher.BeginInvoke(new Action(EndBurst), DispatcherPriority.Background);
         }
+    }
+
+    /// <summary>
+    /// Commit typing that is still waiting on the debounce, just before the caret is moved by a click
+    /// or a navigation key. A burst only absorbs an edit that touches its own region (see
+    /// <see cref="UndoTree.Coalesce"/>), but that check can only see edits once they are committed:
+    /// type a word, Ctrl+End and type again inside the half-second debounce, and the *pending* diff
+    /// already spans both places, so it would be folded in whole. Flushing at the moment the caret
+    /// leaves keeps every undo step to one place in the document. This does not end the burst —
+    /// stepping back a character to fix a typo and carrying on still makes a single undo step,
+    /// because the fix touches the text just typed.
+    /// </summary>
+    private void FlushTypingBeforeCaretMove()
+    {
+        if (_debounce.IsEnabled)
+            CommitPending();
     }
 
     /// <summary>Commit whatever is pending and end the current typing burst so the next edit
@@ -1101,6 +1176,8 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
     /// </summary>
     private void Editor_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
+        FlushTypingBeforeCaretMove();
+
         if (e.ClickCount != 3)
             return;
 

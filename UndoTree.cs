@@ -257,13 +257,29 @@ public sealed class UndoTree
     /// node must be a childless, non-root leaf (an in-progress typing node); its edit is recomputed
     /// as the diff from its parent's text straight to <paramref name="newText"/>, so a whole run of
     /// consecutive keystrokes collapses to one history node. <paramref name="currentText"/> is the
-    /// materialised text of <see cref="Current"/>. Returns false when coalescing doesn't apply
-    /// (caller should <see cref="Commit"/> a new node instead).
+    /// materialised text of <see cref="Current"/> (the caller always has it, and re-deriving it here
+    /// would replay the whole history path on every commit). Returns false when coalescing doesn't
+    /// apply — the caller should <see cref="Commit"/> a new node instead.
     /// </summary>
-    public bool Coalesce(string newText, int caretIndex)
+    public bool Coalesce(string currentText, string newText, int caretIndex)
     {
-        if (Current.Parent is null || Current.Children.Count > 0)
+        if (Current.Parent is null || Current.Children.Count > 0 || Current.Edit is null)
             return false;
+
+        // A burst is one *contiguous* piece of typing. Folding in an edit made somewhere else —
+        // type a word, jump to another paragraph, type again, all inside the coalescing window —
+        // would make the node's single splice stretch from the first site to the second, so one
+        // Ctrl+Z would undo both and its "here's what changed" region would sweep up all the
+        // untouched text between them. Only an edit that touches the burst's own region joins it.
+        var current = Current.Edit;
+        var pending = TextEdit.Diff(currentText, newText);
+        if (pending is not null)
+        {
+            int burstStart = current.Pos, burstEnd = current.Pos + current.NewText.Length;
+            int editStart = pending.Pos, editEnd = pending.Pos + pending.OldText.Length;
+            if (editStart > burstEnd || editEnd < burstStart)
+                return false;
+        }
 
         string parentText = Materialize(Current.Parent);
         var edit = TextEdit.Diff(parentText, newText);
