@@ -79,6 +79,7 @@ Built with WPF on .NET 8.
   - **Save my version to another file**, then reload the disk version,
   - **Save the disk version to another file**, then keep yours, or
   - **Show a diff and merge…** — open a side-by-side merge viewer.
+- Whichever you pick applies to the file **as it is when you answer**, not as it was when the question appeared. If it changes again while the question is on screen — say, another computer is still saving to a shared drive — *Reload* loads the newest version, the merge viewer and *Save the disk version* get the newest version, and *Keep my version* covers that change as well. (Previously they all used the version that raised the question, and the newer change was never reported.)
 - The **merge viewer** shows the two versions with changed/added/removed lines tinted and the differing text painted red. The intra-line diff is refined to the **character level** (UltraCompare-style): shared words stay anchored on a word/whitespace alignment, but within a changed run only the differing *characters* are reddened — so `composition` → `compositions` highlights just the trailing "s" rather than the whole word. You pick which side to **keep** — it's outlined and freely editable (copy/paste enabled) — and pull individual red lines across from the other side by **double-clicking** them (or via the right-click menu, which can also replace/insert/remove a line). You can flip which side is kept at any time, re-diff after hand-editing, then save the assembled result back to the file. **Save kept side** writes the kept side to the file and discards the other; **Save both** also writes the kept side to the file but preserves the other side alongside it as a timestamped sibling file (so nothing is lost).
 - Corresponding lines stay **level across the two panes**, whatever the word wrap does — a line that wraps to four rows is matched by four rows of spacer opposite it, so the two sides still line up hundreds of lines down. The levelling follows the panes as you resize the window or drag the splitter between them.
 - If the two versions differ only in something a line diff can't show — line endings, trailing whitespace, other invisible characters — the viewer says so in a banner at the top, rather than presenting two panes that look identical with no explanation.
@@ -157,6 +158,14 @@ build.bat
 
 `build.bat` publishes a self-contained single-file `NotepadRedo.exe`, then signals every running instance to close (prompting you to save each unsaved document) and **waits** until they have all exited before copying the new build into place. If you cancel a save prompt the redeploy aborts, leaving that instance untouched.
 
+### Tests
+
+```sh
+dotnet run --project tests\ExternalChange -- --share
+```
+
+Drives the "changed on disk" prompt through a real editor and file watcher while another writer keeps changing the file, and exits non-zero on failure. `--share` repeats every test through `\\localhost\<drive>$` (SMB), the way a network drive is reached; leave it off where admin shares aren't available. It parks a window off-screen and briefly opens dialogs. It doesn't change your running editor or your saved settings.
+
 ### Publishing a GitHub release
 
 The app version is stored in one place — the **`VERSION`** file at the project root — which the csproj reads into `<Version>` (so it's stamped into the exe). Bump `VERSION` when you build, then:
@@ -206,6 +215,7 @@ On first launch, if a `%LOCALAPPDATA%\TreeNotepad\` folder exists (from before t
 | `ThemedDialog.cs` | Themed replacements for `MessageBox` (incl. the multi-choice resolution prompts). |
 | `Converters.cs` | XAML value converters (e.g. preview width). |
 | `CrashLog.cs` | Best-effort exception logging. |
+| `tests/ExternalChange/` | Regression tests for the "changed on disk" prompt (see *Tests* above). |
 
 ---
 

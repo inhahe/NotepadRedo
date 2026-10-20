@@ -22,6 +22,10 @@
          a DllNotFoundException (SetWindowLongPtrWndProc) before any handler can log it. Extract
          native libraries at startup so single-file WPF actually runs. -->
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+
+    <!-- The test projects under tests\ are built on their own; without this the default globs would
+         compile their sources, and their generated obj\ files, into the app as well. -->
+    <DefaultItemExcludes>$(DefaultItemExcludes);tests\**</DefaultItemExcludes>
   </PropertyGroup>
 
   <!-- We reference WinForms only for NotifyIcon (all uses fully-qualified). Drop its implicit

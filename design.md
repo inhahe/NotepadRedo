@@ -403,7 +403,7 @@ inserts `\r\n` whenever the user presses Enter, whatever the surrounding buffer 
 file verbatim therefore produces a *mixed* buffer the moment anyone types in it, and that mixture is
 what gets written back.
 
-`LineEndings` owns the conversion; `EditorView` calls it at exactly two places, `ReadDocumentText`
+`LineEndings` owns the conversion; `EditorView` calls it at exactly two places, `ReadDisk`
 (disk → buffer, remembering the file's style) and `WriteTextToFile` (buffer → disk, re-applying it).
 Everything between them can assume a uniform buffer.
 
@@ -450,6 +450,50 @@ style), trailing whitespace and on how many lines, or invisible characters and t
 first one — and a banner says so. This is deliberately a *fallback* rather than something folded into
 the diff itself: normalising endings before splitting is the right behaviour for reading a diff, and
 the notice covers the case where that normalisation is precisely what hides the answer.
+
+## The "changed on disk" prompt
+
+A `FileSystemWatcher` per titled document feeds a 350 ms debounce, then `HandleExternalChange`:
+probe the file's stamp (modified time + size); if it differs from `_diskStamp`, read the file and
+compare *content* with the editor; if they differ, ask the five-way question. Two rules keep that
+honest.
+
+### The stamp belongs to a version's content
+
+`_diskStamp` must describe the disk version the document was last reconciled with — loaded, saved,
+or answered for. A stamp *newer* than that content is the dangerous direction: the next probe sees
+"no change", and a write nobody has seen is treated as handled until some later write happens to
+come along. So:
+
+- `ReadDisk` takes the stamp through the same handle **before** reading the text. A write landing
+  mid-read leaves the stamp older than the text, which costs at most one re-check that finds the
+  content equal.
+- Paths that just read the file hand that stamp on (`OnPathEstablished(stamp)`, `ReloadFromDisk`)
+  rather than probing again afterwards. Probing is right only after our own write, or for text that
+  came from elsewhere (a moved tab, a recovery snapshot).
+- Every stamp comes from an open handle (`StampOf`), so probes and reads are never compared across
+  two different kinds of query.
+
+### The answer applies to the file as it is when answered
+
+The question can sit on screen for hours while another machine keeps saving to the share. So
+`ResolveExternalChange` re-reads the file after the user answers and applies the choice to *that*
+version. Reload loads it, the merge viewer and "save the disk version" get it, and Keep mine covers
+it too. The version that raised the prompt is a fallback only for when the file can no longer be
+read. While the prompt is up, `HandleExternalChange` does nothing; it is queued once more after
+the prompt closes, which catches anything written after the answer was applied. A merge viewer opened
+from the prompt is the exception: it receives each new version live through `NotifyDiskChanged`.
+
+This fixed a reported bug: on a mapped network drive, Reload loaded *a* change but not the latest.
+The prompt reloaded the text read when it went up, then probed the stamp, which recorded the newer
+write as seen. A change that had arrived during the prompt was stashed for a re-check, which then
+compared against that fresh stamp and found nothing. Network drives made it common only because
+saves from another computer arrive while nobody is at this one to answer; the same thing happens
+locally.
+
+`tests/ExternalChange` reproduces that sequence for every choice, against a local folder and over
+SMB (`\\localhost\<drive>$`). It hosts a real `EditorView` off-screen and answers the prompt by
+clicking its buttons.
 
 ## The merge viewer's two panes are levelled, not merely paired
 

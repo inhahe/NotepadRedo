@@ -8,6 +8,7 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Threading;
 using Microsoft.Win32;
+using Microsoft.Win32.SafeHandles;
 
 namespace NotepadRedo;
 
@@ -54,8 +55,10 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
     // ----- External-change detection / file lock (per titled document) -----
     private FileSystemWatcher? _watcher;
     private readonly DispatcherTimer _watchDebounce;   // coalesce bursts of FS events
-    private DateTime _diskWriteTimeUtc;                // last disk mtime we consider "ours"
-    private long _diskLength = -1;                     // last disk size we consider "ours"
+    /// <summary>The stamp of the disk version this document was last reconciled with — loaded,
+    /// saved, or answered for at the prompt. It must belong to that version's *content*: a stamp
+    /// newer than the content marks a change nobody has seen as already handled.</summary>
+    private DiskStamp _diskStamp;
     private DateTime _suppressUntil;                   // ignore watcher events until this time (our own writes)
     private bool _resolving;                           // an external-change prompt is on screen
 
@@ -67,7 +70,6 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
     private LineEndingStyle _lineEnding = LineEndingStyle.Crlf;
     private LineEndingStyle _savedLineEnding = LineEndingStyle.Crlf;   // what is on disk right now
     private bool _loadedMixed;                                         // the file itself was mixed
-    private string? _pendingWhileResolving;            // a newer disk version that arrived mid-prompt
     private DiffMergeWindow? _mergeWindow;             // open merge viewer (so re-changes route to it)
     private FileStream? _lockStream;                   // deny-write lock held while open (optional)
     private string? _lockedPath;                       // path _lockStream currently holds
@@ -241,7 +243,8 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
     /// <summary>Load a file's contents into this (blank) view.</summary>
     public void LoadFile(string path)
     {
-        var text = ReadDocumentText(path);
+        var disk = ReadDisk(path);
+        string text = disk.Text;
         _currentPath = path;
         _savedText = text;
         DeleteRecovery();
@@ -251,7 +254,7 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
         // existed no longer match for LF files and those documents start from a fresh root once.
         if (!(AppSettings.Current.PersistHistory && TryRestoreHistory(path, text)))
             ResetTree(text);
-        OnPathEstablished();
+        OnPathEstablished(disk.Stamp);
     }
 
     /// <summary>
@@ -1303,28 +1306,48 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
 
     // ===================== External-change detection / file lock =====================
 
+    /// <summary>A file's modified time and size: cheap to query, and changed by any write.</summary>
+    private readonly record struct DiskStamp(DateTime WriteTimeUtc, long Length);
+
+    /// <summary>The file's content (in the editor's line-ending form) and the stamp it had when it
+    /// was read.</summary>
+    private sealed record DiskVersion(string Text, DiskStamp Stamp);
+
     /// <summary>
     /// Called whenever this document acquires or changes its on-disk path (open / save / transfer /
-    /// recover): capture the current disk timestamp so our own write isn't mistaken for an external
-    /// change, (re)start the file-system watcher, and apply (or release) the deny-write lock.
+    /// recover): record the disk stamp so our own write isn't mistaken for an external change,
+    /// (re)start the file-system watcher, and apply (or release) the deny-write lock.
     /// </summary>
-    private void OnPathEstablished()
+    /// <param name="read">The stamp from <see cref="ReadDisk"/> when the document's text was just read
+    /// from the file. Null probes the file instead, which is right after our own write and for text
+    /// that came from somewhere else (a moved tab, a recovery snapshot). After a read, probing would
+    /// be wrong: a write landing in between would be recorded as seen without ever being loaded.</param>
+    private void OnPathEstablished(DiskStamp? read = null)
     {
-        CaptureDiskStamp();
+        if ((read ?? ProbeDisk()) is DiskStamp stamp)
+            _diskStamp = stamp;   // else it stays as-is; a spurious prompt is better than a crash
         ApplyFileLock();
         StartWatching();
     }
 
-    /// <summary>Record the file's current modified-time and size as the "known" (ours) disk state.</summary>
-    private void CaptureDiskStamp()
+    /// <summary>The file's stamp as it is now, or null when it is missing or can't be opened (which
+    /// includes another program holding it open for writing).</summary>
+    private DiskStamp? ProbeDisk()
     {
         try
         {
-            var fi = new FileInfo(_currentPath!);
-            if (fi.Exists) { _diskWriteTimeUtc = fi.LastWriteTimeUtc; _diskLength = fi.Length; }
+            using var h = File.OpenHandle(_currentPath!, FileMode.Open, FileAccess.Read,
+                FileShare.ReadWrite | FileShare.Delete);
+            return StampOf(h);
         }
-        catch { /* stamp stays as-is; a spurious prompt is better than a crash */ }
+        catch { return null; }
     }
+
+    /// <summary>Every stamp is taken through an open handle, because <see cref="ReadDisk"/> must take
+    /// its stamp from the handle it reads through, and a stamp from a path query compared against one
+    /// from a handle would rest on two different queries agreeing.</summary>
+    private static DiskStamp StampOf(SafeFileHandle h) =>
+        new(File.GetLastWriteTimeUtc(h), RandomAccess.GetLength(h));
 
     /// <summary>Mark a short window during which watcher events are treated as our own write.</summary>
     private void BeginSelfWrite() => _suppressUntil = DateTime.UtcNow + TimeSpan.FromSeconds(1.5);
@@ -1376,38 +1399,34 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
     {
         if (string.IsNullOrEmpty(_currentPath))
             return;
+        // The prompt is up. It answers for the file as it stands when the user answers and checks
+        // again when it closes, so there is nothing to do until then. A merge viewer opened from it
+        // is the exception: it takes each new version live.
+        if (_resolving && _mergeWindow is null)
+            return;
 
-        FileInfo fi;
-        try { fi = new FileInfo(_currentPath); } catch { return; }
-        if (!fi.Exists)
-            return;   // deleted/renamed away — keep our buffer; a Save re-creates it
-
-        DateTime wt; long len;
-        try { wt = fi.LastWriteTimeUtc; len = fi.Length; } catch { return; }
-
-        if (wt == _diskWriteTimeUtc && len == _diskLength)
+        if (ProbeDisk() is not DiskStamp stamp)
+            return;   // deleted/renamed away (keep our buffer; a Save re-creates it), or mid-write
+        if (stamp == _diskStamp)
             return;   // no real change since we last looked
         if (DateTime.UtcNow < _suppressUntil)
         {
-            _diskWriteTimeUtc = wt; _diskLength = len;   // our own save — adopt the new stamp
+            _diskStamp = stamp;   // our own save — adopt the new stamp
             return;
         }
 
-        string raw;
-        try { raw = ReadAllTextShared(_currentPath); }
+        DiskVersion disk;
+        try { disk = ReadDisk(_currentPath); }
         catch { return; }   // mid-write by the other program; the next event will settle
 
         // Compare the *content*. A file rewritten with different line endings is a different pile of
         // bytes but the same document, and prompting for it was worse than useless: the resolution
         // dialog offered five ways to fix a difference the diff viewer could not even show, because
-        // it normalises endings before comparing lines. Adopt the file's new style instead, so our
-        // next save agrees with whatever rewrote it, and say nothing.
-        string diskText = LineEndings.ToEditor(raw);
-        AdoptDiskLineEnding(raw);
-
-        if (diskText == Editor.Text)
+        // it normalises endings before comparing lines. ReadDisk has adopted the file's new style, so
+        // our next save agrees with whatever rewrote it; say nothing.
+        if (disk.Text == Editor.Text)
         {
-            _diskWriteTimeUtc = wt; _diskLength = len;
+            _diskStamp = disk.Stamp;
             RaiseAll();   // the indicator may have just changed
             return;
         }
@@ -1415,24 +1434,19 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
         // A merge viewer is already open for this document — fold the new version into it.
         if (_mergeWindow is not null)
         {
-            _diskWriteTimeUtc = wt; _diskLength = len;
-            _mergeWindow.NotifyDiskChanged(diskText);
+            _diskStamp = disk.Stamp;
+            _mergeWindow.NotifyDiskChanged(disk.Text);
             return;
         }
 
-        // A prompt is already up — stash the newest content and re-check once it closes.
-        if (_resolving)
-        {
-            _pendingWhileResolving = diskText;
-            return;
-        }
-
-        _diskWriteTimeUtc = wt; _diskLength = len;
-        ResolveExternalChange(diskText);
+        ResolveExternalChange(disk);
     }
 
     /// <summary>The five-way "the file changed on disk" resolution prompt.</summary>
-    private void ResolveExternalChange(string diskText)
+    /// <param name="seen">The version that raised the prompt. The answer is applied to the file as it
+    /// is when the user gives it, which can be newer: the question may sit on screen for hours while
+    /// another machine goes on saving. This one stands in only if the file can't be read by then.</param>
+    private void ResolveExternalChange(DiskVersion seen)
     {
         _resolving = true;
         try
@@ -1452,24 +1466,28 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
                 $"\u201c{name}\u201d was changed by another program.",
                 "File changed on disk", choices, MessageBoxImage.Warning, defaultIndex: dirty ? 4 : 0);
 
+            DiskVersion disk;
+            try { disk = ReadDisk(_currentPath!); }
+            catch { disk = seen; }   // its own stamp, so if the file has moved on the re-check below sees it
+            // Whichever the choice, this is the version it settles — including Keep mine, which
+            // overrules the file as it is now, not just the part of it that raised the question.
+            _diskStamp = disk.Stamp;
+
             switch (choice)
             {
-                case 0: ReloadFromDisk(diskText); break;
-                case 1: break;   // keep mine — the advanced stamp stops us re-prompting
-                case 2: if (SaveSnapshot("mine", Editor.Text) is not null) ReloadFromDisk(diskText); break;
-                case 3: SaveSnapshot("disk", diskText); break;
-                case 4: OpenMerge(diskText); break;
+                case 0: ReloadFromDisk(disk); break;
+                case 1: break;   // keep mine
+                case 2: if (SaveSnapshot("mine", Editor.Text) is not null) ReloadFromDisk(disk); break;
+                case 3: SaveSnapshot("disk", disk.Text); break;
+                case 4: OpenMerge(disk.Text); break;
                 default: break;  // dismissed — keep mine
             }
         }
         finally { _resolving = false; }
 
-        // A newer version landed while the prompt was up — re-evaluate against it.
-        if (_pendingWhileResolving is not null)
-        {
-            _pendingWhileResolving = null;
-            Dispatcher.BeginInvoke(new Action(HandleExternalChange), DispatcherPriority.Background);
-        }
+        // Catch anything written since the answer was applied, including while a follow-up dialog
+        // (a "Saved to" notice, the merge viewer) was on screen.
+        Dispatcher.BeginInvoke(new Action(HandleExternalChange), DispatcherPriority.Background);
     }
 
     /// <summary>Open the side-by-side merge viewer and apply its outcome.</summary>
@@ -1489,18 +1507,19 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
         else if (win.ExitAndReload)
         {
             // Both versions were saved to sibling files; reload the current on-disk version fresh.
-            try { ReloadFromDisk(ReadDocumentText(_currentPath!)); } catch { }
+            try { ReloadFromDisk(ReadDisk(_currentPath!)); } catch { }
         }
     }
 
-    /// <summary>Replace the editor's text with disk content and re-anchor the history/dirty state.</summary>
-    private void ReloadFromDisk(string diskText)
+    /// <summary>Replace the editor's text with a version read from disk and re-anchor the
+    /// history/dirty state.</summary>
+    private void ReloadFromDisk(DiskVersion disk)
     {
-        _savedText = diskText;
+        _savedText = disk.Text;
         // The style was adopted when the file was read (AdoptDiskLineEnding); nothing to do here.
         DeleteRecovery();
-        ResetTree(diskText);
-        CaptureDiskStamp();
+        ResetTree(disk.Text);
+        _diskStamp = disk.Stamp;   // not a fresh probe: see OnPathEstablished
         // The content changed under us, so the old history no longer reconstructs it — overwrite the
         // sidecar with the fresh (single-root) tree anchored to the new disk text.
         PersistHistory();
@@ -1607,18 +1626,24 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
         }
     }
 
-    /// <summary>Read a file without locking out other readers/writers (tolerant of concurrent access).</summary>
     /// <summary>
     /// Read a file into the editor's internal form, remembering the line-ending style it uses so a
     /// later save puts the same style back. Everything that loads or re-reads the document goes
     /// through here, so the buffer is uniformly CRLF and every comparison against disk is about
-    /// content rather than invisible bytes.
+    /// content rather than invisible bytes. Other readers and writers are not locked out.
     /// </summary>
-    private string ReadDocumentText(string path)
+    /// <returns>The text, with the stamp taken through the same handle *before* reading it. A write
+    /// landing mid-read therefore leaves the stamp older than the text, which costs at most a
+    /// re-check that finds nothing; the other order would record a write we never read as seen.</returns>
+    private DiskVersion ReadDisk(string path)
     {
-        string raw = ReadAllTextShared(path);
+        using var h = File.OpenHandle(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+        var stamp = StampOf(h);
+        using var fs = new FileStream(h, FileAccess.Read);
+        using var sr = new StreamReader(fs, detectEncodingFromByteOrderMarks: true);
+        string raw = sr.ReadToEnd();
         AdoptDiskLineEnding(raw);
-        return LineEndings.ToEditor(raw);
+        return new DiskVersion(LineEndings.ToEditor(raw), stamp);
     }
 
     /// <summary>Adopt the style of the file this document points at, for the paths that rebuild a
@@ -1628,12 +1653,8 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
     {
         if (string.IsNullOrEmpty(_currentPath))
             return;
-        try
-        {
-            if (File.Exists(_currentPath))
-                AdoptDiskLineEnding(ReadAllTextShared(_currentPath));
-        }
-        catch { /* unreadable — the default is as good a guess as any */ }
+        try { ReadDisk(_currentPath); }
+        catch { /* missing or unreadable — the default is as good a guess as any */ }
     }
 
     /// <summary>
@@ -1649,14 +1670,6 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
         if (!pendingChoice)
             _lineEnding = _savedLineEnding;
         _loadedMixed = LineEndings.IsMixed(raw);
-    }
-
-    private static string ReadAllTextShared(string path)
-    {
-        using var fs = new FileStream(path, FileMode.Open, FileAccess.Read,
-            FileShare.ReadWrite | FileShare.Delete);
-        using var sr = new StreamReader(fs, detectEncodingFromByteOrderMarks: true);
-        return sr.ReadToEnd();
     }
 
     private static bool PathsEqual(string? a, string? b)

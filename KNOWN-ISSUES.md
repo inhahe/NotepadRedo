@@ -19,6 +19,21 @@
 
 ## Bugs
 
+### "Reload from disk" loaded an older version, not the latest (fixed 2026-10-20, 1.0.29)
+- **Symptom:** on a mapped network drive, the "changed on disk" prompt appeared after the file was
+  edited on another computer, and Reload brought in *a* change, but not the latest one. Nothing
+  ever prompted about the rest.
+- **Root cause:** every choice acted on the text read when the prompt went up. If the file changed
+  again before the user answered, `ReloadFromDisk` loaded the old text and then *probed* the file's
+  stamp, recording the newer write as seen. The re-check stashed for "a change arrived during the
+  prompt" compared against that fresh stamp and found nothing. The same lost-update ordering (read,
+  then probe) sat in `LoadFile`. Not network-specific: a network drive just makes it likely, since
+  saves from another machine arrive while nobody is at this one to answer.
+- **Fix:** the answer is applied to the file as it is when given (`ResolveExternalChange` re-reads
+  it), and a stamp is only ever recorded with the content it belongs to (`ReadDisk` takes it through
+  the read's own handle, before reading). See "The 'changed on disk' prompt" in `design.md`.
+- **Regression test:** `tests/ExternalChange` (every prompt choice, locally and over SMB).
+
 ### Esc after a search appeared to move the caret off the match (fixed 2026-08-14, 1.0.20)
 - **Symptom:** search for something, press Enter so the match is highlighted (no clicking a result in
   the pane), then press Esc — and the document is showing somewhere else entirely, so it looks like
