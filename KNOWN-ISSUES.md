@@ -33,6 +33,11 @@
   it), and a stamp is only ever recorded with the content it belongs to (`ReadDisk` takes it through
   the read's own handle, before reading). See "The 'changed on disk' prompt" in `design.md`.
 - **Regression test:** `tests/ExternalChange` (every prompt choice, locally and over SMB).
+- **Hardened after review (Opus and Fable):** other ways an outside write could still be overwritten
+  without a question are closed as well. Keep mine covers only the version it was asked about. A
+  stamp is settled only once its choice succeeded. The blind 1.5 s after each save is gone. Saving
+  checks the file first (`ReadyToOverwrite`). Questions come one at a time. Each has a test that
+  fails without it. See "The 'changed on disk' prompt" in `design.md`.
 
 ### Outside changes stopped being noticed after a network drop (fixed 2026-10-20, 1.0.29)
 - **Symptom (by inspection; reproduced over SMB):** once a network drive dropped (either computer
@@ -45,6 +50,11 @@
   `design.md`.
 - **Regression test:** `tests/ExternalChange -- --share` (deleting the watched folder over SMB kills
   the watcher the same way).
+- **Hardened after review:** a watcher that can't be made at all (a document opened or recovered
+  while its share is offline) now gets the same retries. A retry no longer installs a watcher whose
+  first read failed while it was being started. Repeated quick failures keep backing off. That
+  install race has no test: the failure it needs (a first read that can't be started) can't be
+  produced on demand.
 
 ### Pre-rename data migration could be skipped (latent; fixed 2026-10-20, 1.0.29)
 - **By inspection:** the one-time move of `%LOCALAPPDATA%\TreeNotepad` to `NotepadRedo` ran in

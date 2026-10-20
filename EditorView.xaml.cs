@@ -56,10 +56,11 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
     private FileSystemWatcher? _watcher;
     private readonly DispatcherTimer _watchDebounce;   // coalesce bursts of FS events
     /// <summary>The stamp of the disk version this document was last reconciled with — loaded,
-    /// saved, or answered for at the prompt. It must belong to that version's *content*: a stamp
-    /// newer than the content marks a change nobody has seen as already handled.</summary>
-    private DiskStamp _diskStamp;
-    private DateTime _suppressUntil;                   // ignore watcher events until this time (our own writes)
+    /// saved, or answered for at the prompt — or null when it hasn't been reconciled with any (a file
+    /// that doesn't exist yet, or a recovered document whose file has moved on). It must belong to
+    /// that version's *content*: a stamp newer than the content marks a change nobody has seen as
+    /// already handled.</summary>
+    private DiskStamp? _diskStamp;
     private bool _resolving;                           // an external-change prompt is on screen
 
     // ----- line endings (per document) -----
@@ -71,6 +72,7 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
     private LineEndingStyle _savedLineEnding = LineEndingStyle.Crlf;   // what is on disk right now
     private bool _loadedMixed;                                         // the file itself was mixed
     private DiffMergeWindow? _mergeWindow;             // open merge viewer (so re-changes route to it)
+    private string? _mergeDiskText;                    // the on-disk version that viewer was last given
     private FileStream? _lockStream;                   // deny-write lock held while open (optional)
     private string? _lockedPath;                       // path _lockStream currently holds
 
@@ -253,7 +255,8 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
         // existed no longer match for LF files and those documents start from a fresh root once.
         if (!(AppSettings.Current.PersistHistory && TryRestoreHistory(path, text)))
             ResetTree(text);
-        OnPathEstablished(disk.Stamp);
+        _diskStamp = disk.Stamp;   // the read's own stamp, not a probe that could see a later write
+        OnPathEstablished();
     }
 
     /// <summary>
@@ -269,7 +272,8 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
         _savedText = "";
         DeleteRecovery();
         ResetTree("");
-        OnPathEstablished();   // watch the folder for the file's (future) creation; no lock/stamp yet
+        _diskStamp = null;     // nothing on disk to reconcile with yet
+        OnPathEstablished();   // watch the folder for the file's (future) creation; no lock yet
     }
 
     /// <summary>
@@ -712,8 +716,15 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
 
     // ===================== Save =====================
 
-    /// <summary>Returns true when the document ends up saved (false if the user cancelled).</summary>
-    public bool Save(bool saveAs)
+    /// <summary>Write the document to its file, or to one the user picks.</summary>
+    /// <param name="saveAs">Ask for a file even though the document has one.</param>
+    /// <param name="askIfChangedOnDisk">What to do when the file has been changed elsewhere since
+    /// this document last reconciled with it (see <see cref="ReadyToOverwrite"/>): ask the usual
+    /// question, or — for the non-interactive quit — leave the file alone and return false.</param>
+    /// <returns>Whether the document ends up matching the file: saved, or (when the user chose to
+    /// reload at the "changed on disk" question) replaced by it. False if the user cancelled, the
+    /// write failed, or the file was left alone.</returns>
+    public bool Save(bool saveAs, bool askIfChangedOnDisk = true)
     {
         CommitPending();
         var path = _currentPath;
@@ -731,14 +742,19 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
 
         try
         {
-            BeginSelfWrite();          // stop the watcher mistaking our own write for an external one
+            if (PathsEqual(path, _currentPath) && !ReadyToOverwrite(askIfChangedOnDisk))
+                return !IsDirty;
             WriteTextToFile(path, Editor.Text);
             _currentPath = path;
             _savedText = Editor.Text;
             _savedLineEnding = _lineEnding;
             _lastAutosave = null;
             DeleteRecovery();
-            OnPathEstablished();       // (re)start the watcher, capture the new disk stamp, (re)apply the lock
+            // Our own write, so probing now is how it becomes the version we know. Should the stamp
+            // still change after this (an SMB server settling the time when the handle closes), the
+            // watcher's check finds the content equal to _savedText and adopts it without asking.
+            _diskStamp = ProbeDisk();
+            OnPathEstablished();       // (re)start the watcher, (re)apply the lock
             PersistHistory();          // write the whole history sidecar (now anchored to the saved text)
             RaiseAll();
             return true;
@@ -749,6 +765,40 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
                 MessageBoxButton.OK, MessageBoxImage.Error);
             return false;
         }
+    }
+
+    /// <summary>
+    /// The last line of defence against overwriting someone else's work: before writing over the
+    /// file, check it still holds a version this document has reconciled with. The watcher can miss
+    /// a change (a share that sends no change notifications, a write landing while the watcher is
+    /// being restarted, a folder that couldn't be watched at all), and a miss must not become a
+    /// silent overwrite.
+    /// </summary>
+    /// <param name="ask">Raise the usual question if it doesn't; false refuses instead.</param>
+    /// <returns>Whether to go ahead and write. After the question, only Keep mine, or saving the disk
+    /// version to another file first, goes ahead, and only if nothing newer landed meanwhile (then the
+    /// re-check asks about that, and the user saves again).</returns>
+    private bool ReadyToOverwrite(bool ask)
+    {
+        // The merge viewer saving its result *is* the answer to a question; and a user who turned
+        // watching off has asked not to be asked.
+        if (_resolving || !AppSettings.Current.WatchExternalChanges)
+            return true;
+        var stamp = ProbeDisk();
+        if (stamp is null || stamp == _diskStamp)
+            return true;   // nothing new, or no file to overwrite (or none that opens: the write reports it)
+        DiskVersion disk;
+        try { disk = ReadDisk(_currentPath!); }
+        catch { return true; }
+        if (HoldsNothingNew(disk))
+        {
+            _diskStamp = disk.Stamp;
+            return true;
+        }
+        if (!ask)
+            return false;
+        int choice = ResolveExternalChange(disk);
+        return choice is 1 or 3 && _diskStamp == ProbeDisk();
     }
 
     /// <summary>Prompt to save when dirty. Returns false only if the user cancels.</summary>
@@ -1314,17 +1364,12 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
 
     /// <summary>
     /// Called whenever this document acquires or changes its on-disk path (open / save / transfer /
-    /// recover): record the disk stamp so our own write isn't mistaken for an external change,
-    /// (re)start the file-system watcher, and apply (or release) the deny-write lock.
+    /// recover): (re)start the file-system watcher and apply (or release) the deny-write lock. Each
+    /// caller records <see cref="_diskStamp"/> first, since only it knows where that stamp comes from:
+    /// the read it just made, a probe right after its own write, or nothing yet.
     /// </summary>
-    /// <param name="read">The stamp of the version the document was just reconciled with, from
-    /// <see cref="ReadDisk"/>. Null probes the file instead, which is right only after our own write
-    /// (or for a file that doesn't exist yet). After a read, probing would be wrong: a write landing
-    /// in between would be recorded as seen without ever being loaded.</param>
-    private void OnPathEstablished(DiskStamp? read = null)
+    private void OnPathEstablished()
     {
-        if ((read ?? ProbeDisk()) is DiskStamp stamp)
-            _diskStamp = stamp;   // else it stays as-is; a spurious prompt is better than a crash
         ApplyFileLock();
         StartWatching();
     }
@@ -1335,12 +1380,16 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
     {
         try
         {
-            using var h = File.OpenHandle(_currentPath!, FileMode.Open, FileAccess.Read,
-                FileShare.ReadWrite | FileShare.Delete);
+            using var h = OpenShared(_currentPath!);
             return StampOf(h);
         }
         catch { return null; }
     }
+
+    /// <summary>Open the file for reading without locking out other readers or writers. Probes and
+    /// reads both open it this way, so their stamps come from the same kind of handle.</summary>
+    private static SafeFileHandle OpenShared(string path) =>
+        File.OpenHandle(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
 
     /// <summary>Every stamp is taken through an open handle, because <see cref="ReadDisk"/> must take
     /// its stamp from the handle it reads through, and a stamp from a path query compared against one
@@ -1348,19 +1397,48 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
     private static DiskStamp StampOf(SafeFileHandle h) =>
         new(File.GetLastWriteTimeUtc(h), RandomAccess.GetLength(h));
 
-    /// <summary>Mark a short window during which watcher events are treated as our own write.</summary>
-    private void BeginSelfWrite() => _suppressUntil = DateTime.UtcNow + TimeSpan.FromSeconds(1.5);
+    /// <summary>
+    /// Whether <paramref name="disk"/> holds nothing this document doesn't already have: what it last
+    /// loaded or saved, or exactly what is in the editor. Writing over such a version loses nobody's
+    /// work, so it is adopted without a word. That covers our own save reported late, a rewrite with
+    /// identical content (a touch, a sync client fetching the file again), and another program
+    /// saving the very text we have. Both sides are compared in the editor's line-ending form, since
+    /// a paste can leave the buffer itself mixed.
+    /// </summary>
+    private bool HoldsNothingNew(DiskVersion disk) =>
+        disk.Text == LineEndings.ToEditor(_savedText) || disk.Text == LineEndings.ToEditor(Editor.Text);
 
     /// <summary>Bumped whenever watching is started or stopped, so a <see cref="ResumeWatching"/>
     /// still waiting to retry can tell that the watcher it was replacing is no longer wanted.</summary>
     private int _watchGeneration;
 
+    /// <summary>Failed attempts so far in the current run of retries; sets the next retry's delay.</summary>
+    private int _resumeAttempt;
+
+    /// <summary>When the current watcher was installed, to tell a watcher that keeps dying soon after
+    /// it starts from one that ran for a while.</summary>
+    private DateTime _watcherInstalledUtc;
+
+    /// <summary>A watcher that failed before <see cref="ResumeWatching"/> could install it (see
+    /// <see cref="OnWatcherError"/>).</summary>
+    private FileSystemWatcher? _failedBeforeInstall;
+
     private void StartWatching()
     {
         StopWatching();
+        _resumeAttempt = 0;
         if (string.IsNullOrEmpty(_currentPath) || !AppSettings.Current.WatchExternalChanges)
             return;
-        _watcher = CreateWatcher(_currentPath);
+        if (CreateWatcher(_currentPath) is FileSystemWatcher w)
+            InstallWatcher(w);
+        else
+            ResumeWatching();   // the folder can't be reached yet (an offline share, say): keep trying
+    }
+
+    private void InstallWatcher(FileSystemWatcher w)
+    {
+        _watcher = w;
+        _watcherInstalledUtc = DateTime.UtcNow;
     }
 
     private void StopWatching()
@@ -1432,33 +1510,54 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
     /// clears that flag when a pending read fails, but not when a new read can't be started.</remarks>
     private void OnWatcherError(FileSystemWatcher w, Exception error)
     {
+        bool overflow = error is InternalBufferOverflowException;
         if (w != _watcher)
-            return;   // already replaced or stopped
-        if (error is InternalBufferOverflowException)
+        {
+            // Either one already replaced or stopped, or one ResumeWatching made on the thread pool
+            // and has yet to install: .NET raises the error for a first read that can't be started
+            // from inside EnableRaisingEvents, so it gets here first. Leave word, or it would be
+            // installed dead.
+            if (!overflow)
+                _failedBeforeInstall = w;
+            return;
+        }
+        if (overflow)
         {
             QueueExternalCheck();   // still watching, but some events were dropped
             return;
         }
+        // A watcher that dies again soon after it started (a share that keeps dropping, a server
+        // that refuses notifications) carries on the back-off rather than starting it over.
+        bool diedYoung = DateTime.UtcNow - _watcherInstalledUtc < TimeSpan.FromMinutes(2);
         StopWatching();
+        if (!diedYoung)
+            _resumeAttempt = 0;
         ResumeWatching();
     }
 
-    /// <summary>Recreate the watcher after it died, retrying with a growing delay (capped at a
-    /// minute) for as long as the folder can't be reached, then check the file for anything written
-    /// while nobody was watching. Each attempt runs on the thread pool: creating a watcher on an
-    /// unreachable share blocks until the network gives up, which can take tens of seconds.</summary>
+    /// <summary>Recreate the watcher after it died or couldn't be made, retrying with a growing delay
+    /// (capped at a minute) for as long as the folder can't be reached, then check the file for
+    /// anything written while nobody was watching. Each attempt runs on the thread pool: creating a
+    /// watcher on an unreachable share blocks until the network gives up, which can take tens of
+    /// seconds.</summary>
     private async void ResumeWatching()
     {
         int generation = _watchGeneration;
         string? path = _currentPath;
         if (string.IsNullOrEmpty(path))
             return;
-        for (int attempt = 0; ; attempt++)
+        while (true)
         {
-            await Task.Delay(TimeSpan.FromSeconds(Math.Min(60, 1 << Math.Min(attempt, 6))));
+            await Task.Delay(TimeSpan.FromSeconds(Math.Min(60, 1 << Math.Min(_resumeAttempt++, 6))));
             if (generation != _watchGeneration)
                 return;   // the path changed, the setting was turned off, or the view was closed
             var w = await Task.Run(() => CreateWatcher(path));
+            if (w is not null && w == _failedBeforeInstall)
+            {
+                w.Dispose();
+                w = null;
+            }
+            _failedBeforeInstall = null;
             if (generation != _watchGeneration)
             {
                 w?.Dispose();
@@ -1466,7 +1565,7 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
             }
             if (w is null)
                 continue;
-            _watcher = w;
+            InstallWatcher(w);
             QueueExternalCheck();
             return;
         }
@@ -1478,60 +1577,81 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
     /// </summary>
     private void HandleExternalChange()
     {
-        if (string.IsNullOrEmpty(_currentPath))
+        // The setting is checked here as well as when watching starts: a check can still be queued
+        // (by a recovered document, say) after watching was turned off, or with it off from the start.
+        if (string.IsNullOrEmpty(_currentPath) || !AppSettings.Current.WatchExternalChanges)
             return;
         // The prompt is up. It answers for the file as it stands when the user answers and checks
         // again when it closes, so there is nothing to do until then. A merge viewer opened from it
         // is the exception: it takes each new version live.
         if (_resolving && _mergeWindow is null)
             return;
+        // Another document is asking. One question at a time: nested prompts come up in the reverse
+        // of the order they were raised in, over tabs that aren't theirs. Look again shortly.
+        if (!_resolving && _promptsOpen > 0)
+        {
+            QueueExternalCheck();
+            return;
+        }
 
         if (ProbeDisk() is not DiskStamp stamp)
             return;   // deleted/renamed away (keep our buffer; a Save re-creates it), or mid-write
         if (stamp == _diskStamp)
             return;   // no real change since we last looked
-        if (DateTime.UtcNow < _suppressUntil)
-        {
-            _diskStamp = stamp;   // our own save — adopt the new stamp
-            return;
-        }
 
         DiskVersion disk;
         try { disk = ReadDisk(_currentPath); }
         catch { return; }   // mid-write by the other program; the next event will settle
 
-        // Compare the *content*. A file rewritten with different line endings is a different pile of
-        // bytes but the same document, and prompting for it was worse than useless: the resolution
-        // dialog offered five ways to fix a difference the diff viewer could not even show, because
-        // it normalises endings before comparing lines. ReadDisk has adopted the file's new style, so
-        // our next save agrees with whatever rewrote it; say nothing.
-        if (disk.Text == Editor.Text)
+        // A merge viewer is open for this document: its on-disk side must follow the file, even to a
+        // version that happens to equal ours.
+        if (_mergeWindow is not null)
+        {
+            _diskStamp = disk.Stamp;
+            if (disk.Text != _mergeDiskText)
+            {
+                _mergeDiskText = disk.Text;
+                _mergeWindow.NotifyDiskChanged(disk.Text);
+            }
+            return;
+        }
+
+        // Compare *content*: a file rewritten with different line endings, or rewritten with what it
+        // already held, is a different stamp but no news. ReadDisk has adopted the file's line-ending
+        // style, so our next save agrees with whatever rewrote it.
+        if (HoldsNothingNew(disk))
         {
             _diskStamp = disk.Stamp;
             RaiseAll();   // the indicator may have just changed
             return;
         }
 
-        // A merge viewer is already open for this document — fold the new version into it.
-        if (_mergeWindow is not null)
-        {
-            _diskStamp = disk.Stamp;
-            _mergeWindow.NotifyDiskChanged(disk.Text);
-            return;
-        }
-
         ResolveExternalChange(disk);
     }
 
+    /// <summary>How many documents' "changed on disk" prompts are being answered right now, across
+    /// the process (see <see cref="HandleExternalChange"/>).</summary>
+    private static int _promptsOpen;
+
     /// <summary>The five-way "the file changed on disk" resolution prompt.</summary>
-    /// <param name="seen">The version that raised the prompt. The answer is applied to the file as it
-    /// is when the user gives it, which can be newer: the question may sit on screen for hours while
-    /// another machine goes on saving. This one stands in only if the file can't be read by then.</param>
-    private void ResolveExternalChange(DiskVersion seen)
+    /// <param name="seen">The version that raised the prompt. Reload, merge and the two "save to
+    /// another file" choices act on the file as it is when the user answers, which can be newer: the
+    /// question may sit on screen for hours while another machine goes on saving. Keep mine (or
+    /// closing the question) settles only this version; anything newer arrived unseen, so it gets a
+    /// question of its own.</param>
+    /// <returns>The choice: 0 reload, 1 keep mine, 2 save mine then reload, 3 save the disk version
+    /// then keep mine, 4 merge, -1 dismissed.</returns>
+    private int ResolveExternalChange(DiskVersion seen)
     {
         _resolving = true;
+        _promptsOpen++;
+        int choice;
         try
         {
+            // The question is about this document: put it in front, rather than behind the dialog.
+            if (Parent is TabItem tab)
+                tab.IsSelected = true;
+
             string name = string.IsNullOrEmpty(_currentPath) ? "This file" : Path.GetFileName(_currentPath!);
             bool dirty = IsDirty;
             var choices = new List<string>
@@ -1543,32 +1663,61 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
                 "Show a diff and merge\u2026",
             };
             var owner = Window.GetWindow(this);
-            int choice = ThemedDialog.ShowChoices(owner,
+            choice = ThemedDialog.ShowChoices(owner,
                 $"\u201c{name}\u201d was changed by another program.",
                 "File changed on disk", choices, MessageBoxImage.Warning, defaultIndex: dirty ? 4 : 0);
 
-            DiskVersion disk;
-            try { disk = ReadDisk(_currentPath!); }
-            catch { disk = seen; }   // its own stamp, so if the file has moved on the re-check below sees it
-            // Whichever the choice, this is the version it settles — including Keep mine, which
-            // overrules the file as it is now, not just the part of it that raised the question.
-            _diskStamp = disk.Stamp;
-
+            // A stamp is settled only once its choice has been carried out. If saving a copy fails, the
+            // change stays unanswered and the re-check below asks again.
             switch (choice)
             {
-                case 0: ReloadFromDisk(disk); break;
-                case 1: break;   // keep mine
-                case 2: if (SaveSnapshot("mine", Editor.Text) is not null) ReloadFromDisk(disk); break;
-                case 3: SaveSnapshot("disk", disk.Text); break;
-                case 4: OpenMerge(disk.Text); break;
-                default: break;  // dismissed — keep mine
+                case 0:
+                    ReloadFromDisk(Newest(seen));
+                    break;
+                case 2:
+                    if (SaveSnapshot("mine", Editor.Text) is not null)
+                        ReloadFromDisk(Newest(seen));
+                    break;
+                case 3:
+                {
+                    var disk = Newest(seen);
+                    if (SaveSnapshot("disk", disk.Text) is not null)
+                        _diskStamp = disk.Stamp;
+                    break;
+                }
+                case 4:
+                {
+                    var disk = Newest(seen);
+                    _diskStamp = disk.Stamp;
+                    OpenMerge(disk.Text);
+                    break;
+                }
+                default:   // keep mine, or dismissed
+                    _diskStamp = seen.Stamp;
+                    break;
             }
         }
-        finally { _resolving = false; }
+        finally
+        {
+            _resolving = false;
+            _promptsOpen--;
+        }
 
         // Catch anything written since the answer was applied, including while a follow-up dialog
         // (a "Saved to" notice, the merge viewer) was on screen.
         Dispatcher.BeginInvoke(new Action(HandleExternalChange), DispatcherPriority.Background);
+        return choice;
+    }
+
+    /// <summary>The file as it is now: <paramref name="seen"/> again if it hasn't changed since (no
+    /// need to read it twice), else a fresh read, falling back to <paramref name="seen"/> if that
+    /// fails. The fallback keeps its own stamp, so a file that has moved on is still noticed.</summary>
+    private DiskVersion Newest(DiskVersion seen)
+    {
+        if (ProbeDisk() == seen.Stamp)
+            return seen;
+        try { return ReadDisk(_currentPath!); }
+        catch { return seen; }
     }
 
     /// <summary>Open the side-by-side merge viewer and apply its outcome.</summary>
@@ -1577,8 +1726,13 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
         var owner = Window.GetWindow(this);
         var win = new DiffMergeWindow(owner, _currentPath ?? "", Editor.Text, diskText, _lineEnding);
         _mergeWindow = win;
+        _mergeDiskText = diskText;
         try { win.ShowDialog(); }
-        finally { _mergeWindow = null; }
+        finally
+        {
+            _mergeWindow = null;
+            _mergeDiskText = null;
+        }
 
         if (win.Saved && win.ResultText is string merged)
         {
@@ -1600,7 +1754,7 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
         // The style was adopted when the file was read (AdoptDiskLineEnding); nothing to do here.
         DeleteRecovery();
         ResetTree(disk.Text);
-        _diskStamp = disk.Stamp;   // not a fresh probe: see OnPathEstablished
+        _diskStamp = disk.Stamp;   // the read's own stamp, not a probe that could see a later write
         // The content changed under us, so the old history no longer reconstructs it — overwrite the
         // sidecar with the fresh (single-root) tree anchored to the new disk text.
         PersistHistory();
@@ -1749,13 +1903,10 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
     /// </summary>
     private void EstablishPathForForeignText(DiskVersion? disk)
     {
-        if (disk is not null && disk.Text == _savedText)
-        {
-            OnPathEstablished(disk.Stamp);
-            return;
-        }
-        OnPathEstablished(default(DiskStamp));   // matches no real file
-        QueueExternalCheck();
+        _diskStamp = disk is not null && HoldsNothingNew(disk) ? disk.Stamp : null;
+        OnPathEstablished();
+        if (_diskStamp is null)
+            QueueExternalCheck();
     }
 
     /// <summary>

@@ -11,6 +11,7 @@
 //                                                           \\localhost\<drive>$ (SMB) while the
 //                                                           writer goes straight to the disk, the way
 //                                                           another machine's writes reach a share
+//   ... -- --filter=merge                                   only the tests whose name contains "merge"
 //
 // Exit code 0 when every test passes.
 
@@ -25,6 +26,8 @@ internal static class Program
 {
     private const string PromptTitle = "File changed on disk";
     private const string SavedTitle = "Saved";
+    private const string SaveFailedTitle = "Save failed";
+    private const string ChangedAgainTitle = "File changed again";   // the merge viewer's own question
 
     // Prompt buttons, in the order ResolveExternalChange lists them.
     private const int Reload = 0, KeepMine = 1, SaveMineThenReload = 2, SaveDiskThenKeepMine = 3, Merge = 4;
@@ -45,7 +48,7 @@ internal static class Program
     /// <param name="Dir">The folder the test owns (on the writer's side), deleted afterwards.</param>
     private sealed record Doc(EditorView View, Window Host, string EditorPath, string WriterPath, string Dir)
     {
-        public string Text => View.SerializeDocument().CurrentText;
+        public string Text => TextOf(View);
         public void WriteExternally(string text) => File.WriteAllText(WriterPath, text);
     }
 
@@ -58,15 +61,25 @@ internal static class Program
     private static readonly Test[] Tests =
     {
         new("Reload loads the newest version, not the one that raised the prompt", ReloadLoadsNewest),
-        new("Keep mine covers a change that landed while the prompt was up", KeepMineCoversNewest),
+        new("Keep mine asks again about a version that landed while the prompt was up", KeepMineAsksAboutNewer),
         new("Saving the disk version saves the newest one", SaveDiskSavesNewest),
+        new("A copy that fails to save leaves the change unanswered", FailedCopyLeavesChangeUnanswered),
         new("Saving mine, then reloading, reloads the newest version", SaveMineThenReloadLoadsNewest),
         new("The merge viewer opens on the newest version", MergeShowsNewest),
+        new("The merge viewer follows the file even back to the editor's own text", MergeFollowsDiskToOurText),
+        new("Only one document asks at a time", OneQuestionAtATime),
         new("Changes are still noticed after the watcher fails", WatcherRecoversFromError, SmbOnly: true),
+        new("A folder that couldn't be watched is watched once it appears", WatchedOnceFolderAppears,
+            d => { Directory.Delete(d.Dir, recursive: true); Recover(d); }),
         new("A recovered document whose file was edited since the crash raises the prompt",
             RecoveredAfterEditPrompts, d => { d.WriteExternally(V1); Recover(d); }),
-        new("A recovered document whose file is untouched raises no prompt",
-            RecoveredUntouchedStaysQuiet, Recover),
+        new("A recovered document whose file is untouched raises no prompt", RecoveredUntouchedStaysQuiet, Recover),
+        new("Rewriting the file with what we last saved raises no prompt", RewriteWithSavedTextStaysQuiet, Recover),
+        new("With watching off, a recovered document raises no prompt", WatchingOffStaysQuiet,
+            d => { AppSettings.Current.WatchExternalChanges = false; d.WriteExternally(V1); Recover(d); }),
+        new("Saving over a change not yet reported asks first", SavingOverUnreportedChangeAsks, Recover),
+        new("A save that may not ask leaves a changed file alone", QuietSaveLeavesChangedFileAlone, Recover),
+        new("A change written just after our own save is noticed", ChangeJustAfterOurSaveIsNoticed, Recover),
     };
 
     /// <summary>Recover the document from a crash snapshot taken while the file held <see cref="V0"/>.</summary>
@@ -81,14 +94,7 @@ internal static class Program
         string data = Path.Combine(Path.GetTempPath(), "nr-extchange-data-" + Guid.NewGuid().ToString("N")[..8]);
         Environment.SetEnvironmentVariable(AppPaths.OverrideVariable, data);
 
-        // In memory only: the other program must be able to write, so no deny-write lock, and no
-        // autosave or persisted history to clutter the scratch data folder.
-        var s = AppSettings.Current;
-        s.WatchExternalChanges = true;
-        s.LockFileWhileOpen = false;
-        s.AutosaveSeconds = 0;
-        s.PersistHistory = false;
-
+        string filter = args.FirstOrDefault(a => a.StartsWith("--filter="))?["--filter=".Length..] ?? "";
         var app = new Application { ShutdownMode = ShutdownMode.OnExplicitShutdown };
         int failures = 0;
         app.Dispatcher.InvokeAsync(async () =>
@@ -98,6 +104,7 @@ internal static class Program
                 foreach (var loc in Locations(args.Contains("--share")))
                     foreach (var test in Tests)
                         if ((!test.SmbOnly || loc.Name == "smb")
+                            && test.Name.Contains(filter, StringComparison.OrdinalIgnoreCase)
                             && !await Run($"[{loc.Name}] {test.Name}", test, loc.WriterDir, loc.EditorDir))
                             failures++;
             }
@@ -109,6 +116,18 @@ internal static class Program
 
         Console.WriteLine(failures == 0 ? "PASS" : $"FAIL: {failures} test(s)");
         return failures == 0 ? 0 : 1;
+    }
+
+    /// <summary>The settings every test starts from (in memory only): the other program must be able
+    /// to write, so no deny-write lock, and no autosave or persisted history to clutter the scratch
+    /// data folder.</summary>
+    private static void ResetSettings()
+    {
+        var s = AppSettings.Current;
+        s.WatchExternalChanges = true;
+        s.LockFileWhileOpen = false;
+        s.AutosaveSeconds = 0;
+        s.PersistHistory = false;
     }
 
     /// <summary>The folders to run every test in: a local one, and optionally one reached over SMB.
@@ -132,20 +151,14 @@ internal static class Program
 
     private static async Task<bool> Run(string name, Test test, string writerRoot, string editorRoot)
     {
+        ResetSettings();
         string leaf = "nr-extchange-" + Guid.NewGuid().ToString("N")[..8];
         string dir = Path.Combine(writerRoot, leaf);
         Directory.CreateDirectory(dir);
         string writerPath = Path.Combine(dir, "doc.txt");
         File.WriteAllText(writerPath, V0);
 
-        var view = new EditorView();
-        var host = new Window
-        {
-            Content = view, Width = 900, Height = 600,
-            WindowStartupLocation = WindowStartupLocation.Manual, Left = -32000, Top = -32000,
-            ShowActivated = false, ShowInTaskbar = false,
-        };
-        host.Show();
+        var (view, host) = Host();
         var doc = new Doc(view, host, Path.Combine(editorRoot, leaf, "doc.txt"), writerPath, dir);
         try
         {
@@ -155,21 +168,34 @@ internal static class Program
             Console.WriteLine($"ok   {name}");
             return true;
         }
-        catch (TestFailure f)
+        catch (Exception ex)
         {
-            Console.WriteLine($"FAIL {name}\n     {f.Message}");
+            string why = ex is TestFailure ? ex.Message : ex.ToString();
+            Console.WriteLine($"FAIL {name}\n     {why}");
             return false;
         }
         finally
         {
             // A failure can leave a prompt open, with the view's handler parked inside it.
-            foreach (var w in Application.Current.Windows.OfType<Window>().Where(w => w != host).ToList())
-                w.Close();
-            await Task.Delay(300);
+            await CloseDialogs();
             view.Dispose();
             host.Close();
             try { Directory.Delete(dir, recursive: true); } catch { }
         }
+    }
+
+    /// <summary>A blank editor in a window of its own, parked off-screen.</summary>
+    private static (EditorView View, Window Host) Host()
+    {
+        var view = new EditorView();
+        var host = new Window
+        {
+            Content = view, Width = 900, Height = 600,
+            WindowStartupLocation = WindowStartupLocation.Manual, Left = -32000, Top = -32000,
+            ShowActivated = false, ShowInTaskbar = false,
+        };
+        host.Show();
+        return (view, host);
     }
 
     // ===================== The tests =====================
@@ -184,11 +210,14 @@ internal static class Program
         await ExpectLaterChangesStillNoticed(d);
     }
 
-    private static async Task KeepMineCoversNewest(Doc d)
+    /// <summary>Keep mine answers for the version it was asked about. The one that landed while the
+    /// question was up was never seen, so overwriting it on the next save needs a question of its own.</summary>
+    private static async Task KeepMineAsksAboutNewer(Doc d)
     {
         var prompt = await RaisePromptThenWriteAgain(d);
         Choose(prompt, KeepMine);
-        await ExpectNoPrompt("after Keep mine, which answers for the file as it was when answered");
+        Choose(await ExpectPrompt("for the version that landed while the first question was up"), KeepMine);
+        await ExpectNoPrompt("after Keep mine was given for the newest version too");
         Expect(d.Text == V0, $"Keep mine left {Show(d.Text)} in the editor, not {Show(V0)}");
         await ExpectLaterChangesStillNoticed(d);
     }
@@ -197,10 +226,27 @@ internal static class Program
     {
         var prompt = await RaisePromptThenWriteAgain(d);
         Choose(prompt, SaveDiskThenKeepMine);
-        await DismissSavedNotice();
+        await DismissNotice(SavedTitle);
         string saved = File.ReadAllText(Directory.GetFiles(d.Dir, "doc.disk-*.txt").Single());
         Expect(saved == V2, $"the disk version was saved as {Show(saved)}, but the file holds {Show(V2)}");
         await ExpectNoPrompt("after saving the disk version");
+        Expect(d.Text == V0, $"the editor holds {Show(d.Text)}, not the kept {Show(V0)}");
+        await ExpectLaterChangesStillNoticed(d);
+    }
+
+    /// <summary>The copy is named after the second it is made; turning the next half minute's names
+    /// into folders makes writing it fail.</summary>
+    private static async Task FailedCopyLeavesChangeUnanswered(Doc d)
+    {
+        d.WriteExternally(V1);
+        var prompt = await ExpectPrompt("after the external write");
+        var now = DateTime.Now;
+        for (int s = 0; s < 30; s++)
+            Directory.CreateDirectory(Path.Combine(d.Dir, $"doc.disk-{now.AddSeconds(s):yyyyMMdd-HHmmss}.txt"));
+        Choose(prompt, SaveDiskThenKeepMine);
+        await DismissNotice(SaveFailedTitle);
+        Choose(await ExpectPrompt("again, since the copy the answer depended on was never made"), KeepMine);
+        await ExpectNoPrompt("after Keep mine");
         Expect(d.Text == V0, $"the editor holds {Show(d.Text)}, not the kept {Show(V0)}");
         await ExpectLaterChangesStillNoticed(d);
     }
@@ -209,7 +255,7 @@ internal static class Program
     {
         var prompt = await RaisePromptThenWriteAgain(d);
         Choose(prompt, SaveMineThenReload);
-        await DismissSavedNotice();
+        await DismissNotice(SavedTitle);
         string mine = File.ReadAllText(Directory.GetFiles(d.Dir, "doc.mine-*.txt").Single());
         Expect(mine == V0, $"my version was saved as {Show(mine)}, not {Show(V0)}");
         await ExpectNoPrompt("after saving mine and reloading");
@@ -221,21 +267,61 @@ internal static class Program
     {
         var prompt = await RaisePromptThenWriteAgain(d);
         Choose(prompt, Merge);
-        DiffMergeWindow? merge = null;
-        for (int waited = 0; merge is null && waited < 5_000; waited += 50)
-        {
-            await Task.Delay(50);
-            merge = Application.Current.Windows.OfType<DiffMergeWindow>().FirstOrDefault(w => w.IsVisible);
-        }
-        Expect(merge is not null, "the merge viewer never opened");
-        var right = ((RichTextBox)merge!.FindName("RightBox")).Document;
-        string onDisk = new TextRange(right.ContentStart, right.ContentEnd).Text;
+        var merge = await ExpectMergeViewer();
+        string onDisk = OnDiskSide(merge);
         Expect(onDisk.Contains(V2.TrimEnd()) && !onDisk.Contains(V1.TrimEnd()),
             $"the viewer's on-disk side shows {Show(onDisk)}, but the file holds {Show(V2)}");
         merge.Close();   // without saving: the editor keeps its own text
         await ExpectNoPrompt("after closing the merge viewer");
         Expect(d.Text == V0, $"the editor holds {Show(d.Text)}, not its own {Show(V0)}");
         await ExpectLaterChangesStillNoticed(d);
+    }
+
+    private static async Task MergeFollowsDiskToOurText(Doc d)
+    {
+        d.WriteExternally(V1);
+        Choose(await ExpectPrompt("after the external write"), Merge);
+        var merge = await ExpectMergeViewer();
+        d.WriteExternally(V0);   // back to exactly what the editor holds
+        Choose(await ExpectWindow(ChangedAgainTitle, "in the merge viewer for the file changing back"), 0);
+        await Task.Delay(300);
+        string onDisk = OnDiskSide(merge);
+        Expect(onDisk.Contains(V0.TrimEnd()) && !onDisk.Contains(V1.TrimEnd()),
+            $"the viewer's on-disk side shows {Show(onDisk)}, but the file holds {Show(V0)}");
+        merge.Close();
+        await ExpectNoPrompt("after closing the merge viewer");
+        await ExpectLaterChangesStillNoticed(d);
+    }
+
+    /// <summary>Two documents whose files change together: their questions must come one after the
+    /// other, not stacked on top of each other.</summary>
+    private static async Task OneQuestionAtATime(Doc d)
+    {
+        string otherWriter = Path.Combine(d.Dir, "other.txt");
+        File.WriteAllText(otherWriter, V0);
+        var (other, otherHost) = Host();
+        try
+        {
+            other.LoadFile(Path.Combine(Path.GetDirectoryName(d.EditorPath)!, "other.txt"));
+            await Task.Delay(500);
+            d.WriteExternally(V1);
+            File.WriteAllText(otherWriter, V1);
+            var first = await ExpectPrompt("after both files changed");
+            await Task.Delay(1500);   // time for the second document's check to come due
+            int open = Application.Current.Windows.OfType<Window>().Count(w => w.Title == PromptTitle && w.IsVisible);
+            Expect(open == 1, $"{open} questions were on screen at once");
+            Choose(first, Reload);
+            Choose(await ExpectPrompt("for the second document once the first was answered"), Reload);
+            await ExpectNoPrompt("after both were answered");
+            Expect(d.Text == V1 && TextOf(other) == V1,
+                $"the documents hold {Show(d.Text)} and {Show(TextOf(other))}, not {Show(V1)}");
+        }
+        finally
+        {
+            await CloseDialogs();
+            other.Dispose();
+            otherHost.Close();
+        }
     }
 
     /// <summary>Over SMB, deleting the watched folder stops the watcher with an error, which is the
@@ -248,6 +334,18 @@ internal static class Program
         Directory.CreateDirectory(d.Dir);
         d.WriteExternally(V1);
         Choose(await ExpectPrompt("for a change made while the watcher was down"), Reload);
+        await ExpectNoPrompt("after Reload");
+        Expect(d.Text == V1, $"Reload loaded {Show(d.Text)}, not {Show(V1)}");
+        await ExpectLaterChangesStillNoticed(d);
+    }
+
+    /// <summary>The document was recovered while its folder was missing (an offline share, as far as
+    /// the watcher can tell), so no watcher could be made at first.</summary>
+    private static async Task WatchedOnceFolderAppears(Doc d)
+    {
+        Directory.CreateDirectory(d.Dir);
+        d.WriteExternally(V1);
+        Choose(await ExpectPrompt("once the folder that couldn't be watched came back"), Reload);
         await ExpectNoPrompt("after Reload");
         Expect(d.Text == V1, $"Reload loaded {Show(d.Text)}, not {Show(V1)}");
         await ExpectLaterChangesStillNoticed(d);
@@ -266,6 +364,62 @@ internal static class Program
         await ExpectNoPrompt("for a recovered file nobody else has changed");
         Expect(d.Text == Mine, $"the recovered document holds {Show(d.Text)}, not {Show(Mine)}");
         Expect(d.View.IsDirty, "the recovered edit isn't marked unsaved");
+        await ExpectLaterChangesStillNoticed(d);
+    }
+
+    /// <summary>A touch, or a sync client fetching the file again: a new stamp, but the file holds
+    /// just what the document was last saved as, so overwriting it with the unsaved edits loses
+    /// nobody's work.</summary>
+    private static async Task RewriteWithSavedTextStaysQuiet(Doc d)
+    {
+        d.WriteExternally(V0);
+        await ExpectNoPrompt("for a file rewritten with the text it already held");
+        Expect(d.Text == Mine, $"the document holds {Show(d.Text)}, not its own {Show(Mine)}");
+        await ExpectLaterChangesStillNoticed(d);
+    }
+
+    private static async Task WatchingOffStaysQuiet(Doc d)
+    {
+        await ExpectNoPrompt("with watching for outside changes turned off");
+        Expect(d.Text == Mine, $"the recovered document holds {Show(d.Text)}, not {Show(Mine)}");
+    }
+
+    /// <summary>Save runs before the watcher's check has come due, so the watcher has reported
+    /// nothing: Save itself has to notice.</summary>
+    private static async Task SavingOverUnreportedChangeAsks(Doc d)
+    {
+        d.WriteExternally(V1);
+        var save = d.View.Dispatcher.InvokeAsync(() => d.View.Save(saveAs: false));
+        Choose(await ExpectPrompt("when saving over a change nobody had been asked about"), KeepMine);
+        Expect(await save.Task, "Save reported failure after Keep mine");
+        string onDisk = File.ReadAllText(d.WriterPath);
+        Expect(onDisk == Mine, $"the file holds {Show(onDisk)} after Keep mine and Save, not {Show(Mine)}");
+        await ExpectNoPrompt("after the save");
+        await ExpectLaterChangesStillNoticed(d);
+    }
+
+    /// <summary>The non-interactive quit saves this way; it then parks the document in recovery.</summary>
+    private static async Task QuietSaveLeavesChangedFileAlone(Doc d)
+    {
+        d.WriteExternally(V1);
+        Expect(!d.View.Save(saveAs: false, askIfChangedOnDisk: false), "the save reported success");
+        string onDisk = File.ReadAllText(d.WriterPath);
+        Expect(onDisk == V1, $"the file holds {Show(onDisk)}: the save overwrote {Show(V1)}");
+        Expect(d.Text == Mine, $"the document holds {Show(d.Text)}, not its own {Show(Mine)}");
+        Choose(await ExpectPrompt("for the change the save left alone"), Reload);
+        await ExpectNoPrompt("after Reload");
+        Expect(d.Text == V1, $"Reload loaded {Show(d.Text)}, not {Show(V1)}");
+    }
+
+    /// <summary>The editor used to treat any write in the 1.5 s after its own save as its own.</summary>
+    private static async Task ChangeJustAfterOurSaveIsNoticed(Doc d)
+    {
+        Expect(d.View.Save(saveAs: false), "the save failed");
+        await Task.Delay(300);
+        d.WriteExternally(V1);
+        Choose(await ExpectPrompt("for a change written just after our own save"), Reload);
+        await ExpectNoPrompt("after Reload");
+        Expect(d.Text == V1, $"Reload loaded {Show(d.Text)}, not {Show(V1)}");
         await ExpectLaterChangesStillNoticed(d);
     }
 
@@ -292,15 +446,17 @@ internal static class Program
         Expect(d.Text == V3, $"the second Reload loaded {Show(d.Text)}, not {Show(V3)}");
     }
 
-    private static async Task<Window> ExpectPrompt(string when)
+    private static Task<Window> ExpectPrompt(string when) => ExpectWindow(PromptTitle, when);
+
+    private static async Task<Window> ExpectWindow(string title, string when)
     {
         for (int waited = 0; waited < 10_000; waited += 50)
         {
-            if (Find(PromptTitle) is Window w)
+            if (Find(title) is Window w)
                 return w;
             await Task.Delay(50);
         }
-        throw new TestFailure($"no prompt appeared {when}");
+        throw new TestFailure($"no \"{title}\" window appeared {when}");
     }
 
     private static async Task ExpectNoPrompt(string when)
@@ -310,15 +466,37 @@ internal static class Program
             throw new TestFailure($"a prompt appeared {when}");
     }
 
-    private static async Task DismissSavedNotice()
+    private static async Task<DiffMergeWindow> ExpectMergeViewer()
     {
         for (int waited = 0; waited < 5_000; waited += 50)
         {
-            if (Find(SavedTitle) is Window w) { w.Close(); await Task.Delay(100); return; }
+            if (Application.Current.Windows.OfType<DiffMergeWindow>().FirstOrDefault(w => w.IsVisible) is { } merge)
+                return merge;
             await Task.Delay(50);
         }
-        throw new TestFailure("the \"Saved to\" notice never appeared");
+        throw new TestFailure("the merge viewer never opened");
     }
+
+    private static string OnDiskSide(DiffMergeWindow merge)
+    {
+        var doc = ((RichTextBox)merge.FindName("RightBox")).Document;
+        return new TextRange(doc.ContentStart, doc.ContentEnd).Text;
+    }
+
+    private static async Task DismissNotice(string title) =>
+        (await ExpectWindow(title, "after the answer")).Close();
+
+    /// <summary>Close every window but the test's own hosts, innermost first, and let the handlers
+    /// parked inside them unwind.</summary>
+    private static async Task CloseDialogs()
+    {
+        foreach (var w in Application.Current.Windows.OfType<Window>().Reverse().ToList())
+            if (w.Content is not EditorView)
+                w.Close();
+        await Task.Delay(300);
+    }
+
+    private static string TextOf(EditorView view) => view.SerializeDocument().CurrentText;
 
     private static Window? Find(string title) =>
         Application.Current.Windows.OfType<Window>().FirstOrDefault(w => w.Title == title && w.IsVisible);

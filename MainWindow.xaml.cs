@@ -1634,8 +1634,9 @@ public partial class MainWindow : Window
 
     /// <summary>
     /// Non-interactive "save everything, then quit". Titled documents with unsaved changes are
-    /// written straight to their file (no dialog); untitled/pathless dirty documents — which
-    /// have nowhere to save without prompting — are flushed to crash recovery so they can be
+    /// written straight to their file (no dialog), unless the file was changed elsewhere since
+    /// they last reconciled with it; those, and untitled/pathless dirty documents — which have
+    /// nowhere to save without prompting — are flushed to crash recovery so they can be
     /// restored on the next launch. Then the app shuts down with no prompts. Used by the build
     /// script as a save-first alternative to <see cref="RequestQuitWithRecovery"/>.
     /// </summary>
@@ -1648,11 +1649,11 @@ public partial class MainWindow : Window
                 {
                     if (!v.IsDirty)
                         continue;
-                    // Titled: persist to disk directly (Save(false) never prompts when a path exists).
-                    if (!string.IsNullOrEmpty(v.FilePath))
-                        v.Save(saveAs: false);
-                    else
-                        v.FlushRecovery();   // untitled: nowhere to save silently — keep it in recovery
+                    // Titled: persist to disk directly, without asking. If that would overwrite a
+                    // change made elsewhere (or the write fails), keep it in recovery instead, like an
+                    // untitled one, which has nowhere to save silently.
+                    if (string.IsNullOrEmpty(v.FilePath) || !v.Save(saveAs: false, askIfChangedOnDisk: false))
+                        v.FlushRecovery();
                 }
         Application.Current.Dispatcher.BeginInvoke(new Action(() => Application.Current.Shutdown()));
         return true;
