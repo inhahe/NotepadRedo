@@ -54,6 +54,12 @@
                     <DockPanel LastChildFill="False">
                         <TextBlock Text="History Tree" FontWeight="Bold" VerticalAlignment="Center"
                                    Foreground="{DynamicResource Theme.TreePreviewFg}" DockPanel.Dock="Left"/>
+                        <!-- Docked right before the toggle, so it sits at the far right like the
+                             search pane's. -->
+                        <Button x:Name="TreeCloseButton" DockPanel.Dock="Right" Content="&#x2715;"
+                                Width="20" Height="20" Padding="0" Margin="6,0,0,0"
+                                ToolTip="Close the history tree (the History Tree toolbar button reopens it)"
+                                Click="TreeClose_Click"/>
                         <!-- Condense long straight typing runs to branch points/tips/current (default),
                              or check to reveal one row per edit. Shared, persisted across all views. -->
                         <ToggleButton x:Name="ShowAllEditsToggle" Content="Show all edits"

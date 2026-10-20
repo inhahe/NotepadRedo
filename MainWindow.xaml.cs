@@ -1051,7 +1051,7 @@ public partial class MainWindow : Window
     private void ToggleTree_Click(object sender, RoutedEventArgs e) => SetTreePreference(TreeToggle.IsChecked == true);
 
     /// <summary>Persist the history-tree preference and apply it to every open document.</summary>
-    private static void SetTreePreference(bool show)
+    internal static void SetTreePreference(bool show)
     {
         AppSettings.Current.ShowTree = show;
         AppSettings.Current.Save();

@@ -952,6 +952,15 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
             Splitter.ReleaseMouseCapture();
     }
 
+    /// <summary>The pane's own close button is a third way to turn the history-tree preference off,
+    /// beside the toolbar toggle and View → Show History Tree, so the three can never disagree about
+    /// whether the tree is showing. A pane revealed only to pick a redo branch is closed too.</summary>
+    private void TreeClose_Click(object sender, RoutedEventArgs e)
+    {
+        MainWindow.SetTreePreference(false);
+        Editor.Focus();   // the button that had focus has just been collapsed
+    }
+
     /// <summary>Reveal the tree just long enough for the user to choose a redo branch.</summary>
     private void RevealTreeTemporarily()
     {

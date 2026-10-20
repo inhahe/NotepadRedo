@@ -200,6 +200,12 @@ text is *shown*, which is also where Notepad puts it.
 
 ## The history tree
 
+Whether the pane shows is one process-wide, persisted preference (`AppSettings.ShowTree`), not a
+per-document state like the search pane's. That is why its ✕ calls `MainWindow.SetTreePreference`,
+the same switch as the toolbar toggle and View → Show History Tree: a per-document hide would leave
+the toolbar lit for a pane that isn't showing. The one per-document exception is a pane revealed
+only to pick an ambiguous redo branch (`RevealTreeTemporarily`), which the preference also closes.
+
 Every node stores one `TextEdit` — a single contiguous splice (`Pos`, `OldText`, `NewText`) from its
 parent's text to its own — and `UndoTree.Materialize` rebuilds any node's text by replaying splices
 down from the immutable `RootText`. Undo, redo and a click in the history pane are all
