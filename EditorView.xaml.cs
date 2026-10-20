@@ -1352,31 +1352,21 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
     /// <summary>Mark a short window during which watcher events are treated as our own write.</summary>
     private void BeginSelfWrite() => _suppressUntil = DateTime.UtcNow + TimeSpan.FromSeconds(1.5);
 
+    /// <summary>Bumped whenever watching is started or stopped, so a <see cref="ResumeWatching"/>
+    /// still waiting to retry can tell that the watcher it was replacing is no longer wanted.</summary>
+    private int _watchGeneration;
+
     private void StartWatching()
     {
         StopWatching();
         if (string.IsNullOrEmpty(_currentPath) || !AppSettings.Current.WatchExternalChanges)
             return;
-        try
-        {
-            var dir = Path.GetDirectoryName(_currentPath);
-            if (string.IsNullOrEmpty(dir))
-                return;
-            _watcher = new FileSystemWatcher(dir, Path.GetFileName(_currentPath))
-            {
-                NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.Size
-                             | NotifyFilters.FileName | NotifyFilters.CreationTime,
-            };
-            _watcher.Changed += Watcher_Event;
-            _watcher.Created += Watcher_Event;
-            _watcher.Renamed += Watcher_Event;
-            _watcher.EnableRaisingEvents = true;
-        }
-        catch { _watcher = null; }
+        _watcher = CreateWatcher(_currentPath);
     }
 
     private void StopWatching()
     {
+        _watchGeneration++;
         if (_watcher is null)
             return;
         try { _watcher.EnableRaisingEvents = false; _watcher.Dispose(); }
@@ -1384,11 +1374,103 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
         _watcher = null;
     }
 
+    /// <summary>A running watcher for <paramref name="path"/>, or null when there is none to be had (no
+    /// such folder, or a share that can't be reached). Safe to call off the UI thread.</summary>
+    private FileSystemWatcher? CreateWatcher(string path)
+    {
+        var dir = Path.GetDirectoryName(path);
+        if (string.IsNullOrEmpty(dir))
+            return null;
+        FileSystemWatcher? w = null;
+        try
+        {
+            w = new FileSystemWatcher(dir, Path.GetFileName(path))
+            {
+                NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.Size
+                             | NotifyFilters.FileName | NotifyFilters.CreationTime,
+            };
+            w.Changed += Watcher_Event;
+            w.Created += Watcher_Event;
+            w.Renamed += Watcher_Event;
+            w.Error += Watcher_Error;
+            w.EnableRaisingEvents = true;
+            return w;
+        }
+        catch
+        {
+            w?.Dispose();
+            return null;
+        }
+    }
+
     // FS events arrive on a threadpool thread — marshal onto the UI thread and debounce the burst.
     private void Watcher_Event(object sender, FileSystemEventArgs e)
     {
-        try { Dispatcher.BeginInvoke(new Action(() => { _watchDebounce.Stop(); _watchDebounce.Start(); })); }
+        try { Dispatcher.BeginInvoke(new Action(QueueExternalCheck)); }
         catch { }
+    }
+
+    /// <summary>Look at the file once the current burst of watcher events has settled.</summary>
+    private void QueueExternalCheck()
+    {
+        _watchDebounce.Stop();
+        _watchDebounce.Start();
+    }
+
+    private void Watcher_Error(object sender, ErrorEventArgs e)
+    {
+        try { Dispatcher.BeginInvoke(new Action(() => OnWatcherError((FileSystemWatcher)sender, e.GetException()))); }
+        catch { }
+    }
+
+    /// <summary>
+    /// A watcher that reports an error has stopped for good — unless the error is a buffer overflow —
+    /// and on a network drive errors are routine: the share drops whenever either machine sleeps or
+    /// the connection blips. Left alone, the document would stop noticing outside changes until it was
+    /// saved or reopened. Events may have been lost either way, so the file is looked at again.
+    /// </summary>
+    /// <remarks>The overflow is told apart by its exception, not by <c>EnableRaisingEvents</c>: .NET
+    /// clears that flag when a pending read fails, but not when a new read can't be started.</remarks>
+    private void OnWatcherError(FileSystemWatcher w, Exception error)
+    {
+        if (w != _watcher)
+            return;   // already replaced or stopped
+        if (error is InternalBufferOverflowException)
+        {
+            QueueExternalCheck();   // still watching, but some events were dropped
+            return;
+        }
+        StopWatching();
+        ResumeWatching();
+    }
+
+    /// <summary>Recreate the watcher after it died, retrying with a growing delay (capped at a
+    /// minute) for as long as the folder can't be reached, then check the file for anything written
+    /// while nobody was watching. Each attempt runs on the thread pool: creating a watcher on an
+    /// unreachable share blocks until the network gives up, which can take tens of seconds.</summary>
+    private async void ResumeWatching()
+    {
+        int generation = _watchGeneration;
+        string? path = _currentPath;
+        if (string.IsNullOrEmpty(path))
+            return;
+        for (int attempt = 0; ; attempt++)
+        {
+            await Task.Delay(TimeSpan.FromSeconds(Math.Min(60, 1 << Math.Min(attempt, 6))));
+            if (generation != _watchGeneration)
+                return;   // the path changed, the setting was turned off, or the view was closed
+            var w = await Task.Run(() => CreateWatcher(path));
+            if (generation != _watchGeneration)
+            {
+                w?.Dispose();
+                return;
+            }
+            if (w is null)
+                continue;
+            _watcher = w;
+            QueueExternalCheck();
+            return;
+        }
     }
 
     /// <summary>

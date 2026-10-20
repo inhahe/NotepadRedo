@@ -34,6 +34,18 @@
   the read's own handle, before reading). See "The 'changed on disk' prompt" in `design.md`.
 - **Regression test:** `tests/ExternalChange` (every prompt choice, locally and over SMB).
 
+### Outside changes stopped being noticed after a network drop (fixed 2026-10-20, 1.0.29)
+- **Symptom (by inspection; reproduced over SMB):** once a network drive dropped (either computer
+  sleeping, a connection blip), a document on it stopped reacting to outside changes until it was
+  saved or reopened.
+- **Root cause:** a `FileSystemWatcher` that hits an error clears `EnableRaisingEvents` and raises
+  `Error` (confirmed in the .NET 8 source, `FileSystemWatcher.Win32.cs`). Nothing handled `Error`.
+- **Fix:** `OnWatcherError` recreates the watcher off the UI thread, retrying for as long as the
+  folder can't be reached, then checks the file. See "A watcher that fails is restarted" in
+  `design.md`.
+- **Regression test:** `tests/ExternalChange -- --share` (deleting the watched folder over SMB kills
+  the watcher the same way).
+
 ### Esc after a search appeared to move the caret off the match (fixed 2026-08-14, 1.0.20)
 - **Symptom:** search for something, press Enter so the match is highlighted (no clicking a result in
   the pane), then press Esc — and the document is showing somewhere else entirely, so it looks like

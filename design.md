@@ -495,6 +495,27 @@ locally.
 SMB (`\\localhost\<drive>$`). It hosts a real `EditorView` off-screen and answers the prompt by
 clicking its buttons.
 
+### A watcher that fails is restarted
+
+A `FileSystemWatcher` that raises `Error` has stopped for good, except after a buffer overflow:
+.NET clears `EnableRaisingEvents` and raises the event once. On a network drive that is routine.
+The share drops whenever either machine sleeps or the connection blips, and the document used to go
+deaf to outside changes until it was saved or reopened. `OnWatcherError` therefore recreates the
+watcher in `ResumeWatching`, retrying after 1, 2, 4 … up to 60 s while the folder can't be reached.
+Once it is back, the file is checked, because anything written while nobody was watching raised no
+event. Two details:
+
+- Each attempt runs on the thread pool. Creating a watcher on an unreachable share blocks until the
+  network gives up, which is the same tens-of-seconds stall the activation rule below guards against.
+- An overflow is told apart by its exception (`InternalBufferOverflowException`), not by
+  `EnableRaisingEvents`. That flag is cleared when a pending read fails, but not when a new read
+  can't be started at all, which leaves a watcher that looks enabled and watches nothing.
+
+`_watchGeneration` lets a pending retry see that watching was restarted or stopped meanwhile (a Save
+As, the setting turned off, the tab closed) and drop the watcher it made. The test deletes the
+watched folder over SMB, which stops the watcher with an error the way a dropped connection does.
+Locally a watcher outlives its folder, so that test runs over SMB only.
+
 ## The merge viewer's two panes are levelled, not merely paired
 
 The two documents are built row for row — a diff op contributes one paragraph to each side, with a

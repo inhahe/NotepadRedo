@@ -59,6 +59,7 @@ internal static class Program
         new("Saving the disk version saves the newest one", SaveDiskSavesNewest),
         new("Saving mine, then reloading, reloads the newest version", SaveMineThenReloadLoadsNewest),
         new("The merge viewer opens on the newest version", MergeShowsNewest),
+        new("Changes are still noticed after the watcher fails", WatcherRecoversFromError, SmbOnly: true),
     };
 
     [STAThread]
@@ -217,6 +218,21 @@ internal static class Program
         merge.Close();   // without saving: the editor keeps its own text
         await ExpectNoPrompt("after closing the merge viewer");
         Expect(d.Text == V0, $"the editor holds {Show(d.Text)}, not its own {Show(V0)}");
+        await ExpectLaterChangesStillNoticed(d);
+    }
+
+    /// <summary>Over SMB, deleting the watched folder stops the watcher with an error, which is the
+    /// state a dropped network connection leaves it in. The folder then comes back holding a new
+    /// version, written while nothing was watching.</summary>
+    private static async Task WatcherRecoversFromError(Doc d)
+    {
+        Directory.Delete(d.Dir, recursive: true);
+        await Task.Delay(500);
+        Directory.CreateDirectory(d.Dir);
+        d.WriteExternally(V1);
+        Choose(await ExpectPrompt("for a change made while the watcher was down"), Reload);
+        await ExpectNoPrompt("after Reload");
+        Expect(d.Text == V1, $"Reload loaded {Show(d.Text)}, not {Show(V1)}");
         await ExpectLaterChangesStillNoticed(d);
     }
 
