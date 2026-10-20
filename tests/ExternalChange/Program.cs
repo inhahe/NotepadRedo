@@ -3,7 +3,8 @@
 // Each test drives a real EditorView, with its real FileSystemWatcher, through the prompt while a
 // second writer — standing in for another program, or another computer on a network drive — keeps
 // changing the file. The prompt is answered by clicking its buttons in code; the host window is
-// parked off-screen. Settings are changed in memory only and never saved.
+// parked off-screen. The app's data folder is pointed at a scratch folder (NOTEPADREDO_DATA_DIR), so
+// the user's own settings, crash recovery and history are never read or written.
 //
 //   dotnet run --project tests\ExternalChange               the editor and the writer share a path
 //   dotnet run --project tests\ExternalChange -- --share    and again with the editor reading through
@@ -71,14 +72,17 @@ internal static class Program
     /// <summary>Recover the document from a crash snapshot taken while the file held <see cref="V0"/>.</summary>
     private static void Recover(Doc d) =>
         d.View.LoadRecovered(new EditorView.RecoveryData(
-            "nr-extchange-test-" + Guid.NewGuid().ToString("N"), d.EditorPath, V0, Mine, DateTime.Now));
+            Guid.NewGuid().ToString("N"), d.EditorPath, V0, Mine, DateTime.Now));
 
     [STAThread]
     private static int Main(string[] args)
     {
-        // The other program must be able to write (no deny-write lock), and nothing may stay behind
-        // in the user's recovery or history folders. (A recovered document writes a recovery file at
-        // once; disposing the view deletes it.)
+        // Before any of the app's types is touched: they read the data folder once.
+        string data = Path.Combine(Path.GetTempPath(), "nr-extchange-data-" + Guid.NewGuid().ToString("N")[..8]);
+        Environment.SetEnvironmentVariable(AppPaths.OverrideVariable, data);
+
+        // In memory only: the other program must be able to write, so no deny-write lock, and no
+        // autosave or persisted history to clutter the scratch data folder.
         var s = AppSettings.Current;
         s.WatchExternalChanges = true;
         s.LockFileWhileOpen = false;
@@ -101,6 +105,7 @@ internal static class Program
             finally { app.Shutdown(); }
         });
         app.Run();
+        try { Directory.Delete(data, recursive: true); } catch { }
 
         Console.WriteLine(failures == 0 ? "PASS" : $"FAIL: {failures} test(s)");
         return failures == 0 ? 0 : 1;

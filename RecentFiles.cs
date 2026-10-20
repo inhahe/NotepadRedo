@@ -23,8 +23,7 @@ public static class RecentFiles
     /// <summary>How many entries to keep. Enough to be useful, few enough to stay a glanceable menu.</summary>
     public const int MaxEntries = 15;
 
-    private static readonly string Dir = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "NotepadRedo");
+    private static readonly string Dir = AppPaths.DataDir;
     private static readonly string FilePath = Path.Combine(Dir, "recent.json");
 
     private sealed record RecentData(List<string> Files);

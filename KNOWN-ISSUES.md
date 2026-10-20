@@ -46,6 +46,15 @@
 - **Regression test:** `tests/ExternalChange -- --share` (deleting the watched folder over SMB kills
   the watcher the same way).
 
+### Pre-rename data migration could be skipped (latent; fixed 2026-10-20, 1.0.29)
+- **By inspection:** the one-time move of `%LOCALAPPDATA%\TreeNotepad` to `NotepadRedo` ran in
+  `AppSettings`' static constructor, and is skipped when the new folder already exists. Any class
+  that created that folder before `AppSettings` was first touched (the crash log logging an early
+  exception, say) would have made the move never happen, stranding the old settings and recovery
+  files.
+- **Fix:** the move now lives in `AppPaths`, which every class asks for the folder, so it runs
+  before anything can create it.
+
 ### A recovered document overwrote changes made to its file after the crash (fixed 2026-10-20, 1.0.29)
 - **Symptom (by inspection):** crash with unsaved edits, edit the file somewhere else, relaunch and
   recover. No prompt, and the next save silently replaced the outside edit.

@@ -12,8 +12,7 @@ public static class CrashLog
 {
     private static readonly object Gate = new();
 
-    private static readonly string Dir = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "NotepadRedo");
+    private static readonly string Dir = AppPaths.DataDir;
 
     /// <summary>Full path of the crash log (exposed so the UI can point the user at it).</summary>
     public static string FilePath { get; } = Path.Combine(Dir, "crash.log");

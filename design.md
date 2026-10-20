@@ -559,6 +559,13 @@ storm raised by swapping the documents, which is not the user typing.
 
 ## Persistence (all under `%LOCALAPPDATA%\NotepadRedo`)
 
+Every class takes the folder from `AppPaths.DataDir`. The environment variable
+`NOTEPADREDO_DATA_DIR` names another folder instead: the tests use it so that a run never touches
+the user's own data. `AppPaths` also performs the one-time move of the pre-rename `TreeNotepad`
+folder. It used to live in `AppSettings`' static constructor, where any class that created the new
+folder first (the crash log, say) silently stopped the move. It is skipped when the variable is
+set, so a scratch folder can never receive the user's real data.
+
 | File | Owner | Contents |
 |---|---|---|
 | `settings.json` | `AppSettings` | All options. `Reload()` re-reads on window activation so instances stay in sync — **any new setting must be added to `Reload()` as well as `Save()`**. Gated by a `FileSystemWatcher` dirty flag, so the usual activation costs no I/O (see below). |

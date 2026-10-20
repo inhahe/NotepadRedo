@@ -191,6 +191,8 @@ Everything is stored under `%LOCALAPPDATA%\NotepadRedo\`:
 | recovery files | Autosaved copies of in-progress documents, restored on next launch. |
 | `history\` | Per-file branching-history sidecars (when *Remember edit history between sessions* is on), keyed by a hash of the file path and anchored to a content stamp; pruned after 90 days. |
 
+Setting the environment variable `NOTEPADREDO_DATA_DIR` to a folder makes NotepadRedo keep all of this there instead (the tests use it).
+
 On first launch, if a `%LOCALAPPDATA%\TreeNotepad\` folder exists (from before the rename), it is automatically moved to `NotepadRedo\` so all settings and recovery data carry over.
 
 ---
@@ -213,6 +215,7 @@ On first launch, if a `%LOCALAPPDATA%\TreeNotepad\` folder exists (from before t
 | `LeadingEllipsisText.cs` | Attached behavior that truncates a path from the *front* so the file name stays visible (tab headers). |
 | `HistoryStore.cs` | Reads/writes the per-file branching-history sidecars (persistent history). |
 | `AppSettings.cs` | Persisted user preferences. |
+| `AppPaths.cs` | Where all of the above is kept (`%LOCALAPPDATA%\NotepadRedo`, or `NOTEPADREDO_DATA_DIR`). |
 | `ThemedDialog.cs` | Themed replacements for `MessageBox` (incl. the multi-choice resolution prompts). |
 | `Converters.cs` | XAML value converters (e.g. preview width). |
 | `CrashLog.cs` | Best-effort exception logging. |

@@ -104,25 +104,8 @@ public sealed class AppSettings
     /// undo step. Consecutive edits closer together than this are folded into one node.</summary>
     public double UndoCoalesceSeconds { get; set; } = 4;
 
-    private static readonly string Dir = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "NotepadRedo");
+    private static readonly string Dir = AppPaths.DataDir;
     private static readonly string FilePath = Path.Combine(Dir, "settings.json");
-
-    /// <summary>
-    /// One-time migration: if the old TreeNotepad data folder exists and the new NotepadRedo
-    /// folder does not, move it wholesale so settings, crash recovery, and logs carry over.
-    /// </summary>
-    static AppSettings()
-    {
-        try
-        {
-            var oldDir = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "TreeNotepad");
-            if (Directory.Exists(oldDir) && !Directory.Exists(Dir))
-                Directory.Move(oldDir, Dir);
-        }
-        catch { /* best-effort; if it fails the user just starts fresh */ }
-    }
 
     public static AppSettings Current { get; } = Load();
 

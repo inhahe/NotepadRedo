@@ -117,8 +117,7 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
     /// <summary>Unique id for this document's recovery file.</summary>
     public string RecoveryId { get; private set; } = Guid.NewGuid().ToString("N");
 
-    private static readonly string RecoveryDir = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "NotepadRedo", "recovery");
+    private static readonly string RecoveryDir = Path.Combine(AppPaths.DataDir, "recovery");
 
     private string RecoveryPath => Path.Combine(RecoveryDir, RecoveryId + ".json");
 

@@ -11,8 +11,7 @@ namespace NotepadRedo;
 /// </summary>
 public static class SessionStore
 {
-    private static readonly string Dir = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "NotepadRedo");
+    private static readonly string Dir = AppPaths.DataDir;
     private static readonly string FilePath = Path.Combine(Dir, "session.json");
 
     private sealed record SessionData(List<string> Files, DateTime SavedAt);

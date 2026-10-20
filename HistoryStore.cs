@@ -16,8 +16,7 @@ namespace NotepadRedo;
 /// </summary>
 public static class HistoryStore
 {
-    private static readonly string Dir = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "NotepadRedo", "history");
+    private static readonly string Dir = Path.Combine(AppPaths.DataDir, "history");
 
     /// <summary>Drop sidecars untouched for longer than this so the folder can't grow unbounded.</summary>
     private static readonly TimeSpan MaxAge = TimeSpan.FromDays(90);
