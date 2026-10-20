@@ -354,7 +354,7 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
         _savedText = LineEndings.ToEditor(dto.SavedText);
         _tree = UndoTree.Deserialize(dto.Tree);
         _currentText = LineEndings.ToEditor(dto.CurrentText);
-        DetectLineEndingFromDisk();
+        var disk = TryReadDisk();
         _typingNode = null;
         RebuildHistoryRows();
 
@@ -369,7 +369,7 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
         SetCurrent(_tree.Current);
         RaiseAll();
         WriteRecovery();   // this instance now owns crash recovery for the moved document
-        OnPathEstablished();
+        EstablishPathForForeignText(disk);
         Editor.Focus();
     }
 
@@ -379,10 +379,10 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
         RecoveryId = data.Id;
         _currentPath = data.Path;
         _savedText = LineEndings.ToEditor(data.SavedText);
-        DetectLineEndingFromDisk();
+        var disk = TryReadDisk();
         ResetTree(LineEndings.ToEditor(data.Text));
         WriteRecovery();   // re-establish the recovery file immediately
-        OnPathEstablished();
+        EstablishPathForForeignText(disk);
     }
 
     // ===================== Editing / commits =====================
@@ -1318,10 +1318,10 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
     /// recover): record the disk stamp so our own write isn't mistaken for an external change,
     /// (re)start the file-system watcher, and apply (or release) the deny-write lock.
     /// </summary>
-    /// <param name="read">The stamp from <see cref="ReadDisk"/> when the document's text was just read
-    /// from the file. Null probes the file instead, which is right after our own write and for text
-    /// that came from somewhere else (a moved tab, a recovery snapshot). After a read, probing would
-    /// be wrong: a write landing in between would be recorded as seen without ever being loaded.</param>
+    /// <param name="read">The stamp of the version the document was just reconciled with, from
+    /// <see cref="ReadDisk"/>. Null probes the file instead, which is right only after our own write
+    /// (or for a file that doesn't exist yet). After a read, probing would be wrong: a write landing
+    /// in between would be recorded as seen without ever being loaded.</param>
     private void OnPathEstablished(DiskStamp? read = null)
     {
         if ((read ?? ProbeDisk()) is DiskStamp stamp)
@@ -1728,15 +1728,35 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
         return new DiskVersion(LineEndings.ToEditor(raw), stamp);
     }
 
-    /// <summary>Adopt the style of the file this document points at, for the paths that rebuild a
-    /// document without reading it (a tab moved from another process, a crash-recovery snapshot).
-    /// A missing file — a recovered document whose target was never written — keeps the default.</summary>
-    private void DetectLineEndingFromDisk()
+    /// <summary>Read the file this document points at, adopting its line-ending style, for the paths
+    /// that rebuild a document from text that came from elsewhere (a tab moved from another process,
+    /// a crash-recovery snapshot). Null when it is missing — a recovered document whose target was
+    /// never written keeps the default style — or unreadable.</summary>
+    private DiskVersion? TryReadDisk()
     {
         if (string.IsNullOrEmpty(_currentPath))
+            return null;
+        try { return ReadDisk(_currentPath); }
+        catch { return null; }
+    }
+
+    /// <summary>
+    /// <see cref="OnPathEstablished"/> for text that came from elsewhere (see <see cref="TryReadDisk"/>,
+    /// whose result <paramref name="disk"/> is). The file may have moved on since
+    /// <see cref="_savedText"/> was read from it: a crash can be recovered days later, after the file
+    /// was edited on another machine. Then no stamp is recorded and the file is checked at once, which
+    /// raises the prompt. Recording its current stamp would mark that edit as seen, and the next save
+    /// would overwrite it without a word.
+    /// </summary>
+    private void EstablishPathForForeignText(DiskVersion? disk)
+    {
+        if (disk is not null && disk.Text == _savedText)
+        {
+            OnPathEstablished(disk.Stamp);
             return;
-        try { ReadDisk(_currentPath); }
-        catch { /* missing or unreadable — the default is as good a guess as any */ }
+        }
+        OnPathEstablished(default(DiskStamp));   // matches no real file
+        QueueExternalCheck();
     }
 
     /// <summary>

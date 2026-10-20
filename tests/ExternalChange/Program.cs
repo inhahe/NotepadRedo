@@ -33,6 +33,8 @@ internal static class Program
     private const string V1 = "v1 one\r\n";
     private const string V2 = "v2 two two\r\n";
     private const string V3 = "v3 three three three\r\n";
+    /// <summary>A recovered document's unsaved text: its saved text, <see cref="V0"/>, plus an edit.</summary>
+    private const string Mine = V0 + "an unsaved edit\r\n";
 
     private sealed class TestFailure(string message) : Exception(message);
 
@@ -60,13 +62,23 @@ internal static class Program
         new("Saving mine, then reloading, reloads the newest version", SaveMineThenReloadLoadsNewest),
         new("The merge viewer opens on the newest version", MergeShowsNewest),
         new("Changes are still noticed after the watcher fails", WatcherRecoversFromError, SmbOnly: true),
+        new("A recovered document whose file was edited since the crash raises the prompt",
+            RecoveredAfterEditPrompts, d => { d.WriteExternally(V1); Recover(d); }),
+        new("A recovered document whose file is untouched raises no prompt",
+            RecoveredUntouchedStaysQuiet, Recover),
     };
+
+    /// <summary>Recover the document from a crash snapshot taken while the file held <see cref="V0"/>.</summary>
+    private static void Recover(Doc d) =>
+        d.View.LoadRecovered(new EditorView.RecoveryData(
+            "nr-extchange-test-" + Guid.NewGuid().ToString("N"), d.EditorPath, V0, Mine, DateTime.Now));
 
     [STAThread]
     private static int Main(string[] args)
     {
-        // The other program must be able to write (no deny-write lock), and nothing may land in the
-        // user's recovery or history folders.
+        // The other program must be able to write (no deny-write lock), and nothing may stay behind
+        // in the user's recovery or history folders. (A recovered document writes a recovery file at
+        // once; disposing the view deletes it.)
         var s = AppSettings.Current;
         s.WatchExternalChanges = true;
         s.LockFileWhileOpen = false;
@@ -233,6 +245,22 @@ internal static class Program
         Choose(await ExpectPrompt("for a change made while the watcher was down"), Reload);
         await ExpectNoPrompt("after Reload");
         Expect(d.Text == V1, $"Reload loaded {Show(d.Text)}, not {Show(V1)}");
+        await ExpectLaterChangesStillNoticed(d);
+    }
+
+    private static async Task RecoveredAfterEditPrompts(Doc d)
+    {
+        Choose(await ExpectPrompt("for a file edited between the crash and the recovery"), Reload);
+        await ExpectNoPrompt("after Reload");
+        Expect(d.Text == V1, $"Reload loaded {Show(d.Text)}, but the file holds {Show(V1)}");
+        await ExpectLaterChangesStillNoticed(d);
+    }
+
+    private static async Task RecoveredUntouchedStaysQuiet(Doc d)
+    {
+        await ExpectNoPrompt("for a recovered file nobody else has changed");
+        Expect(d.Text == Mine, $"the recovered document holds {Show(d.Text)}, not {Show(Mine)}");
+        Expect(d.View.IsDirty, "the recovered edit isn't marked unsaved");
         await ExpectLaterChangesStillNoticed(d);
     }
 

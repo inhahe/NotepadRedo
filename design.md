@@ -469,8 +469,14 @@ come along. So:
   mid-read leaves the stamp older than the text, which costs at most one re-check that finds the
   content equal.
 - Paths that just read the file hand that stamp on (`OnPathEstablished(stamp)`, `ReloadFromDisk`)
-  rather than probing again afterwards. Probing is right only after our own write, or for text that
-  came from elsewhere (a moved tab, a recovery snapshot).
+  rather than probing again afterwards. Probing is right only after our own write.
+- Text that came from elsewhere (a recovery snapshot, a tab moved from another process) carries
+  its own `_savedText`, and the file may have moved on since. A crash can be recovered days later.
+  `EstablishPathForForeignText` adopts the file's stamp only if the file still holds that text.
+  Otherwise it records no stamp and checks at once, which raises the prompt. Probing there used to
+  mark the outside edit as seen, so the next save overwrote it silently. One cost: Keep mine leaves
+  `_savedText` at the last load or save, so a tab moved to another process after Keep mine asks
+  again.
 - Every stamp comes from an open handle (`StampOf`), so probes and reads are never compared across
   two different kinds of query.
 

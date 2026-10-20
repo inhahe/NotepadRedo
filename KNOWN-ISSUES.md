@@ -46,6 +46,18 @@
 - **Regression test:** `tests/ExternalChange -- --share` (deleting the watched folder over SMB kills
   the watcher the same way).
 
+### A recovered document overwrote changes made to its file after the crash (fixed 2026-10-20, 1.0.29)
+- **Symptom (by inspection):** crash with unsaved edits, edit the file somewhere else, relaunch and
+  recover. No prompt, and the next save silently replaced the outside edit.
+- **Root cause:** recovered and moved-between-processes documents carry their own `_savedText`, but
+  probed the file's current stamp, marking whatever the file now held as already seen.
+- **Fix:** `EstablishPathForForeignText` adopts the stamp only if the file still holds `_savedText`.
+  Otherwise it checks at once, which raises the prompt.
+- **Regression test:** `tests/ExternalChange` (recovery against an edited and an untouched file).
+- **Known cost:** Keep mine leaves `_savedText` at the last load or save. A tab moved to another
+  process after Keep mine therefore asks again. That's harmless, and rarer than the overwrite was
+  bad.
+
 ### Esc after a search appeared to move the caret off the match (fixed 2026-08-14, 1.0.20)
 - **Symptom:** search for something, press Enter so the match is highlighted (no clicking a result in
   the pane), then press Esc — and the document is showing somewhere else entirely, so it looks like
