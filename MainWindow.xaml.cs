@@ -1649,10 +1649,10 @@ public partial class MainWindow : Window
                 {
                     if (!v.IsDirty)
                         continue;
-                    // Titled: persist to disk directly, without asking. If that would overwrite a
-                    // change made elsewhere (or the write fails), keep it in recovery instead, like an
-                    // untitled one, which has nowhere to save silently.
-                    if (string.IsNullOrEmpty(v.FilePath) || !v.Save(saveAs: false, askIfChangedOnDisk: false))
+                    // Titled: persist to disk directly, with no dialog of any kind. If that would
+                    // overwrite a change made elsewhere (or the write fails), keep it in recovery
+                    // instead, like an untitled one, which has nowhere to save silently.
+                    if (string.IsNullOrEmpty(v.FilePath) || !v.Save(saveAs: false, interactive: false))
                         v.FlushRecovery();
                 }
         Application.Current.Dispatcher.BeginInvoke(new Action(() => Application.Current.Shutdown()));

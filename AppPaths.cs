@@ -8,6 +8,10 @@ public static class AppPaths
 {
     /// <summary>Names another data folder in place of the default. The tests point it at a scratch
     /// folder, so they never read the user's settings or leave anything in their recovery folder.</summary>
+    /// <remarks>Keep it a <c>const</c>. The tests name it before setting the variable, and naming a
+    /// const compiles to the literal; a <c>static readonly</c> would run this class's static
+    /// constructor at that moment, fixing <see cref="DataDir"/> to the user's real folder before the
+    /// variable is set.</remarks>
     public const string OverrideVariable = "NOTEPADREDO_DATA_DIR";
 
     /// <summary><c>%LOCALAPPDATA%\NotepadRedo</c>, unless <see cref="OverrideVariable"/> is set.</summary>
@@ -19,7 +23,9 @@ public static class AppPaths
         string? custom = Environment.GetEnvironmentVariable(OverrideVariable);
         if (!string.IsNullOrEmpty(custom))
         {
-            DataDir = custom;
+            // Resolved once, so a relative value doesn't mean a different folder to every process
+            // started from a different directory.
+            DataDir = Path.GetFullPath(custom);
             return;   // never migrate the user's real data into a scratch folder
         }
         DataDir = Path.Combine(local, "NotepadRedo");

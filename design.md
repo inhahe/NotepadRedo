@@ -468,30 +468,33 @@ the next probe sees "no change", and a write nobody has seen is treated as handl
 
 - `ReadDisk` takes the stamp through the same handle **before** reading the text. A write landing
   mid-read leaves the stamp older than the text, which costs at most one re-check that finds nothing.
-- Every caller records `_diskStamp` itself before `OnPathEstablished` (which only restarts the
-  watcher and the lock), because only the caller knows where the stamp comes from. `LoadFile` and
-  `ReloadFromDisk` use the read's own stamp. `Save` probes, which is right only after its own write.
+- `WriteTextToFile` takes the stamp through the *writing* handle before letting it go. That handle
+  shares reading only, so nobody else can have written in between. If the time still moves when
+  the handle closes (an SMB server settling it), the next check finds the content equal to what was
+  saved and adopts it. A probe after closing could already see someone else's write.
+- Every caller records `_diskStamp` itself, because only the caller knows where the stamp comes
+  from. `LoadFile` and `ReloadFromDisk` use the read's own stamp, and `Save` uses the write's.
 - Text that came from elsewhere (a recovery snapshot, a tab moved from another process) carries
   its own `_savedText`, and the file may have moved on since. A crash can be recovered days later.
-  `EstablishPathForForeignText` adopts the file's stamp only if the file holds nothing new.
-  Otherwise it records none and checks at once, which raises the prompt. Probing there used to
-  mark the outside edit as seen, so the next save overwrote it silently.
+  `EstablishPathForForeignText` adopts the file only if it holds nothing new. Otherwise it records
+  no stamp, and installing the watcher checks the file at once, which raises the prompt.
 - Every stamp comes from a handle opened one way (`OpenShared`, `StampOf`), so probes and reads are
   never compared across two kinds of query.
 
-There used to be a 1.5 s window after each save in which any new stamp was taken for our own write
-and adopted unread. That was exactly the forbidden direction: another machine saving just after us
-was marked as seen. Content comparison made it unnecessary, so it is gone.
+A stamp-based check has one blind spot: a same-length edit made within one timestamp tick of the
+reconciled version (2 s on FAT32). It goes unseen. Closing that gap would mean reading the whole
+file on every check; see KNOWN-ISSUES.
 
 ### What counts as news
 
-`HoldsNothingNew`: a file that holds what the document last loaded or saved, or exactly what is in
-the editor, is adopted without a word, since writing over it loses nobody's work. That covers our
-own save reported late (or after an SMB server settles the stamp), a touch, a sync client fetching
-the file again, and another program saving the very text we have. Both sides are compared in the
-editor's line-ending form, because a paste can leave the buffer itself mixed. One cost: Keep mine
-leaves `_savedText` at the last load or save, so a tab moved to another process after Keep mine
-asks again.
+`HoldsNothingNew`: a file that holds what the document last loaded or saved, exactly what is in the
+editor, or a version the user already chose to write over (`_overruledText`, set by Keep mine and by
+saving the disk version off) is adopted without a word, since writing over it loses nobody's work.
+That covers our own save reported late, a touch, a sync client fetching the file again, and another
+program saving the very text we have. `Adopt` also marks the document saved when the file now
+holds exactly the editor's text. Both sides are compared in the editor's line-ending form, because a
+paste can leave the buffer itself mixed. One cost: Keep mine leaves `_savedText` at the last load
+or save, so a tab moved to another process after Keep mine asks again.
 
 ### Answering the question
 
@@ -500,20 +503,28 @@ The question can sit on screen for hours while another machine keeps saving to t
 - **Reload, merge, and the two "save to another file" choices act on the file as it is when the
   user answers** (`Newest`: the version that raised the prompt if the stamp hasn't moved, else a
   fresh read). Reload loads it, the merge viewer shows it, and the copy is made from it.
-- **Keep mine, or closing the question, settles only the version it was asked about.** A newer
-  one arrived unseen, so it gets a question of its own. Settling it too would let the next save
-  overwrite work nobody looked at.
-- **A stamp is settled only once its choice has been carried out.** If saving a copy fails, the
+- **Keep mine settles only the version it was asked about** (`Overrule`). A newer one arrived
+  unseen, so it gets a question of its own. Settling it too would let the next save overwrite work
+  nobody looked at.
+- **Closing the question means "not now".** The version goes into `_diskStamp`, so the watcher
+  doesn't ask again, and into `_unanswered`, so saving over it does.
+- **A version is settled only once its choice has been carried out.** If saving a copy fails, the
   change stays unanswered and the question comes back.
 - While a prompt is up, `HandleExternalChange` does nothing for that document; it is queued once
   more after the prompt closes, which catches anything written meanwhile. A merge viewer opened
-  from the prompt is the exception: it receives each new version live through `NotifyDiskChanged`,
-  even one equal to the editor's text, since its on-disk side must follow the file.
-  (`_mergeDiskText` keeps it from being told twice about the same text.)
-- **One question at a time across documents** (`_promptsOpen`): a document whose check comes due
-  while another's prompt is up looks again shortly, rather than stacking a second modal on top. The
-  later one would otherwise come up first, over a tab that isn't its own. The prompt also selects
-  its document's tab.
+  from the prompt is the exception. It receives each new version live through `NotifyDiskChanged`,
+  even one equal to the editor's text, since its on-disk side must follow the file. Those versions
+  are tracked in `_mergeSeen`, not `_diskStamp`. Only when the viewer closes with nothing left
+  unresolved (`DiffMergeWindow.HasUnresolvedDiskChange`) is the newest one settled. A re-change
+  whose question in the viewer was closed, or whose copy failed, stays unanswered and is asked
+  about after the viewer closes.
+- **One question at a time across documents** (`_promptsOpen`). A document whose check comes due
+  while another's prompt is up joins `_waitingForPrompt`, and is woken when the last prompt
+  closes. Otherwise a second modal would stack on top, come up first, and cover a tab that isn't
+  its own. The prompt also selects its document's tab.
+- A closed tab (`_disposed`) asks nothing, even if a check was already posted for it. Save can now
+  raise the question from closing a tab, and the check that follows an answer may run after the tab
+  is gone.
 
 This fixed a reported bug: on a mapped network drive, Reload loaded *a* change but not the latest.
 The prompt reloaded the text read when it went up, then probed the stamp, which recorded the newer
@@ -526,14 +537,27 @@ locally.
 
 The watcher can miss a change. A share may send no change notifications at all, a write can land
 while the watcher is being restarted, or the folder may not be watchable when the file is opened.
-So `Save` calls `ReadyToOverwrite` before writing over the document's own file. If the file holds
-something new that nobody has been asked about, the usual question comes first. Only Keep mine, or
-saving the disk version off first, goes on to write, and only if nothing newer landed meanwhile.
-After Reload, `Save` reports success because the document matches the file. The non-interactive
-`--quit-save` passes `askIfChangedOnDisk: false`: the file is left alone and the document goes to
-crash recovery instead. Saving from inside the merge viewer skips the check, since that save *is*
-the answer to a question. With watching turned off, the check is skipped too, as are all the
-others.
+So `Save` calls `CheckBeforeOverwrite` before writing over the document's own file:
+
+- **Write** if the file is gone, unchanged since it was reconciled (with no unanswered version), or
+  holds nothing new.
+- **Ask** otherwise, with the usual question. Only Keep mine, or saving the disk version off first,
+  goes on to write, and only if nothing newer landed meanwhile. A question that ends in Reload,
+  or in a merge that saved itself, means the document now *is* the file, so `Save` reports success
+  without writing (`NowMatchesFile`, told apart by `_reconciliations`). Any other outcome is a
+  refusal, and `Save` reports failure.
+- **Refuse** when no question can be asked. That is the case for a non-interactive save (`--quit-save`
+  passes `interactive: false`; the document goes to crash recovery instead, and no dialog of any
+  kind is shown, a failed write included). It is also the case for a save made inside this
+  document's own question: the merge viewer saving its result over a version it never showed, or a
+  quit sweep arriving through IPC while the question is open.
+- **Can't read it:** if the stamp has moved but the file can't be read, it is never overwritten
+  unasked. A separate question offers to overwrite anyway, with Don't save as the default, and a
+  non-interactive save refuses.
+
+With watching turned off, the check is skipped, as are all the others. Saving to the same file
+leaves the running watcher alone. Restarting it on every save would leave a moment in which
+nothing watches, and would restart a pending retry's back-off.
 
 ### Watching keeps going
 
@@ -543,8 +567,9 @@ The share drops whenever either machine sleeps or the connection blips, and the 
 deaf to outside changes until it was saved or reopened. `OnWatcherError` therefore recreates the
 watcher in `ResumeWatching`, retrying after 1, 2, 4 … up to 60 s while the folder can't be reached.
 `StartWatching` does the same when no watcher can be made in the first place (a document opened
-or recovered while its share is offline). Once watching resumes, the file is checked, because
-anything written while nobody was watching raised no event. Details:
+or recovered while its share is offline). `InstallWatcher` checks the file once, whenever a watcher
+starts. Anything written while nobody was watching raised no event, and a document whose watching
+was just turned on may hold a version it never reconciled. Details:
 
 - Each retry runs on the thread pool. Creating a watcher on an unreachable share blocks until the
   network gives up, which is the same tens-of-seconds stall the activation rule below guards against.
@@ -552,9 +577,10 @@ anything written while nobody was watching raised no event. Details:
   `EnableRaisingEvents`. That flag is cleared when a pending read fails, but not when a new read
   can't be started at all, which leaves a watcher that looks enabled and watches nothing.
 - That second kind of failure is raised from inside `EnableRaisingEvents`, so for a watcher made on
-  the thread pool it reaches the UI thread *before* `ResumeWatching` has installed it.
-  `OnWatcherError` leaves word in `_failedBeforeInstall`, and the retry discards that watcher
-  instead of installing it dead.
+  the thread pool it can come before `ResumeWatching` has installed it. Each `FileWatcher` therefore
+  carries its own `Failed` flag, set on the thread raising the error before anything is posted, and
+  the retry discards a failed one instead of installing it dead. (A single shared field for this
+  could be wiped by an older retry finishing late.)
 - A watcher that dies within two minutes of starting carries on the back-off (`_resumeAttempt`)
   rather than starting it over, so a server that refuses notifications isn't asked every second.
 - `_watchGeneration` lets a pending retry see that watching was restarted or stopped meanwhile (a
@@ -563,12 +589,14 @@ anything written while nobody was watching raised no event. Details:
 ### Tests
 
 `tests/ExternalChange` hosts real `EditorView`s off-screen, with real watchers, and answers prompts
-by clicking their buttons. Each of the rules above has a test that fails without it. Every test
-runs against a local folder and, with `--share`, over SMB (`\\localhost\<drive>$`). The
-watcher-error test runs over SMB only: deleting the watched folder there stops the watcher with an
-error the way a dropped connection does, while locally a watcher outlives its folder. The data
-folder is pointed at a scratch folder through `NOTEPADREDO_DATA_DIR` (see Persistence), so a run
-never reads the user's settings or leaves anything in their recovery folder.
+by clicking their buttons. Each of the rules above has a test that fails without it, except where
+the failure can't be produced on demand: the write-handle stamp, the watcher that fails while
+being started, and the running watcher being kept across saves. Every test runs against a local
+folder and, with `--share`, over SMB (`\\localhost\<drive>$`). The watcher-error test runs over SMB
+only: deleting the watched folder there stops the watcher with an error the way a dropped connection
+does, while locally a watcher outlives its folder. The data folder is pointed at a scratch folder
+through `NOTEPADREDO_DATA_DIR` (see Persistence), so a run never reads the user's settings or leaves
+anything in their recovery folder.
 
 ## The merge viewer's two panes are levelled, not merely paired
 

@@ -41,6 +41,11 @@ public partial class DiffMergeWindow : Window
     /// <summary>True when the user chose "save both &amp; reload" — the host should reload from disk.</summary>
     public bool ExitAndReload { get; private set; }
 
+    /// <summary>True when the file changed again while merging and the user never decided what to do
+    /// with that version (its question was dismissed, or saving it off failed). The host must not
+    /// treat that version as answered.</summary>
+    public bool HasUnresolvedDiskChange => _pendingDisk is not null;
+
     private readonly List<Row> _rows = new();
 
     // One rendered diff line: the source op plus where it maps on the kept side.

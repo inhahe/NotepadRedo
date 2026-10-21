@@ -80,6 +80,17 @@ internal static class Program
         new("Saving over a change not yet reported asks first", SavingOverUnreportedChangeAsks, Recover),
         new("A save that may not ask leaves a changed file alone", QuietSaveLeavesChangedFileAlone, Recover),
         new("A change written just after our own save is noticed", ChangeJustAfterOurSaveIsNoticed, Recover),
+        new("A save made while the file's question is open writes nothing", SaveDuringOpenQuestionRefuses, Recover),
+        new("A re-change the merge viewer never had answered is asked about", MergeLeavesUnansweredChangeOpen),
+        new("The merge viewer's save leaves a version it never showed alone", MergeSaveLeavesUnseenVersionAlone),
+        new("Closing a tab ends its questions", ClosedTabAsksNothing),
+        new("A save that may not ask shows no error either", QuietSaveFailureShowsNothing, Recover),
+        new("The version Keep mine answered for turning up again raises no prompt", KeptVersionAgainIsQuiet),
+        new("Closing Save's question means not now: nothing written, and the next save asks",
+            ClosingSavesQuestionMeansNotNow),
+        new("Turning watching on checks the file at once", TurningWatchingOnChecksAtOnce,
+            d => { AppSettings.Current.WatchExternalChanges = false; d.WriteExternally(V1); Recover(d); }),
+        new("A file that comes to hold the editor's text makes the document saved", FileMatchingEditorIsSaved, Recover),
     };
 
     /// <summary>Recover the document from a crash snapshot taken while the file held <see cref="V0"/>.</summary>
@@ -90,7 +101,8 @@ internal static class Program
     [STAThread]
     private static int Main(string[] args)
     {
-        // Before any of the app's types is touched: they read the data folder once.
+        // Before any of the app's types is initialised: they read the data folder once. (Naming
+        // OverrideVariable initialises nothing, because it is a const.)
         string data = Path.Combine(Path.GetTempPath(), "nr-extchange-data-" + Guid.NewGuid().ToString("N")[..8]);
         Environment.SetEnvironmentVariable(AppPaths.OverrideVariable, data);
 
@@ -402,7 +414,7 @@ internal static class Program
     private static async Task QuietSaveLeavesChangedFileAlone(Doc d)
     {
         d.WriteExternally(V1);
-        Expect(!d.View.Save(saveAs: false, askIfChangedOnDisk: false), "the save reported success");
+        Expect(!d.View.Save(saveAs: false, interactive: false), "the save reported success");
         string onDisk = File.ReadAllText(d.WriterPath);
         Expect(onDisk == V1, $"the file holds {Show(onDisk)}: the save overwrote {Show(V1)}");
         Expect(d.Text == Mine, $"the document holds {Show(d.Text)}, not its own {Show(Mine)}");
@@ -411,7 +423,7 @@ internal static class Program
         Expect(d.Text == V1, $"Reload loaded {Show(d.Text)}, not {Show(V1)}");
     }
 
-    /// <summary>The editor used to treat any write in the 1.5 s after its own save as its own.</summary>
+    /// <summary>A write that lands right after our own save is someone else's, and must be noticed.</summary>
     private static async Task ChangeJustAfterOurSaveIsNoticed(Doc d)
     {
         Expect(d.View.Save(saveAs: false), "the save failed");
@@ -420,6 +432,133 @@ internal static class Program
         Choose(await ExpectPrompt("for a change written just after our own save"), Reload);
         await ExpectNoPrompt("after Reload");
         Expect(d.Text == V1, $"Reload loaded {Show(d.Text)}, not {Show(V1)}");
+        await ExpectLaterChangesStillNoticed(d);
+    }
+
+    /// <summary>A quit sweep can reach a document while its question is still on screen. Neither a
+    /// save that may ask nor one that may not can answer for the user.</summary>
+    private static async Task SaveDuringOpenQuestionRefuses(Doc d)
+    {
+        d.WriteExternally(V1);
+        var prompt = await ExpectPrompt("after the external write");
+        Expect(!d.View.Save(saveAs: false, interactive: false), "the quiet save reported success");
+        Expect(!d.View.Save(saveAs: false), "the save reported success");
+        string onDisk = File.ReadAllText(d.WriterPath);
+        Expect(onDisk == V1, $"a save made during the question overwrote {Show(V1)} with {Show(onDisk)}");
+        Choose(prompt, KeepMine);
+        await ExpectNoPrompt("after Keep mine");
+        await ExpectLaterChangesStillNoticed(d);
+    }
+
+    /// <summary>The file changes again while merging; the viewer's own question about it is closed
+    /// unanswered, and then the viewer is closed too.</summary>
+    private static async Task MergeLeavesUnansweredChangeOpen(Doc d)
+    {
+        d.WriteExternally(V1);
+        Choose(await ExpectPrompt("after the external write"), Merge);
+        var merge = await ExpectMergeViewer();
+        d.WriteExternally(V2);
+        (await ExpectWindow(ChangedAgainTitle, "in the merge viewer")).Close();
+        await Task.Delay(300);
+        merge.Close();
+        Choose(await ExpectPrompt("for the version the merge viewer's question was closed on"), Reload);
+        await ExpectNoPrompt("after Reload");
+        Expect(d.Text == V2, $"Reload loaded {Show(d.Text)}, not {Show(V2)}");
+        await ExpectLaterChangesStillNoticed(d);
+    }
+
+    /// <summary>As above, but the merge is saved: its result must not go over a version the viewer
+    /// never had answered.</summary>
+    private static async Task MergeSaveLeavesUnseenVersionAlone(Doc d)
+    {
+        d.WriteExternally(V1);
+        Choose(await ExpectPrompt("after the external write"), Merge);
+        var merge = await ExpectMergeViewer();
+        d.WriteExternally(V2);
+        (await ExpectWindow(ChangedAgainTitle, "in the merge viewer")).Close();
+        await Task.Delay(300);
+        ((Button)merge.FindName("SaveButton")).RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+        var prompt = await ExpectPrompt("for the version the merge viewer's question was closed on");
+        string onDisk = File.ReadAllText(d.WriterPath);
+        Expect(onDisk == V2, $"the merge's save replaced {Show(V2)}, which it never showed, with {Show(onDisk)}");
+        Choose(prompt, Reload);
+        await ExpectNoPrompt("after Reload");
+        await ExpectLaterChangesStillNoticed(d);
+    }
+
+    /// <summary>A question raised from closing a tab (Save from "Save changes?") is followed by a
+    /// check; the tab is gone by the time it runs.</summary>
+    private static async Task ClosedTabAsksNothing(Doc d)
+    {
+        d.WriteExternally(V1);
+        Choose(await ExpectPrompt("after the external write"), KeepMine);
+        d.WriteExternally(V2);   // lands before the check that follows the answer
+        d.View.Dispose();
+        await ExpectNoPrompt("for a tab that has been closed");
+    }
+
+    private static async Task QuietSaveFailureShowsNothing(Doc d)
+    {
+        File.SetAttributes(d.WriterPath, FileAttributes.ReadOnly);
+        try
+        {
+            var save = d.View.Dispatcher.InvokeAsync(() => d.View.Save(saveAs: false, interactive: false));
+            await Task.Delay(1000);
+            if (Find(SaveFailedTitle) is Window shown)
+            {
+                shown.Close();
+                throw new TestFailure("the non-interactive save showed \"Save failed\" and waited for a click");
+            }
+            Expect(!await save.Task, "saving over a read-only file reported success");
+        }
+        finally { File.SetAttributes(d.WriterPath, FileAttributes.Normal); }
+    }
+
+    /// <summary>A sync client fetching the file again, say: the very version the user already chose
+    /// to write over.</summary>
+    private static async Task KeptVersionAgainIsQuiet(Doc d)
+    {
+        d.WriteExternally(V1);
+        Choose(await ExpectPrompt("after the external write"), KeepMine);
+        await ExpectNoPrompt("after Keep mine");
+        d.WriteExternally(V1);
+        await ExpectNoPrompt("for the version Keep mine already answered for");
+        await ExpectLaterChangesStillNoticed(d);
+    }
+
+    private static async Task ClosingSavesQuestionMeansNotNow(Doc d)
+    {
+        d.WriteExternally(V1);
+        var save = d.View.Dispatcher.InvokeAsync(() => d.View.Save(saveAs: false));
+        (await ExpectPrompt("when saving over a change nobody had been asked about")).Close();
+        Expect(!await save.Task, "Save reported success though nothing was written");
+        string onDisk = File.ReadAllText(d.WriterPath);
+        Expect(onDisk == V1, $"closing the question still let the save replace {Show(V1)} with {Show(onDisk)}");
+        await ExpectNoPrompt("from the watcher, about the version the question was closed on");
+
+        var again = d.View.Dispatcher.InvokeAsync(() => d.View.Save(saveAs: false));
+        Choose(await ExpectPrompt("when saving again over the version the question was closed on"), KeepMine);
+        Expect(await again.Task, "Save reported failure after Keep mine");
+        onDisk = File.ReadAllText(d.WriterPath);
+        Expect(onDisk == V0, $"the file holds {Show(onDisk)} after Keep mine and Save, not {Show(V0)}");
+    }
+
+    private static async Task TurningWatchingOnChecksAtOnce(Doc d)
+    {
+        await ExpectNoPrompt("with watching turned off");
+        AppSettings.Current.WatchExternalChanges = true;
+        d.View.ApplyWatchSetting();
+        Choose(await ExpectPrompt("once watching was turned on"), Reload);
+        await ExpectNoPrompt("after Reload");
+        Expect(d.Text == V1, $"Reload loaded {Show(d.Text)}, not {Show(V1)}");
+    }
+
+    /// <summary>Another program saves exactly the text the document holds.</summary>
+    private static async Task FileMatchingEditorIsSaved(Doc d)
+    {
+        d.WriteExternally(Mine);
+        await ExpectNoPrompt("for a file that now holds the editor's own text");
+        Expect(!d.View.IsDirty, "the document still counts as unsaved, though the file holds its text");
         await ExpectLaterChangesStillNoticed(d);
     }
 

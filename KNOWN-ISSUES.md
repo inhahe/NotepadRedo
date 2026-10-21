@@ -17,6 +17,17 @@
   click-accepts always hit the intended line. Low priority — the dominant workflow is click-accepts
   *or* manual editing, rarely interleaved within one line without a Re-diff.
 
+### Changes within one timestamp tick of the reconciled version go unseen
+- **Where:** `EditorView` — `HandleExternalChange` and `CheckBeforeOverwrite` treat an equal stamp
+  (modified time + size) as "nothing new" and don't read the file.
+- **Consequence:** a same-length edit made elsewhere within one timestamp tick of the version the
+  document last reconciled with is invisible: 2 s on FAT32, and on SMB servers that round times to
+  a second. The next save overwrites it without a question. Same-length edits within that window
+  are rare, and every editor that watches modified times shares the gap.
+- **Proper fix (deferred):** keep a hash of the reconciled version and compare content as well, at
+  least when a watcher event arrives with an unchanged stamp (an event is evidence of a write). The
+  price is reading the whole file on each such event, our own saves included.
+
 ## Bugs
 
 ### "Reload from disk" loaded an older version, not the latest (fixed 2026-10-20, 1.0.29)
@@ -56,14 +67,17 @@
   install race has no test: the failure it needs (a first read that can't be started) can't be
   produced on demand.
 
-### Pre-rename data migration could be skipped (latent; fixed 2026-10-20, 1.0.29)
-- **By inspection:** the one-time move of `%LOCALAPPDATA%\TreeNotepad` to `NotepadRedo` ran in
-  `AppSettings`' static constructor, and is skipped when the new folder already exists. Any class
-  that created that folder before `AppSettings` was first touched (the crash log logging an early
-  exception, say) would have made the move never happen, stranding the old settings and recovery
-  files.
+### Pre-rename data migration never ran (fixed 2026-10-20, 1.0.29)
+- **By inspection:** the one-time move of `%LOCALAPPDATA%\TreeNotepad` to `NotepadRedo` sat in the
+  body of `AppSettings`' static constructor, and is skipped when the new folder already exists.
+  C# runs static field initialisers before that body, and one of them, the settings
+  `FileSystemWatcher` (`CreateWatcher`), creates the new folder. So from the build that added that
+  watcher on, the move never ran at all. Anyone whose first launch after the rename used such a
+  build has the old folder stranded beside a new one.
 - **Fix:** the move now lives in `AppPaths`, which every class asks for the folder, so it runs
-  before anything can create it.
+  before anything can create it. Installs already stranded aren't rescued: the move still skips once
+  `NotepadRedo` exists. None is on the development machine (checked 2026-10-20: no `TreeNotepad`
+  folder). If one turns up elsewhere, merge its files in by hand, or teach `AppPaths` to merge.
 
 ### A recovered document overwrote changes made to its file after the crash (fixed 2026-10-20, 1.0.29)
 - **Symptom (by inspection):** crash with unsaved edits, edit the file somewhere else, relaunch and
