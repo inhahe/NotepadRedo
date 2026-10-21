@@ -700,4 +700,4 @@ the prompt can come up behind and look like a silent hang.
 ## Versioning
 
 `VERSION` at the project root is the single source of truth; the csproj reads it into `<Version>`
-and `release-github.bat` tags releases from it. Bump it on every build.
+and releases are tagged from it. Bump it on every build.

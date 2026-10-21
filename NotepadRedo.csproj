@@ -12,11 +12,11 @@
     <RootNamespace>NotepadRedo</RootNamespace>
     <ApplicationTitle>NotepadRedo</ApplicationTitle>
     <!-- Single source of truth for the app/release version: the VERSION file at the project root.
-         Bump it on every build (see CLAUDE.md); release-github.bat reads it to tag the release, and
-         it's stamped into the exe here so the built binary reports the same version. -->
+         Bump it on every build. Releases are tagged from it, and it's stamped into the exe here so
+         the built binary reports the same version. -->
     <Version>$([System.IO.File]::ReadAllText('$(MSBuildProjectDirectory)\VERSION').Trim())</Version>
 
-    <!-- Single-file publishing (release-github.bat and the local deploy build a self-contained
+    <!-- Single-file publishing (the release build and the local deploy build a self-contained
          single-file exe). WPF's native DLLs (PresentationNative, wpfgfx) cannot be loaded from
          inside the bundle; without extracting them to disk the app crashes at window creation with
          a DllNotFoundException (SetWindowLongPtrWndProc) before any handler can log it. Extract

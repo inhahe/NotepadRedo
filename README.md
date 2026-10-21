@@ -171,15 +171,9 @@ dotnet run --project tests\ExternalChange -- --share
 
 Drives the "changed on disk" prompt through a real editor and file watcher while another writer keeps changing the file, and exits non-zero on failure. `--share` repeats every test through `\\localhost\<drive>$` (SMB), the way a network drive is reached; leave it off where admin shares aren't available. `--filter=<text>` runs only the tests whose name contains the text. It parks windows off-screen and briefly opens dialogs. It keeps its own data in a scratch folder, so it never touches your running editor, settings or recovery files.
 
-### Publishing a GitHub release
+### Version
 
-The app version is stored in one place — the **`VERSION`** file at the project root — which the csproj reads into `<Version>` (so it's stamped into the exe). Bump `VERSION` when you build, then:
-
-```sh
-release-github.bat
-```
-
-`release-github.bat` (no argument) reads the current version from `VERSION`, and — if a release for it doesn't already exist — builds a fresh self-contained `NotepadRedo.exe` into a throwaway `release\` folder (kept separate from the deployed copies so it never collides with a running instance's file lock) and publishes it as a GitHub release, with the exe and `associate-txt.bat` attached, via the [GitHub CLI](https://cli.github.com/) (`gh`, which must be installed and authenticated). It **aborts if that version is already released** (so it only publishes after `VERSION` has been bumped). It builds from your working tree and does not push source.
+The app version is stored in one place — the **`VERSION`** file at the project root — which the csproj reads into `<Version>`, so it's stamped into the exe. Each [release](https://github.com/inhahe/NotepadRedo/releases) is tagged with it and carries a self-contained `NotepadRedo.exe` plus `associate-txt.bat`.
 
 ---
 
