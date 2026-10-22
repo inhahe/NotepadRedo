@@ -78,6 +78,19 @@ To see which applies to a running instance, list its mapped files (Process Explo
 `VirtualQueryEx` with `GetMappedFileName`). An exposed instance has a *data* view of its exe, and a
 protected one maps `NotepadRedo.dll` from `%TEMP%\.net`.
 
+### Failures to load the program itself are reported
+
+The runtime's own files can still change under an instance: a .NET update installs the new patch
+version and deletes the old one, along with every assembly the instance hasn't loaded yet. The
+UI-thread handler (`App.OnDispatcherUnhandledException`) swallows exceptions to keep documents
+alive, which would make the next command needing such an assembly do nothing at all. So when the
+exception chain holds a load failure (`ProgramLoadFailure`: bad image, invalid program, missing
+type or member, or a `FileNotFoundException`/`FileLoadException` naming an assembly), the user is
+told once to save and restart. The dialog is posted at background priority, after the failed
+operation has unwound, so it never appears inside a layout pass or a shutdown. A load failure in
+`OnClosing` (the tray icon's first use) is the exception: WPF finishes closing a window whose
+`OnClosing` throws, and if that was the last window the app exits before the dialog can show.
+
 ## Windows, tabs and documents
 
 - **`MainWindow`** — shell: menu, toolbar, status bar and a `TabControl` of documents. Multiple

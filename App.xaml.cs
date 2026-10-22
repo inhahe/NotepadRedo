@@ -214,6 +214,57 @@ public partial class App : Application
         // Keep the app alive: the user's open documents are worth more than crashing on a
         // recoverable UI glitch. The full traceback is already on disk for diagnosis.
         e.Handled = true;
+        if (ProgramLoadFailure(e.Exception) is Exception failure)
+            AdviseRestart(failure);
+    }
+
+    /// <summary>Set once the user has been told to restart. The advice never changes, and a failure
+    /// raised on every layout pass must not bring the dialog back each time.</summary>
+    private bool _restartAdvised;
+
+    /// <summary>The exception in <paramref name="ex"/>'s chain saying that part of the program itself
+    /// couldn't be loaded, or null if there is none.</summary>
+    /// <remarks>Such a failure is no bug in what the user did. The program's files changed under the
+    /// running process (a .NET update deleted the runtime it started on, say), and it will go on
+    /// failing at that point until it is restarted. Swallowed silently, it makes a command look as if
+    /// it did nothing at all.</remarks>
+    private static Exception? ProgramLoadFailure(Exception? ex)
+    {
+        for (; ex is not null; ex = ex.InnerException)
+        {
+            switch (ex)
+            {
+                case BadImageFormatException:
+                case InvalidProgramException:
+                case TypeLoadException:
+                case MissingMemberException:
+                // An assembly rather than a document: its name is a display name ("System.Foo, Version=…").
+                case FileNotFoundException { FileName: string f } when f.Contains(", Version="):
+                case FileLoadException { FileName: string l } when l.Contains(", Version="):
+                    return ex;
+            }
+        }
+        return null;
+    }
+
+    /// <summary>Tell the user, once, that NotepadRedo must be restarted, citing <paramref name="failure"/>.</summary>
+    private void AdviseRestart(Exception failure)
+    {
+        if (_restartAdvised)
+            return;
+        _restartAdvised = true;
+        // Once the failed operation has unwound: it may have been a layout pass, and no dialog belongs
+        // in the middle of one. A shutdown drops the posted call, so then nothing is shown.
+        Dispatcher.BeginInvoke(new Action(() =>
+        {
+            var owner = Windows.OfType<Window>().FirstOrDefault(w => w.IsActive) ?? MainWindow;
+            ThemedDialog.Show(owner,
+                "Part of NotepadRedo couldn't be loaded, so what you just did may not have worked.\n\n"
+                + "This happens when the program's files change while it is running, after a .NET "
+                + "update for instance. Save your work and restart NotepadRedo.\n\n"
+                + $"{failure.GetType().Name}: {failure.Message}\nDetails are in {CrashLog.FilePath}",
+                "NotepadRedo needs a restart", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }), DispatcherPriority.Background);
     }
 
     protected override void OnExit(ExitEventArgs e)

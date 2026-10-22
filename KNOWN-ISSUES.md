@@ -35,7 +35,8 @@
   framework-dependent build no longer has. If the exe is replaced on the share while another
   computer runs it, after a dropped connection has closed that computer's handle, the instance reads
   parts of the new build. Its runtime is safe (the exe is marked run-from-swap), but its managed
-  code, the framework's included, is mapped from the bundle.
+  code, the framework's included, is mapped from the bundle. Expect `BadImageFormatException` and
+  the like on code it hadn't run yet, which now at least produces the restart notice.
 - **Proper fix (deferred):** extracting everything would cost every release user about 160 MB of
   `%TEMP%` per version, for a setup few of them have. Candidates: ReadyToRun-compile the app, if
   .NET then copies R2R images out of the bundle at load rather than mapping them (unverified); or,
@@ -62,14 +63,34 @@
     `\\localhost`). The overwrite is possible only once a dropped connection (a sleep, a blip) has
     closed that handle. The client then reopens the file by name for its next page.
 - **Fix:** nothing is read from the exe after startup. The app's assembly is extracted and loaded
-  from `%TEMP%\.net`, and the exe is marked run-from-swap. See "A running instance reads nothing
-  from its exe" in `design.md`.
+  from `%TEMP%\.net`, and the exe is marked run-from-swap. Load failures that remain possible now
+  produce a restart notice instead of silence. See "A running instance reads nothing from its exe"
+  in `design.md`.
 - **Verified:** by the files an instance maps. 1.0.29 run over SMB holds a data view of its exe;
   1.0.30 maps `NotepadRedo.dll` from `%TEMP%\.net` and has none. The merge viewer opens in 1.0.30
-  run over SMB, framework-dependent and self-contained. Not reproduced end to end: making a
+  run over SMB, framework-dependent and self-contained. The notice was shown for an injected `Bad IL
+  range` in `OpenMerge`, where the old handler showed nothing. Not reproduced end to end: making a
   server close a client's handle needs admin rights. The reporter's own instance reproduced it live.
 - **Still exposed:** the self-contained release (tech debt above), and any instance started before
   1.0.30, until it is restarted.
+
+### A framework-dependent instance loses unloaded assemblies when .NET is updated under it (open)
+- **Symptom:** `crash.log`, 2026-10-14 09:20, at a Windows restart:
+  `FileNotFoundException: System.Diagnostics.Tracing, Version=8.0.0.0`, raised from WPF's shutdown
+  telemetry.
+- **Root cause:** Windows Update installed .NET 8.0.32 at 00:18 that day and deleted 8.0.31, which
+  the instance was running on. Files a process has loaded are locked and survive the deletion;
+  assemblies it hasn't loaded yet are gone. Any command that first needs one then fails until the
+  instance is restarted. Today only two of the app's references load lazily:
+  `System.Security.Cryptography` (history sidecars, whose failures are caught and only lose the
+  history) and `System.Drawing.Common` (the tray icon, whose failure in `OnClosing` closes the
+  window). WPF and the framework load more on their own, as the shutdown case shows.
+- **Mitigation (2026-10-22, 1.0.30):** a load failure that reaches the UI-thread handler tells the
+  user to restart, rather than leaving the command to do nothing.
+- **Proper fix:** none cheap. A self-contained build can't be serviced under it, but the local
+  deploy would then have to extract about 160 MB per build to stay safe on a network drive (above).
+  Reproduce with `DOTNET_ROOT` pointed at a private copy of the runtime: start an instance, delete
+  `System.Drawing.Common.dll` from the copy, then close the window with "Minimize to tray" set.
 
 ### "Reload from disk" loaded an older version, not the latest (fixed 2026-10-20, 1.0.29)
 - **Symptom:** on a mapped network drive, the "changed on disk" prompt appeared after the file was
