@@ -981,8 +981,9 @@ public partial class MainWindow : Window
     private void WordWrap_Click(object sender, RoutedEventArgs e)
     {
         AppSettings.Current.WordWrap = WordWrapItem.IsChecked;
-        AppSettings.Current.Save();
-        foreach (var v in AllViews())
+        SaveAndSyncOptions();
+        // Every window's documents: the setting is shared, so a torn-off window must not keep the old wrap.
+        foreach (var v in AllOpenViews())
             v.ApplyWordWrap(AppSettings.Current.WordWrap);
     }
 
@@ -1269,19 +1270,17 @@ public partial class MainWindow : Window
     private void WatchChanges_Click(object sender, RoutedEventArgs e)
     {
         AppSettings.Current.WatchExternalChanges = WatchChangesItem.IsChecked;
-        AppSettings.Current.Save();
+        SaveAndSyncOptions();
         foreach (var v in AllOpenViews())
             v.ApplyWatchSetting();
-        SaveAndSyncOptions();
     }
 
     private void LockFile_Click(object sender, RoutedEventArgs e)
     {
         AppSettings.Current.LockFileWhileOpen = LockFileItem.IsChecked;
-        AppSettings.Current.Save();
+        SaveAndSyncOptions();
         foreach (var v in AllOpenViews())
             v.ApplyLockSetting();
-        SaveAndSyncOptions();
     }
 
     private void PersistHistory_Click(object sender, RoutedEventArgs e)

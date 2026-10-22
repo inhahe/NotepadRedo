@@ -30,6 +30,20 @@
 
 ## Bugs
 
+### Options changed elsewhere reached the menus but not the documents (fixed 2026-10-22, after 1.0.32)
+- **Symptom:** a setting changed in another running instance — word wrap, the history tree, the
+  font, and so on — showed as changed in this instance's menus once its window was activated, but
+  its open documents carried on as before, so the check marks and the documents disagreed. Within
+  one instance, **View → Word Wrap** re-wrapped only the documents in the window whose menu was
+  used; a torn-off window kept the old wrapping.
+- **Root cause:** activation re-read `settings.json` (`AppSettings.Reload`) and re-synced the menus,
+  and nothing applied the new values to the documents. `WordWrap_Click` looped over its own
+  window's documents where every other option loops over all windows'.
+- **Fix:** `Reload` returns the settings as they were, and `MainWindow.ApplyReloadedSettings`
+  applies what changed to every window's documents; `WordWrap_Click` goes through all windows. See
+  "Never touch the filesystem on the activation path" in `design.md`.
+- **Found** while making the side panes' widths a shared setting, which needed the same path.
+
 ### The self-contained release read its code from the exe while it ran (fixed 2026-10-22, 1.0.32)
 - **Was:** the GitHub release, run from a network share, had the exposure the framework-dependent
   build lost in 1.0.30. Its code stays in the bundle, mapped from the exe as it runs, and extracting
