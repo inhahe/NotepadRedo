@@ -132,6 +132,40 @@ exception chain holds a load failure, the user is told once to save and restart.
   may be cleared) from a **tear-off** (`dispose: false`, the view lives on and re-registers itself
   in its new home).
 
+### The app lives as long as its editor windows
+
+WPF registers a window in `Application.Windows` before the window's own constructor runs. A window
+whose constructor throws is therefore registered all the same: half built, never shown, never
+closed. Under WPF's default `ShutdownMode` (`OnLastWindowClose`), that window kept the process
+running, invisibly, after the user closed every real one. The next launch then counted it as a
+running instance, skipped the session restore, and in tab mode handed its files to it. So:
+
+- **`ShutdownMode` is `OnExplicitShutdown`** once startup has decided to show a window, and
+  `MainWindow.OnClosed` shuts the app down when no other *shown* `MainWindow` is left. A window
+  hidden in the tray counts as shown.
+- **`MainWindow.ShownWindows()`** is the only way code looks across windows. It skips a window that
+  was never shown (`_everShown`, set in `OnSourceInitialized`), so such a window is never asked to
+  host a file, take focus, sync its menus or contribute to the session.
+- **`OnClosing` does nothing for a never-shown window.** WPF closes it at shutdown like any other,
+  and the close logic would act on its missing parts (and, with "Minimize to tray" set, put an icon
+  in the tray).
+- **If the first window can't be created**, startup reports it and exits: with no window, nothing
+  else would ever end the process.
+
+### A failed close keeps the work
+
+An exception out of `OnClosing` makes WPF finish closing the window, possibly halfway through asking
+about unsaved documents, so the save the user was asked about never happens. `OnClosing` therefore
+runs the close (`CloseOrStayOpen`) inside a `try`, and on failure `KeepWorkAfterFailedClose`:
+
+- flushes every document's crash-recovery snapshot first, whatever happens next;
+- the first time, cancels the close and says so. The user can save by hand, or close again;
+- the second time, or during a forced quit (`--quit*`), lets the window close. It stops the
+  documents' timers rather than disposing them, because disposing deletes the snapshots, and the
+  next launch offers the work back.
+
+Cancelling every time instead would turn a bug that repeats into a window that can't be closed.
+
 ### Tab selection history
 
 `_tabMru` holds the tabs most-recently-active first, maintained in `Tabs_SelectionChanged`. Closing

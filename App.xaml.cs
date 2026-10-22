@@ -158,8 +158,25 @@ public partial class App : Application
         // default — the user still picks it. Only runs on a real UI launch, not the --quit* modes.
         FileAssociation.EnsureTxtRegistered();
 
-        var window = new MainWindow();
-        window.Show();
+        // From here the app ends when its last editor window closes (MainWindow.OnClosed). Not when
+        // its last Window of any kind does, which is WPF's default: a window whose constructor
+        // failed is never closed, and would keep the process running with nothing on screen.
+        ShutdownMode = ShutdownMode.OnExplicitShutdown;
+        MainWindow window;
+        try
+        {
+            window = new MainWindow();
+            window.Show();
+        }
+        catch (Exception ex)
+        {
+            // No window means nothing whose closing would end the process: end it here.
+            CrashLog.Log("The main window couldn't be created", ex);
+            ThemedDialog.Show(null, $"NotepadRedo couldn't start.\n\n{ex.GetType().Name}: {ex.Message}\n"
+                + $"Details are in {CrashLog.FilePath}", "NotepadRedo", MessageBoxButton.OK, MessageBoxImage.Error);
+            Shutdown(1);
+            return;
+        }
         // A launch from a console (cmd/batch) leaves that console owning the foreground, and because
         // we relaunch detached this window would otherwise come up *behind* it — hiding any prompt
         // Initialize puts up (notably "create a new file?", which then looks like a silent hang).

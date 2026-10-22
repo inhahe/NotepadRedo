@@ -105,21 +105,20 @@
   `System.Drawing.Common.dll` from the copy, then close the window with "Minimize to tray" set. The
   window must end up minimized, with the restart notice on screen.
 
-### An exception out of `MainWindow.OnClosing` closes the window without saving (open)
-- **By inspection** (found by review, 2026-10-22): WPF finishes closing a window whose `OnClosing`
-  throws. If `PromptSaveEach`, a save it triggers, or the tear-down after it throws, the window
-  closes without the save the user was being asked about. The documents' recovery files survive,
-  since `Dispose` never ran, so the next launch offers them back, minus edits made since the last
-  autosave.
-- **Covered:** the one load failure there that a running instance can realistically meet, the tray
-  icon's, which now falls back to minimizing (1.0.31). The rest uses code and assemblies loaded at
-  startup, so what remains is ordinary bugs.
-- **Proper fix (deferred):** catching everything and cancelling the close would turn a bug that
-  repeats into a window that can't be closed. Better: on an exception, flush recovery for the
-  window's documents, keep it open once, and say so, letting a second close go through.
+### An exception out of `MainWindow.OnClosing` closed the window without saving (fixed 2026-10-22, 1.0.32)
+- **Found by review** (2026-10-22): WPF finishes closing a window whose `OnClosing` throws. If
+  `PromptSaveEach`, a save it triggered, or the tear-down after it threw, the window closed without
+  the save the user was being asked about. Recovery files survived only as of the last autosave, and
+  with autosave off there were none: the work was gone.
+- **Fix:** the close runs inside a `try`. A failure flushes every document's recovery snapshot,
+  keeps the window open once and says so. A second close, or a forced quit, goes through, keeping
+  the snapshots for the next launch. See "A failed close keeps the work" in `design.md`.
+- **Verified** with a build whose save prompt throws (injected, not committed). With autosave off,
+  dirty document, X: before, the window and process closed with no snapshot written. After, the
+  window stayed open with the notice and one snapshot; a second X closed it and kept the snapshot.
 
-### A window whose constructor fails stays in `Application.Windows` and can keep the app alive (open)
-- **By inspection** (found by review, 2026-10-22): WPF's `Window` constructor registers the window
+### A window whose constructor failed could keep the app alive invisibly (fixed 2026-10-22, 1.0.32)
+- **Found by review** (2026-10-22): WPF's `Window` constructor registers the window
   in `Application.Windows` before the derived constructor runs. If `InitializeComponent`, or
   anything after it in a window's constructor, throws, the half-made window stays registered, never
   shown and never closed. The app shuts down when its last window closes (`OnLastWindowClose`), so
@@ -131,10 +130,14 @@
   `InitializeComponent` after a .NET update, or a failure while tearing a tab off into a new
   `MainWindow`. The reported `Bad IL range` did not do it: that one is raised while compiling the
   constructor, before any of it runs.
-- **Proper fix:** tie the app's lifetime to its editor windows rather than to every `Window`: shut
-  down when the last loaded `MainWindow` closes. Closing the orphans instead is not safe: a
-  never-shown `MainWindow`'s `OnClosing` would still run, and with "Minimize to tray" set it would
-  put an icon in the tray.
+- **Fix:** the app ends when its last *shown* `MainWindow` closes (`ShutdownMode` is
+  `OnExplicitShutdown`). Everything that looks across windows goes through
+  `MainWindow.ShownWindows()`, which skips a never-shown one, and `OnClosing` does nothing for one.
+  Before, an orphaned `MainWindow` could also be picked to host a file or sync its menus, and throw.
+  See "The app lives as long as its editor windows" in `design.md`.
+- **Verified** with a build whose merge window constructor throws after `InitializeComponent`
+  (injected, not committed): merge, then close the main window. Before, the process kept running
+  with no window. After, it ended.
 
 ### "Reload from disk" loaded an older version, not the latest (fixed 2026-10-20, 1.0.29)
 - **Symptom:** on a mapped network drive, the "changed on disk" prompt appeared after the file was

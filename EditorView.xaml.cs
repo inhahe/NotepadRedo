@@ -1119,10 +1119,9 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
         AppSettings.Current.PreviewFitToWidth = fit;
         AppSettings.Current.Save();
         // Apply to every open document so the choice is process-wide.
-        foreach (Window w in Application.Current.Windows)
-            if (w is MainWindow mw)
-                foreach (var v in mw.AllEditorViews())
-                    v.ApplyPreviewFit(fit);
+        foreach (var mw in MainWindow.ShownWindows())
+            foreach (var v in mw.AllEditorViews())
+                v.ApplyPreviewFit(fit);
     }
 
     private bool _suppressHistoryModeEvent;
@@ -1136,10 +1135,9 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
         AppSettings.Current.HistoryBranchesOnly = branchesOnly;
         AppSettings.Current.Save();
         // Apply to every open document so the choice is process-wide.
-        foreach (Window w in Application.Current.Windows)
-            if (w is MainWindow mw)
-                foreach (var v in mw.AllEditorViews())
-                    v.ApplyHistoryMode(branchesOnly);
+        foreach (var mw in MainWindow.ShownWindows())
+            foreach (var v in mw.AllEditorViews())
+                v.ApplyHistoryMode(branchesOnly);
     }
 
     /// <summary>Reflect the branches-only / show-all-edits preference in this view's toggle and

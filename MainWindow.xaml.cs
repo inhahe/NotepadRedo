@@ -200,11 +200,10 @@ public partial class MainWindow : Window
             return;
         var paths = new List<string>();
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (Window w in Application.Current.Windows)
-            if (w is MainWindow mw)
-                foreach (var v in mw.AllViews())
-                    if (v.FilePath is string p && seen.Add(NormalizePath(p)))
-                        paths.Add(p);
+        foreach (var mw in ShownWindows())
+            foreach (var v in mw.AllViews())
+                if (v.FilePath is string p && seen.Add(NormalizePath(p)))
+                    paths.Add(p);
         if (paths.Count == 0 && !allowEmpty)
             return;
         SessionStore.Save(paths);
@@ -484,10 +483,8 @@ public partial class MainWindow : Window
     public static bool TryFocusDocument(string path)
     {
         string norm = NormalizePath(path);
-        foreach (Window w in Application.Current.Windows)
+        foreach (var mw in ShownWindows())
         {
-            if (w is not MainWindow mw)
-                continue;
             var ti = mw.Tabs.Items.OfType<TabItem>().FirstOrDefault(t =>
                 t.Content is EditorView v && v.FilePath is string p &&
                 string.Equals(NormalizePath(p), norm, StringComparison.OrdinalIgnoreCase));
@@ -511,7 +508,7 @@ public partial class MainWindow : Window
     {
         if (TryFocusDocument(path))
             return true;
-        var mw = Application.Current.Windows.OfType<MainWindow>().FirstOrDefault();
+        var mw = ShownWindows().FirstOrDefault();
         if (mw is null)
             return false;
         // This is an explicit hand-off of a command-line filename from another launch, so honour the
@@ -527,10 +524,8 @@ public partial class MainWindow : Window
     /// </summary>
     public static bool CloseTabByToken(string token)
     {
-        foreach (Window w in Application.Current.Windows)
+        foreach (var mw in ShownWindows())
         {
-            if (w is not MainWindow mw)
-                continue;
             var ti = mw.Tabs.Items.OfType<TabItem>().FirstOrDefault(t =>
                 t.Content is EditorView v && v.RecoveryId == token);
             if (ti is null)
@@ -549,7 +544,7 @@ public partial class MainWindow : Window
     /// </summary>
     public static bool PresentExisting()
     {
-        var windows = Application.Current.Windows.OfType<MainWindow>().ToList();
+        var windows = ShownWindows().ToList();
         var mw = windows.FirstOrDefault(w => w.IsActive) ?? windows.FirstOrDefault();
         if (mw is null)
             return false;
@@ -1017,10 +1012,9 @@ public partial class MainWindow : Window
     /// <summary>Every open document across every window.</summary>
     private static IEnumerable<EditorView> AllOpenViews()
     {
-        foreach (Window w in Application.Current.Windows)
-            if (w is MainWindow mw)
-                foreach (var v in mw.AllViews())
-                    yield return v;
+        foreach (var mw in ShownWindows())
+            foreach (var v in mw.AllViews())
+                yield return v;
     }
 
     private void FontSize_Click(object sender, RoutedEventArgs e)
@@ -1036,10 +1030,8 @@ public partial class MainWindow : Window
     {
         var s = AppSettings.Current;
         s.Save();
-        foreach (Window w in Application.Current.Windows)
+        foreach (var mw in ShownWindows())
         {
-            if (w is not MainWindow mw)
-                continue;
             mw.SyncOptionMenus();
             foreach (var v in mw.AllViews())
                 v.ApplyFont(s.FontFamily, s.FontSize, s.FontBold, s.FontItalic);
@@ -1055,10 +1047,8 @@ public partial class MainWindow : Window
     {
         AppSettings.Current.ShowTree = show;
         AppSettings.Current.Save();
-        foreach (Window w in Application.Current.Windows)
+        foreach (var mw in ShownWindows())
         {
-            if (w is not MainWindow mw)
-                continue;
             mw.SyncOptionMenus();
             foreach (var v in mw.AllViews())
                 v.ApplyTreeVisible(show);
@@ -1085,10 +1075,9 @@ public partial class MainWindow : Window
         SyncOptionMenus();
 
         // Apply to every open document across every window.
-        foreach (Window w in Application.Current.Windows)
-            if (w is MainWindow mw)
-                foreach (var v in mw.AllViews())
-                    v.ApplyAutosaveInterval(seconds);
+        foreach (var mw in ShownWindows())
+            foreach (var v in mw.AllViews())
+                v.ApplyAutosaveInterval(seconds);
     }
 
     // ----- Undo grouping -----
@@ -1132,9 +1121,8 @@ public partial class MainWindow : Window
     private static void SaveAndSyncOptions()
     {
         AppSettings.Current.Save();
-        foreach (Window w in Application.Current.Windows)
-            if (w is MainWindow mw)
-                mw.SyncOptionMenus();
+        foreach (var mw in ShownWindows())
+            mw.SyncOptionMenus();
     }
 
     /// <summary>Modal prompt for a positive number of seconds. Returns false if cancelled or invalid.</summary>
@@ -1191,9 +1179,8 @@ public partial class MainWindow : Window
         AppSettings.Current.CloseButton = behavior;
         AppSettings.Current.Save();
         // Keep every window's Options menu in sync with the shared preference.
-        foreach (Window w in Application.Current.Windows)
-            if (w is MainWindow mw)
-                mw.SyncOptionMenus();
+        foreach (var mw in ShownWindows())
+            mw.SyncOptionMenus();
     }
 
     private void RestoreMode_Click(object sender, RoutedEventArgs e)
@@ -1271,8 +1258,9 @@ public partial class MainWindow : Window
 
     private IEnumerable<EditorView> AllViews() =>
         // Tabs can be null for a window that's registered in Application.Current.Windows but hasn't
-        // finished InitializeComponent yet (the WPF Window base ctor self-registers before the
-        // derived fields are wired up), so guard it — cross-window enumerators must not throw.
+        // finished InitializeComponent (the WPF Window base ctor self-registers before the derived
+        // fields are wired up). ShownWindows keeps cross-window code away from such a window; this
+        // guard is for anything that reaches one regardless.
         Tabs is null ? Enumerable.Empty<EditorView>()
                      : Tabs.Items.OfType<TabItem>().Select(t => t.Content).OfType<EditorView>();
 
@@ -1612,6 +1600,33 @@ public partial class MainWindow : Window
 
     // ===================== Closing =====================
 
+    /// <summary>Set once the window has been shown. WPF registers a window in
+    /// <c>Application.Windows</c> before its constructor runs, so one whose constructor failed is
+    /// registered all the same: half built, never shown, and never closed.</summary>
+    private bool _everShown;
+
+    protected override void OnSourceInitialized(EventArgs e)
+    {
+        base.OnSourceInitialized(e);
+        _everShown = true;
+    }
+
+    /// <summary>Every editor window of this process that has been shown, hidden in the tray
+    /// included. Everything that looks across windows goes through this, so that a window whose
+    /// constructor failed is never asked to host, focus, count or save anything.</summary>
+    internal static IEnumerable<MainWindow> ShownWindows() =>
+        Application.Current.Windows.OfType<MainWindow>().Where(w => w._everShown);
+
+    protected override void OnClosed(EventArgs e)
+    {
+        base.OnClosed(e);
+        // The app lives as long as its editor windows (ShutdownMode is OnExplicitShutdown), not as
+        // long as any Window: one whose constructor failed would otherwise keep the process running
+        // with nothing on screen, and the next launch would hand its files to it.
+        if (!ShownWindows().Any(w => w != this))
+            Application.Current.Shutdown();
+    }
+
     /// <summary>Set while an external tool (build/deploy) is force-closing the app.</summary>
     private static bool _forceQuitting;
 
@@ -1623,10 +1638,9 @@ public partial class MainWindow : Window
     public static bool RequestQuitWithRecovery()
     {
         _forceQuitting = true;
-        foreach (Window w in Application.Current.Windows)
-            if (w is MainWindow mw)
-                foreach (var v in mw.AllViews())
-                    v.FlushRecovery();
+        foreach (var mw in ShownWindows())
+            foreach (var v in mw.AllViews())
+                v.FlushRecovery();
         // Shut down after this returns, so the IPC "OK" reply is sent before the app tears down.
         Application.Current.Dispatcher.BeginInvoke(new Action(() => Application.Current.Shutdown()));
         return true;
@@ -1643,18 +1657,17 @@ public partial class MainWindow : Window
     public static bool RequestQuitWithSave()
     {
         _forceQuitting = true;
-        foreach (Window w in Application.Current.Windows)
-            if (w is MainWindow mw)
-                foreach (var v in mw.AllViews())
-                {
-                    if (!v.IsDirty)
-                        continue;
-                    // Titled: persist to disk directly, with no dialog of any kind. If that would
-                    // overwrite a change made elsewhere (or the write fails), keep it in recovery
-                    // instead, like an untitled one, which has nowhere to save silently.
-                    if (string.IsNullOrEmpty(v.FilePath) || !v.Save(saveAs: false, interactive: false))
-                        v.FlushRecovery();
-                }
+        foreach (var mw in ShownWindows())
+            foreach (var v in mw.AllViews())
+            {
+                if (!v.IsDirty)
+                    continue;
+                // Titled: persist to disk directly, with no dialog of any kind. If that would
+                // overwrite a change made elsewhere (or the write fails), keep it in recovery
+                // instead, like an untitled one, which has nowhere to save silently.
+                if (string.IsNullOrEmpty(v.FilePath) || !v.Save(saveAs: false, interactive: false))
+                    v.FlushRecovery();
+            }
         Application.Current.Dispatcher.BeginInvoke(new Action(() => Application.Current.Shutdown()));
         return true;
     }
@@ -1670,7 +1683,7 @@ public partial class MainWindow : Window
     /// </summary>
     public static bool RequestQuitWithPrompt()
     {
-        var windows = Application.Current.Windows.OfType<MainWindow>().ToList();
+        var windows = ShownWindows().ToList();
 
         // First pass: prompt for every dirty document across every window. Each prompt offers a
         // "Save All" shortcut that saves the remaining ones silently; a single Cancel aborts.
@@ -1758,6 +1771,22 @@ public partial class MainWindow : Window
 
     protected override void OnClosing(System.ComponentModel.CancelEventArgs e)
     {
+        // A window whose constructor failed holds nothing to save, hide or ask about. WPF closes it
+        // like any other at shutdown, and the code below would act on its missing parts.
+        if (_everShown)
+        {
+            // An exception out of OnClosing makes WPF finish closing the window, without the save the
+            // user may have been in the middle of being asked about.
+            try { CloseOrStayOpen(e); }
+            catch (Exception ex) { KeepWorkAfterFailedClose(e, ex); }
+        }
+        base.OnClosing(e);
+    }
+
+    /// <summary>What closing this window means: hide it, minimize it, or ask about each unsaved
+    /// document and tear the documents down. Sets <paramref name="e"/>.Cancel to stay open.</summary>
+    private void CloseOrStayOpen(System.ComponentModel.CancelEventArgs e)
+    {
         if (_forceQuitting)
         {
             // Forced quit for redeploy: recovery was already flushed above. Stop timers but keep
@@ -1765,7 +1794,6 @@ public partial class MainWindow : Window
             foreach (var view in AllViews())
                 view.StopTimers();
             DisposeTray();
-            base.OnClosing(e);
             return;
         }
 
@@ -1781,9 +1809,9 @@ public partial class MainWindow : Window
                     return;
                 case CloseButtonBehavior.MinimizeToTray:
                     e.Cancel = true;
-                    // An exception out of OnClosing makes WPF finish closing the window, unsaved work
-                    // and all. The tray icon needs System.Drawing, which nothing loads before it: after
-                    // a .NET update has deleted the runtime this process started on, it can't load.
+                    // The tray icon needs System.Drawing, which nothing loads before it: after a .NET
+                    // update has deleted the runtime this process started on, it can't load. Then
+                    // minimize instead, which needs nothing new.
                     try { MinimizeToTray(); }
                     catch (Exception ex)
                     {
@@ -1804,7 +1832,6 @@ public partial class MainWindow : Window
         if (!PromptSaveEach(docs))
         {
             e.Cancel = true;
-            base.OnClosing(e);
             return;
         }
 
@@ -1813,8 +1840,44 @@ public partial class MainWindow : Window
             view.Dispose();
 
         DisposeTray();
+    }
 
-        base.OnClosing(e);
+    /// <summary>Set once closing this window has failed. The next attempt closes it regardless.</summary>
+    private bool _closeFailed;
+
+    /// <summary>Closing failed with <paramref name="ex"/>, perhaps halfway through asking about
+    /// unsaved work. That work goes into crash recovery, whatever happens next. The first time, the
+    /// window stays open and says so: the user can save by hand, or close again. Closing again, or a
+    /// forced quit, closes it, and the next launch offers the work back.</summary>
+    private void KeepWorkAfterFailedClose(System.ComponentModel.CancelEventArgs e, Exception ex)
+    {
+        CrashLog.Log("Closing a window failed", ex);
+        foreach (var view in AllViews())
+            view.FlushRecovery();   // writes a dirty document's snapshot; a clean one has none
+        if (_closeFailed || _forceQuitting)
+        {
+            // Close, keeping the snapshots: the documents are not disposed, which would delete them.
+            e.Cancel = false;
+            foreach (var view in AllViews())
+                view.StopTimers();
+            try { DisposeTray(); } catch (Exception inner) { CrashLog.Log("Disposing the tray icon failed", inner); }
+            return;
+        }
+        _closeFailed = true;
+        e.Cancel = true;
+        Dispatcher.BeginInvoke(new Action(() =>
+        {
+            try
+            {
+                ThemedDialog.Show(this,
+                    $"This window couldn't be closed normally.\n\n{ex.GetType().Name}: {ex.Message}\n\n"
+                    + "Its unsaved work has been kept for crash recovery, so nothing is lost. You can save "
+                    + "it now, or close the window again to close it anyway: the work will then be offered "
+                    + $"back the next time NotepadRedo starts.\n\nDetails are in {CrashLog.FilePath}",
+                    "Couldn't close the window", MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
+            catch (Exception inner) { CrashLog.Log("Couldn't report the failed close", inner); }
+        }));
     }
 
     // ===================== Minimise to tray =====================
