@@ -110,11 +110,17 @@ internal static class Program
         int failures = CheckLoadFailureClassifier(filter) + CheckRegistrationRule(filter) + CheckSweepRule(filter)
                        + CheckPaneArithmetic(filter);
         var app = new Application { ShutdownMode = ShutdownMode.OnExplicitShutdown };
+        // What App.xaml gives the real app, which editor windows need.
+        foreach (string dictionary in new[] { "Themes/Palette.Base.xaml", "Themes/Shared.xaml" })
+            app.Resources.MergedDictionaries.Add(new ResourceDictionary
+            {
+                Source = new Uri("pack://application:,,,/NotepadRedo;component/" + dictionary),
+            });
         app.Dispatcher.InvokeAsync(async () =>
         {
             try
             {
-                failures += await CheckPaneLayout(filter);
+                failures += await CheckPaneLayout(filter) + await CheckReloadTakesOnlyWhatTheFileHolds(filter);
                 foreach (var loc in Locations(args.Contains("--share")))
                 {
                     // Asked for and not to be had: a pass that tests nothing must not pass quietly.
@@ -130,6 +136,7 @@ internal static class Program
                             && !await Run($"[{loc.Name}] {test.Name}", test, loc.WriterDir, loc.EditorDir))
                             failures++;
                 }
+                failures += await CheckSettingsReachEveryWindow(filter);   // last: see there
             }
             catch (Exception ex) { Console.WriteLine(ex); failures++; }
             finally { app.Shutdown(); }
@@ -286,7 +293,7 @@ internal static class Program
             ("no width yet", double.PositiveInfinity, treeAndSearch, new double[] { 340, 320 }),
             ("nothing open", 100, Array.Empty<(double, double)>(), Array.Empty<double>()),
         };
-        var drags = new (string Name, double Width, double Middle, double Cursor, double Min, double Max, double Expected)[]
+        var drags = new (string Name, double StartWidth, double StartX, double Cursor, double Min, double Max, double Expected)[]
         {
             ("the pane grows as the cursor goes left", 300, 500, 450, 80, 1000, 350),
             ("and shrinks as it goes right", 300, 500, 600, 80, 1000, 200),
@@ -294,14 +301,15 @@ internal static class Program
             ("no wider than the editor can give up", 300, 500, 0, 80, 640.7, 640),
             ("its minimum, when even that doesn't fit", 300, 500, 450, 80, 40, 80),
             ("whole pixels", 300, 500.4, 450, 80, 1000, 350),
+            ("where it began, when the cursor is back where it began", 300, 503, 503, 80, 1000, 300),
         };
         int failed = 0;
         foreach (var (name, room, panes, expected) in fits)
             failed += Case($"[unit] EditorView.FitPaneWidths: {name}",
                 EditorView.FitPaneWidths(room, panes), expected);
-        foreach (var (name, width, middle, cursor, min, max, expected) in drags)
+        foreach (var (name, startWidth, startX, cursor, min, max, expected) in drags)
             failed += Case($"[unit] EditorView.DraggedPaneWidth: {name}",
-                new[] { EditorView.DraggedPaneWidth(width, middle, cursor, min, max) }, new[] { expected });
+                new[] { EditorView.DraggedPaneWidth(startWidth, startX, cursor, min, max) }, new[] { expected });
         return failed;
 
         int Case(string label, double[] actual, double[] expected)
@@ -318,8 +326,9 @@ internal static class Program
         }
     }
 
-    /// <summary>The side panes in a real view: remembered widths, squeezed by a narrow window and given
-    /// back by a wide one, a dragged divider, and what a drag leaves remembered. Returns 1 on failure.</summary>
+    /// <summary>The side panes in a real view: remembered widths, squeezed by a narrow view and given
+    /// back by a wide one, dragged dividers, and what a drag leaves remembered. The view's own width is
+    /// set, not its window's, which Windows keeps within the screen. Returns 1 on failure.</summary>
     private static async Task<int> CheckPaneLayout(string filter)
     {
         const string Label = "[layout] The side panes take their remembered widths and keep them through a drag";
@@ -331,12 +340,17 @@ internal static class Program
         var (view, host) = Host();
         var panes = new[] { view.TreeColumn, view.SearchColumn, view.ReplaceColumn };
         double[] Widths() => panes.Select(c => c.ActualWidth).ToArray();
+        double[] Remembered() => new[] { s.TreePaneWidth, s.SearchPaneWidth, s.ReplacePaneWidth };
         string Described(double[] w) => "[" + string.Join(", ", w) + "]";
         void ExpectWidths(double[] expected, string when) =>
             Expect(Widths().SequenceEqual(expected), $"{when}, the panes are {Described(Widths())}, not {Described(expected)}");
+        void ExpectRemembered(double[] expected, string when) =>
+            Expect(Remembered().SequenceEqual(expected), $"{when}, the remembered widths are {Described(Remembered())}, not {Described(expected)}");
+        double DividerMiddle(Border divider) =>
+            divider.TranslatePoint(new Point(divider.ActualWidth / 2, 0), view).X;
         async Task Resize(double width)
         {
-            host.Width = width;
+            view.Width = width;
             await Settle();
         }
         async Task Settle()
@@ -351,55 +365,64 @@ internal static class Program
             view.OpenSearch();
             view.OpenReplace();
             await Settle();
-            ExpectWidths(new double[] { 300, 250, 260 }, "opened in a wide window");
-            Expect(view.SearchSplitter.IsVisible && view.ReplaceSplitter.IsVisible, "an open pane has no divider");
+            ExpectWidths(new double[] { 300, 250, 260 }, "opened in a wide view");
+            Expect(view.TreeSplitter.IsVisible && view.SearchSplitter.IsVisible && view.ReplaceSplitter.IsVisible,
+                "an open pane has no divider");
 
-            await Resize(900);
+            await Resize(880);
             double room = view.ActualWidth - view.EditorColumn.MinWidth - 3 * view.TreeSplitter.ActualWidth;
             double[] squeezed = Widths();
             Expect(squeezed.Sum() <= room && squeezed.Sum() > room - 3,
-                $"in a narrow window, panes {Described(squeezed)} don't fill the {room} beside the editor's minimum");
+                $"in a narrow view, panes {Described(squeezed)} don't fill the {room} beside the editor's minimum");
             Expect(squeezed[0] < 300 && squeezed[1] < 250 && squeezed[2] < 260 && squeezed[0] >= 80
-                   && squeezed[1] >= 180 && squeezed[2] >= 200, $"in a narrow window, the panes are {Described(squeezed)}");
-            Expect((s.TreePaneWidth, s.SearchPaneWidth, s.ReplacePaneWidth) == (300, 250, 260),
-                "a narrow window changed the remembered widths");
+                   && squeezed[1] >= 180 && squeezed[2] >= 200, $"in a narrow view, the panes are {Described(squeezed)}");
+            ExpectRemembered(new double[] { 300, 250, 260 }, "after a narrow view");
 
             await Resize(1600);
-            ExpectWidths(new double[] { 300, 250, 260 }, "back in a wide window");
+            ExpectWidths(new double[] { 300, 250, 260 }, "back in a wide view");
 
             // Drag the search pane's divider 60 px left, in two moves.
-            double middle = view.SearchSplitter.TranslatePoint(new Point(view.SearchSplitter.ActualWidth / 2, 0), view).X;
-            Expect(view.BeginSplitterDrag(view.SearchSplitter), "the search pane's divider can't be dragged");
-            view.DragSplitterTo(middle - 30);
+            double x = DividerMiddle(view.SearchSplitter);
+            Expect(view.BeginSplitterDrag(view.SearchSplitter, x), "the search pane's divider can't be dragged");
+            view.DragSplitterTo(x - 30);
             await Settle();
-            view.DragSplitterTo(middle - 60);
+            view.DragSplitterTo(x - 60);
             await Settle();
             view.EndSplitterDrag();
             await Settle();
             ExpectWidths(new double[] { 300, 310, 260 }, "after dragging the search pane's divider 60 px left");
-            Expect((s.TreePaneWidth, s.SearchPaneWidth, s.ReplacePaneWidth) == (300, 310, 260),
-                $"after the drag, the remembered widths are {(s.TreePaneWidth, s.SearchPaneWidth, s.ReplacePaneWidth)}");
+            ExpectRemembered(new double[] { 300, 310, 260 }, "after that drag");
 
             // Dragging right past the minimum stops at it.
-            Expect(view.BeginSplitterDrag(view.ReplaceSplitter), "the replace pane's divider can't be dragged");
+            x = DividerMiddle(view.ReplaceSplitter);
+            Expect(view.BeginSplitterDrag(view.ReplaceSplitter, x), "the replace pane's divider can't be dragged");
             view.DragSplitterTo(view.ActualWidth);
             await Settle();
             view.EndSplitterDrag();
             await Settle();
             ExpectWidths(new double[] { 300, 310, 200 }, "after dragging the replace pane's divider to the far right");
 
-            // A drag in a narrow window remembers what every open pane shows, so nothing springs back.
-            await Resize(900);
+            // A click on a divider in a narrow view changes nothing: what shows is squeezed, and
+            // remembering it would forget the real widths.
+            await Resize(880);
             squeezed = Widths();
-            Expect(view.BeginSplitterDrag(view.TreeSplitter), "the history pane's divider can't be dragged");
-            middle = view.TreeSplitter.TranslatePoint(new Point(view.TreeSplitter.ActualWidth / 2, 0), view).X;
-            view.DragSplitterTo(middle);
+            x = DividerMiddle(view.TreeSplitter);
+            Expect(view.BeginSplitterDrag(view.TreeSplitter, x), "the history pane's divider can't be dragged");
+            view.DragSplitterTo(x);
             view.EndSplitterDrag();
-            view.LayOutPanes();   // as MainWindow.RememberPaneWidths does for every open document
             await Settle();
-            ExpectWidths(squeezed, "after a drag in a narrow window");
-            Expect(new[] { s.TreePaneWidth, s.SearchPaneWidth, s.ReplacePaneWidth }.SequenceEqual(squeezed),
-                "a drag in a narrow window didn't remember the widths it left");
+            ExpectWidths(squeezed, "after a click on a divider in a narrow view");
+            ExpectRemembered(new double[] { 300, 310, 200 }, "after a click on a divider in a narrow view");
+
+            // A drag there remembers what every open pane shows, so nothing springs back.
+            Expect(view.BeginSplitterDrag(view.TreeSplitter, x), "the history pane's divider can't be dragged");
+            view.DragSplitterTo(x + 10);
+            view.EndSplitterDrag();
+            view.LayOutPanes();   // as MainWindow.ApplySettings does for every open document
+            await Settle();
+            double[] dragged = { squeezed[0] - 10, squeezed[1], squeezed[2] };
+            ExpectWidths(dragged, "after narrowing the history pane by 10 px in a narrow view");
+            ExpectRemembered(dragged, "after that drag");
 
             // A closed pane takes no room and has no divider; a usable width is put back for a broken one.
             await Resize(1600);
@@ -426,6 +449,120 @@ internal static class Program
             (s.TreePaneWidth, s.SearchPaneWidth, s.ReplacePaneWidth) = (AppSettings.DefaultTreePaneWidth,
                 AppSettings.DefaultSearchPaneWidth, AppSettings.DefaultReplacePaneWidth);
         }
+    }
+
+    /// <summary>The settings file as <see cref="AppSettings"/> reads and writes it.</summary>
+    private static string SettingsFile => Path.Combine(AppPaths.DataDir, "settings.json");
+
+    /// <summary>Re-read the settings file the way activation does, waiting for the watcher to have
+    /// seen the write just made, as it must before <see cref="AppSettings.Reload"/> reads anything.</summary>
+    /// <returns>The settings as they were before.</returns>
+    private static async Task<AppSettings> ReloadSettings()
+    {
+        for (int i = 0; i < 100; i++)
+        {
+            if (AppSettings.Current.Reload() is { } before)
+                return before;
+            await Task.Delay(50);
+        }
+        throw new TestFailure("the settings file was never re-read");
+    }
+
+    /// <summary>What <see cref="AppSettings.Reload"/> takes from a file another instance wrote: only
+    /// the settings it holds (an older build's file lacks the newer ones), and it keeps the ones this
+    /// build doesn't know when saving. Returns 1 on failure.</summary>
+    private static async Task<int> CheckReloadTakesOnlyWhatTheFileHolds(string filter)
+    {
+        const string Label = "[settings] Reload keeps settings the file lacks, and saving keeps ones it doesn't know";
+        if (!Label.Contains(filter, StringComparison.OrdinalIgnoreCase))
+            return 0;
+        var s = AppSettings.Current;
+        try
+        {
+            s.TreePaneWidth = 222;
+            s.WordWrap = true;
+            // An older build's file: no TreePaneWidth. And one setting from a newer build.
+            File.WriteAllText(SettingsFile, "{ \"WordWrap\": false, \"FromANewerBuild\": 7 }");
+            await ReloadSettings();
+            Expect(!s.WordWrap, "the setting the file holds wasn't taken");
+            Expect(s.TreePaneWidth == 222, $"a setting the file lacks became {s.TreePaneWidth}");
+            s.Save();
+            string saved = File.ReadAllText(SettingsFile);
+            Expect(saved.Contains("\"FromANewerBuild\": 7"), $"saving dropped a setting this build doesn't know:\n{saved}");
+            Console.WriteLine($"ok   {Label}");
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"FAIL {Label}\n     {(ex is TestFailure ? ex.Message : ex.ToString())}");
+            return 1;
+        }
+        finally
+        {
+            s.TreePaneWidth = AppSettings.DefaultTreePaneWidth;
+            s.WordWrap = true;
+            s.Unknown = null;
+        }
+    }
+
+    /// <summary>A setting changed reaches the documents in every window: one another instance saved
+    /// (found on activation), and one changed here (from one window's menu). Runs last: it opens real
+    /// editor windows, and the app ends when the last of those closes. Returns 1 on failure.</summary>
+    private static async Task<int> CheckSettingsReachEveryWindow(string filter)
+    {
+        const string Label = "[settings] A changed setting reaches the documents in every window";
+        if (!Label.Contains(filter, StringComparison.OrdinalIgnoreCase))
+            return 0;
+        var s = AppSettings.Current;
+        (s.WordWrap, s.ShowTree, s.FontSize, s.TreePaneWidth) = (true, true, 11, 300);
+        try
+        {
+            var windows = new[] { OpenEditorWindow(), OpenEditorWindow() };
+            var views = windows.Select(w => w.AllViews().Single()).ToArray();
+            await System.Windows.Threading.Dispatcher.Yield(System.Windows.Threading.DispatcherPriority.ContextIdle);
+
+            // Another instance turns wrap off, makes the font 16 pt and the history pane 222 wide.
+            var other = s.Snapshot();
+            (other.WordWrap, other.FontSize, other.TreePaneWidth) = (false, 16, 222);
+            other.Save();
+            MainWindow.ApplySettings(await ReloadSettings());   // what activating a window does
+            for (int i = 0; i < 2; i++)
+            {
+                string which = i == 0 ? "the first window" : "the second window";
+                Expect(views[i].Editor.TextWrapping == TextWrapping.NoWrap, $"wrap is still on in {which}");
+                Expect(!windows[i].WordWrapItem.IsChecked, $"View > Word Wrap is still checked in {which}");
+                Expect(views[i].Editor.FontSize == 16 * 96.0 / 72, $"{which}'s font is {views[i].Editor.FontSize} px, not 16 pt");
+                Expect(views[i].TreeColumn.Width.Value == 222, $"{which}'s history pane is {views[i].TreeColumn.Width}, not 222");
+            }
+
+            // Wrap turned back on from the first window's menu.
+            MainWindow.ChangeSettings(n => n.WordWrap = true);
+            Expect(views[1].Editor.TextWrapping == TextWrapping.Wrap, "turning wrap on in one window left it off in the other");
+            Expect(windows[1].WordWrapItem.IsChecked, "turning wrap on in one window left the other's menu unchecked");
+
+            Console.WriteLine($"ok   {Label}");
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"FAIL {Label}\n     {(ex is TestFailure ? ex.Message : ex.ToString())}");
+            return 1;
+        }
+    }
+
+    /// <summary>A real editor window, parked off-screen, holding one blank document. Left open: it
+    /// closes when the app shuts down.</summary>
+    private static MainWindow OpenEditorWindow()
+    {
+        var w = new MainWindow
+        {
+            Width = 900, Height = 600,
+            WindowStartupLocation = WindowStartupLocation.Manual, Left = -32000, Top = -32000,
+            ShowActivated = false, ShowInTaskbar = false,
+        };
+        w.Show();
+        w.Initialize(Array.Empty<string>(), blankRequested: true, firstInstance: false);
+        return w;
     }
 
     /// <summary>The settings every test starts from (in memory only): the other program must be able

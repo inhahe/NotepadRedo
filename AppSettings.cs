@@ -1,5 +1,7 @@
 using System.IO;
+using System.Reflection;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace NotepadRedo;
 
@@ -113,6 +115,23 @@ public sealed class AppSettings
     /// undo step. Consecutive edits closer together than this are folded into one node.</summary>
     public double UndoCoalesceSeconds { get; set; } = 4;
 
+    /// <summary>Settings this build doesn't know, read from a file a newer build wrote. Kept and
+    /// written back, so saving here doesn't delete them.</summary>
+    [JsonExtensionData]
+    public Dictionary<string, JsonElement>? Unknown { get; set; }
+
+    /// <summary>Every setting the file stores by name: the public read-write properties, less
+    /// <see cref="Unknown"/>.</summary>
+    private static readonly PropertyInfo[] SettingProperties = typeof(AppSettings)
+        .GetProperties(BindingFlags.Public | BindingFlags.Instance)
+        .Where(p => p.CanRead && p.CanWrite && p.GetCustomAttribute<JsonExtensionDataAttribute>() is null)
+        .ToArray();
+
+    /// <summary>A copy of the settings as they are now, to tell afterwards what a change changed.
+    /// Shallow, and that is enough: every setting is a value or a string, and <see cref="Unknown"/>
+    /// is only ever replaced, never changed in place.</summary>
+    public AppSettings Snapshot() => (AppSettings)MemberwiseClone();
+
     private static readonly string Dir = AppPaths.DataDir;
     private static readonly string FilePath = Path.Combine(Dir, "settings.json");
 
@@ -182,33 +201,18 @@ public sealed class AppSettings
         {
             if (!File.Exists(FilePath))
                 return null;
-            var fresh = JsonSerializer.Deserialize<AppSettings>(File.ReadAllText(FilePath));
+            string json = File.ReadAllText(FilePath);
+            var fresh = JsonSerializer.Deserialize<AppSettings>(json);
             if (fresh is null)
                 return null;
-            // Every property is a value or a string, so a shallow copy is a full one.
-            var before = (AppSettings)MemberwiseClone();
-            AutosaveSeconds    = fresh.AutosaveSeconds;
-            OpenInNewInstance   = fresh.OpenInNewInstance;
-            WordWrap            = fresh.WordWrap;
-            ShowTree            = fresh.ShowTree;
-            PreviewFitToWidth   = fresh.PreviewFitToWidth;
-            HistoryBranchesOnly = fresh.HistoryBranchesOnly;
-            CloseButton         = fresh.CloseButton;
-            RestoreSession      = fresh.RestoreSession;
-            WatchExternalChanges = fresh.WatchExternalChanges;
-            LockFileWhileOpen   = fresh.LockFileWhileOpen;
-            PersistHistory      = fresh.PersistHistory;
-            FontFamily          = fresh.FontFamily;
-            FontSize            = fresh.FontSize;
-            FontBold            = fresh.FontBold;
-            FontItalic          = fresh.FontItalic;
-            UndoBreakOnEnter    = fresh.UndoBreakOnEnter;
-            UndoBreakOnPaste    = fresh.UndoBreakOnPaste;
-            UndoPerCharacter    = fresh.UndoPerCharacter;
-            UndoCoalesceSeconds = fresh.UndoCoalesceSeconds;
-            TreePaneWidth       = fresh.TreePaneWidth;
-            SearchPaneWidth     = fresh.SearchPaneWidth;
-            ReplacePaneWidth    = fresh.ReplacePaneWidth;
+            using var file = JsonDocument.Parse(json);
+            var before = Snapshot();
+            // Only the settings the file holds. One written by an older build lacks those added
+            // since, and taking their defaults would undo them here.
+            foreach (var p in SettingProperties)
+                if (file.RootElement.TryGetProperty(p.Name, out _))
+                    p.SetValue(this, p.GetValue(fresh));
+            Unknown = fresh.Unknown;
             return before;
         }
         catch { return null; /* best-effort */ }

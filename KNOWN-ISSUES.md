@@ -28,6 +28,19 @@
   least when a watcher event arrives with an unchanged stamp (an event is evidence of a write). The
   price is reading the whole file on each such event, our own saves included.
 
+### The watcher and the file lock are set up on the UI thread
+- **Where:** `EditorView.StartWatching` → `CreateWatcher`, and `ApplyFileLock` (`File.Exists`, then a
+  deny-write `FileStream`), called on the UI thread when a document is opened, saved, recovered or
+  moved, and when watching or locking is turned on — from this instance's menu, or from another
+  instance (posted after activation by `MainWindow.ApplySettings`).
+- **Consequence:** for a document on a share that has gone unreachable, each of those freezes the
+  window until the network gives up (tens of seconds). Opening or saving such a file blocks on the
+  file itself anyway; turning an option on is the case where only the watcher or the lock blocks.
+- **Proper fix (deferred):** create the watcher off the UI thread, the way `ResumeWatching` already
+  does (`Task.Run(() => CreateWatcher(path))`, then install it if `_watchGeneration` hasn't moved),
+  and acquire the lock likewise. The lock is the harder half: `Save` writes through the lock handle,
+  so a save racing the acquisition needs ordering.
+
 ## Bugs
 
 ### Options changed elsewhere reached the menus but not the documents (fixed 2026-10-22, after 1.0.32)
@@ -39,10 +52,13 @@
 - **Root cause:** activation re-read `settings.json` (`AppSettings.Reload`) and re-synced the menus,
   and nothing applied the new values to the documents. `WordWrap_Click` looped over its own
   window's documents where every other option loops over all windows'.
-- **Fix:** `Reload` returns the settings as they were, and `MainWindow.ApplyReloadedSettings`
-  applies what changed to every window's documents; `WordWrap_Click` goes through all windows. See
-  "Never touch the filesystem on the activation path" in `design.md`.
+- **Fix:** every option now goes through `MainWindow.ChangeSettings`, and `MainWindow.ApplySettings`
+  applies what changed to every window's documents, both for a change made here and, on activation,
+  for one `Reload` found. `Reload` takes only the settings the file holds, so an older build's file
+  can't reset newer settings to their defaults, and settings a newer build wrote survive a save
+  here. See "Shared settings" in `design.md`.
 - **Found** while making the side panes' widths a shared setting, which needed the same path.
+- **Tests:** `[settings]` in `tests/ExternalChange`; each fails with its part of the fix taken out.
 
 ### The self-contained release read its code from the exe while it ran (fixed 2026-10-22, 1.0.32)
 - **Was:** the GitHub release, run from a network share, had the exposure the framework-dependent

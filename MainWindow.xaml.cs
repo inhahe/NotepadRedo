@@ -63,10 +63,9 @@ public partial class MainWindow : Window
         {
             // Re-read settings from disk so changes made by other instances are picked up as soon as
             // this window gets focus — by every window, since the next one activated finds nothing
-            // new to read.
+            // new to read. (Changes made in this instance reached every window when they were made.)
             if (AppSettings.Current.Reload() is { } before)
-                ApplyReloadedSettings(before);
-            SyncOptionMenus();
+                ApplySettings(before);
             // Another instance may have opened files while we were in the background. Kick off a
             // background re-scan; it raises RecentFiles.Changed if anything actually moved. Nothing
             // here may touch a document path — activation runs inside WM_ACTIVATE, where a probe of
@@ -978,14 +977,8 @@ public partial class MainWindow : Window
     private void FindPrevious_Click(object sender, RoutedEventArgs e) => ActiveView?.FindNext(backwards: true);
     private void Replace_Click(object sender, RoutedEventArgs e) => ActiveView?.OpenReplace();
 
-    private void WordWrap_Click(object sender, RoutedEventArgs e)
-    {
-        AppSettings.Current.WordWrap = WordWrapItem.IsChecked;
-        SaveAndSyncOptions();
-        // Every window's documents: the setting is shared, so a torn-off window must not keep the old wrap.
-        foreach (var v in AllOpenViews())
-            v.ApplyWordWrap(AppSettings.Current.WordWrap);
-    }
+    private void WordWrap_Click(object sender, RoutedEventArgs e) =>
+        ChangeSettings(s => s.WordWrap = WordWrapItem.IsChecked);
 
     // ===================== Menu: Format (editor font) =====================
 
@@ -994,28 +987,23 @@ public partial class MainWindow : Window
     private void Font_Click(object sender, RoutedEventArgs e)
     {
         var s = AppSettings.Current;
-        // Remember the current font so Cancel can restore it after live previewing.
-        string origFamily = s.FontFamily;
-        double origSize = s.FontSize;
-        bool origBold = s.FontBold, origItalic = s.FontItalic;
-
-        var dlg = new FontPickerWindow(origFamily, origSize, origBold, origItalic) { Owner = this };
+        var dlg = new FontPickerWindow(s.FontFamily, s.FontSize, s.FontBold, s.FontItalic) { Owner = this };
         dlg.SelectionChanged += () =>
             PreviewFont(dlg.SelectedFamily, dlg.SelectedSize, dlg.Bold, dlg.Italic);
 
         if (dlg.ShowDialog() == true)
-        {
-            s.FontFamily = dlg.SelectedFamily;
-            s.FontSize   = dlg.SelectedSize;
-            s.FontBold   = dlg.Bold;
-            s.FontItalic = dlg.Italic;
-            ApplyFontEverywhere();
-        }
+            ChangeSettings(chosen =>
+            {
+                chosen.FontFamily = dlg.SelectedFamily;
+                chosen.FontSize   = dlg.SelectedSize;
+                chosen.FontBold   = dlg.Bold;
+                chosen.FontItalic = dlg.Italic;
+            });
         else
-        {
-            // Cancelled — undo the live preview without persisting anything.
-            PreviewFont(origFamily, origSize, origBold, origItalic);
-        }
+            // Cancelled: undo the live preview, back to the font the settings hold now. Not the one
+            // they held when the dialog opened: closing it activates this window, which may already
+            // have applied a font another instance saved meanwhile.
+            PreviewFont(s.FontFamily, s.FontSize, s.FontBold, s.FontItalic);
     }
 
     /// <summary>Apply a font to every open editor for preview only (no persistence).</summary>
@@ -1037,21 +1025,7 @@ public partial class MainWindow : Window
     {
         if (sender is not MenuItem mi || mi.Tag is not string tag || !double.TryParse(tag, out double pt))
             return;
-        AppSettings.Current.FontSize = pt;
-        ApplyFontEverywhere();
-    }
-
-    /// <summary>Persist the shared editor font and apply it to every open document in every window.</summary>
-    private static void ApplyFontEverywhere()
-    {
-        var s = AppSettings.Current;
-        s.Save();
-        foreach (var mw in ShownWindows())
-        {
-            mw.SyncOptionMenus();
-            foreach (var v in mw.AllViews())
-                v.ApplyFont(s.FontFamily, s.FontSize, s.FontBold, s.FontItalic);
-        }
+        ChangeSettings(s => s.FontSize = pt);
     }
 
     private void ShowTree_Click(object sender, RoutedEventArgs e) => SetTreePreference(ShowTreeItem.IsChecked);
@@ -1059,33 +1033,30 @@ public partial class MainWindow : Window
     private void ToggleTree_Click(object sender, RoutedEventArgs e) => SetTreePreference(TreeToggle.IsChecked == true);
 
     /// <summary>Persist the history-tree preference and apply it to every open document.</summary>
-    internal static void SetTreePreference(bool show)
+    internal static void SetTreePreference(bool show) => ChangeSettings(s => s.ShowTree = show);
+
+    // ===================== Shared settings =====================
+
+    /// <summary>Change shared settings from this instance: <paramref name="change"/> sets them, then
+    /// they are saved and every window and document is brought in line (<see cref="ApplySettings"/>).
+    /// Every option goes through here, so none can reach one window and not another.</summary>
+    internal static void ChangeSettings(Action<AppSettings> change)
     {
-        AppSettings.Current.ShowTree = show;
-        AppSettings.Current.Save();
-        foreach (var mw in ShownWindows())
-        {
-            mw.SyncOptionMenus();
-            foreach (var v in mw.AllViews())
-                v.ApplyTreeVisible(show);
-        }
+        var s = AppSettings.Current;
+        var before = s.Snapshot();
+        change(s);
+        s.Save();
+        ApplySettings(before);
     }
 
-    /// <summary>Persist the side panes' widths, just changed by dragging a divider in one document,
-    /// and give every open document the same.</summary>
-    internal static void RememberPaneWidths()
-    {
-        AppSettings.Current.Save();
-        foreach (var v in AllOpenViews())
-            v.LayOutPanes();
-    }
-
-    /// <summary>Bring every window and open document in line with settings another instance saved:
-    /// whatever <see cref="AppSettings.Reload"/> found changed from <paramref name="before"/>.
-    /// Called on activation, so it does no I/O itself (see design.md, "Never touch the filesystem on
-    /// the activation path"): watching and locking the file, which reach the document's file, are
-    /// posted to run after activation is over.</summary>
-    private static void ApplyReloadedSettings(AppSettings before)
+    /// <summary>Bring every window and open document in line with the current settings: re-check every
+    /// window's menus, and apply to every document whatever differs from <paramref name="before"/>.
+    /// The one place that knows how each setting shows in a document, for an option changed here
+    /// (<see cref="ChangeSettings"/>) and for one another instance saved (found by
+    /// <see cref="AppSettings.Reload"/> on activation). For the second it runs inside activation, so it
+    /// does no I/O itself (see design.md, "Never touch the filesystem on the activation path"):
+    /// watching and locking the file reach the document's path, so they are posted to run after.</summary>
+    internal static void ApplySettings(AppSettings before)
     {
         var s = AppSettings.Current;
         bool fontChanged = s.FontFamily != before.FontFamily || s.FontSize != before.FontSize
@@ -1136,68 +1107,41 @@ public partial class MainWindow : Window
     {
         if (sender is not MenuItem mi || mi.Tag is not string tag)
             return;
-        AppSettings.Current.OpenInNewInstance = tag == "instance";
-        AppSettings.Current.Save();
-        SyncOptionMenus();
+        ChangeSettings(s => s.OpenInNewInstance = tag == "instance");
     }
 
     private void AutosaveInterval_Click(object sender, RoutedEventArgs e)
     {
         if (sender is not MenuItem mi || mi.Tag is not string tag || !int.TryParse(tag, out int seconds))
             return;
-        AppSettings.Current.AutosaveSeconds = seconds;
-        AppSettings.Current.Save();
-        SyncOptionMenus();
-
-        // Apply to every open document across every window.
-        foreach (var mw in ShownWindows())
-            foreach (var v in mw.AllViews())
-                v.ApplyAutosaveInterval(seconds);
+        ChangeSettings(s => s.AutosaveSeconds = seconds);
     }
 
     // ----- Undo grouping -----
 
-    private void UndoBreakEnter_Click(object sender, RoutedEventArgs e)
-    {
-        AppSettings.Current.UndoBreakOnEnter = UndoBreakEnter.IsChecked;
-        SaveAndSyncOptions();
-    }
+    private void UndoBreakEnter_Click(object sender, RoutedEventArgs e) =>
+        ChangeSettings(s => s.UndoBreakOnEnter = UndoBreakEnter.IsChecked);
 
-    private void UndoBreakPaste_Click(object sender, RoutedEventArgs e)
-    {
-        AppSettings.Current.UndoBreakOnPaste = UndoBreakPaste.IsChecked;
-        SaveAndSyncOptions();
-    }
+    private void UndoBreakPaste_Click(object sender, RoutedEventArgs e) =>
+        ChangeSettings(s => s.UndoBreakOnPaste = UndoBreakPaste.IsChecked);
 
-    private void UndoPerChar_Click(object sender, RoutedEventArgs e)
-    {
-        AppSettings.Current.UndoPerCharacter = UndoPerChar.IsChecked;
-        SaveAndSyncOptions();
-    }
+    private void UndoPerChar_Click(object sender, RoutedEventArgs e) =>
+        ChangeSettings(s => s.UndoPerCharacter = UndoPerChar.IsChecked);
 
     private void UndoPause_Click(object sender, RoutedEventArgs e)
     {
         if (sender is not MenuItem mi || mi.Tag is not string tag ||
             !double.TryParse(tag, out double seconds))
             return;
-        AppSettings.Current.UndoCoalesceSeconds = seconds;
-        SaveAndSyncOptions();
+        ChangeSettings(s => s.UndoCoalesceSeconds = seconds);
     }
 
     private void UndoPauseCustom_Click(object sender, RoutedEventArgs e)
     {
-        double current = AppSettings.Current.UndoCoalesceSeconds;
-        if (PromptForSeconds(current, out double seconds))
-            AppSettings.Current.UndoCoalesceSeconds = seconds;
-        SaveAndSyncOptions();   // re-sync either way so the checkmarks reflect the real value
-    }
-
-    /// <summary>Persist settings and refresh every window's Options-menu checkmarks.</summary>
-    private static void SaveAndSyncOptions()
-    {
-        AppSettings.Current.Save();
-        foreach (var mw in ShownWindows())
-            mw.SyncOptionMenus();
+        if (PromptForSeconds(AppSettings.Current.UndoCoalesceSeconds, out double seconds))
+            ChangeSettings(s => s.UndoCoalesceSeconds = seconds);
+        else
+            SyncOptionMenus();   // the click toggled the item's check mark; put the real value back
     }
 
     /// <summary>Modal prompt for a positive number of seconds. Returns false if cancelled or invalid.</summary>
@@ -1251,11 +1195,7 @@ public partial class MainWindow : Window
         if (sender is not MenuItem mi || mi.Tag is not string tag ||
             !Enum.TryParse<CloseButtonBehavior>(tag, out var behavior))
             return;
-        AppSettings.Current.CloseButton = behavior;
-        AppSettings.Current.Save();
-        // Keep every window's Options menu in sync with the shared preference.
-        foreach (var mw in ShownWindows())
-            mw.SyncOptionMenus();
+        ChangeSettings(s => s.CloseButton = behavior);
     }
 
     private void RestoreMode_Click(object sender, RoutedEventArgs e)
@@ -1263,31 +1203,17 @@ public partial class MainWindow : Window
         if (sender is not MenuItem mi || mi.Tag is not string tag ||
             !Enum.TryParse<SessionRestoreMode>(tag, out var mode))
             return;
-        AppSettings.Current.RestoreSession = mode;
-        SaveAndSyncOptions();
+        ChangeSettings(s => s.RestoreSession = mode);
     }
 
-    private void WatchChanges_Click(object sender, RoutedEventArgs e)
-    {
-        AppSettings.Current.WatchExternalChanges = WatchChangesItem.IsChecked;
-        SaveAndSyncOptions();
-        foreach (var v in AllOpenViews())
-            v.ApplyWatchSetting();
-    }
+    private void WatchChanges_Click(object sender, RoutedEventArgs e) =>
+        ChangeSettings(s => s.WatchExternalChanges = WatchChangesItem.IsChecked);
 
-    private void LockFile_Click(object sender, RoutedEventArgs e)
-    {
-        AppSettings.Current.LockFileWhileOpen = LockFileItem.IsChecked;
-        SaveAndSyncOptions();
-        foreach (var v in AllOpenViews())
-            v.ApplyLockSetting();
-    }
+    private void LockFile_Click(object sender, RoutedEventArgs e) =>
+        ChangeSettings(s => s.LockFileWhileOpen = LockFileItem.IsChecked);
 
-    private void PersistHistory_Click(object sender, RoutedEventArgs e)
-    {
-        AppSettings.Current.PersistHistory = PersistHistoryItem.IsChecked;
-        SaveAndSyncOptions();
-    }
+    private void PersistHistory_Click(object sender, RoutedEventArgs e) =>
+        ChangeSettings(s => s.PersistHistory = PersistHistoryItem.IsChecked);
 
     private void SyncOptionMenus()
     {
@@ -1329,16 +1255,14 @@ public partial class MainWindow : Window
         UndoPauseCustom.IsChecked = s.UndoCoalesceSeconds is not (1 or 2 or 4 or 8);
     }
 
-    private IEnumerable<EditorView> AllViews() =>
+    /// <summary>This window's open documents.</summary>
+    internal IEnumerable<EditorView> AllViews() =>
         // Tabs can be null for a window that's registered in Application.Current.Windows but hasn't
         // finished InitializeComponent (the WPF Window base ctor self-registers before the derived
         // fields are wired up). ShownWindows keeps cross-window code away from such a window; this
         // guard is for anything that reaches one regardless.
         Tabs is null ? Enumerable.Empty<EditorView>()
                      : Tabs.Items.OfType<TabItem>().Select(t => t.Content).OfType<EditorView>();
-
-    /// <summary>Public view over this window's open documents (used for process-wide setting fan-out).</summary>
-    public IEnumerable<EditorView> AllEditorViews() => AllViews();
 
     private void SetUpKeyBindings()
     {

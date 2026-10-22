@@ -1011,9 +1011,9 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
         public bool IsOpen => Panel.Visibility == Visibility.Visible;
 
         /// <summary>The width it takes when the window has room: the remembered one, unless the
-        /// settings file holds something no pane could be.</summary>
-        public double Preferred =>
-            GetRemembered() is var w && double.IsFinite(w) && w > 0 ? Math.Max(w, Min) : Default;
+        /// settings file holds something no pane could be. (<see cref="FitPaneWidths"/> keeps it to
+        /// the minimum.)</summary>
+        public double Preferred => GetRemembered() is var w && double.IsFinite(w) && w > 0 ? w : Default;
     }
 
     /// <summary>The side panes, left to right.</summary>
@@ -1021,6 +1021,9 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
 
     /// <summary>The pane whose divider is being dragged, or null.</summary>
     private SidePane? _draggingPane;
+
+    /// <summary>The dragged pane's width, and the cursor's X in this view, when the drag began.</summary>
+    private double _dragStartWidth, _dragStartX;
 
     /// <summary>The room the open panes share: this view's width less the editor's minimum and the
     /// open panes' dividers. Infinite while the view has no width yet (a background tab, or one
@@ -1033,7 +1036,8 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
     /// <summary>Size every side pane's column, and show or hide its divider: 0 for a closed pane, the
     /// remembered width for an open one, the open ones narrowed together when the window can't fit
     /// them beside the editor's minimum. Runs when a pane opens or closes, when this view's width
-    /// changes, and when the remembered widths change (<see cref="MainWindow.RememberPaneWidths"/>).</summary>
+    /// changes, and when the remembered widths change (<see cref="MainWindow.ApplySettings"/>). The
+    /// one other writer of the columns' widths is a drag in progress (<see cref="DragSplitterTo"/>).</summary>
     internal void LayOutPanes()
     {
         var open = _panes.Where(p => p.IsOpen).ToArray();
@@ -1056,31 +1060,32 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
     /// <returns>Each pane's width, in the same order; whole pixels when squeezed.</returns>
     internal static double[] FitPaneWidths(double room, (double Preferred, double Min)[] panes)
     {
-        double preferred = panes.Sum(p => Math.Max(p.Preferred, p.Min));
-        if (preferred <= room)
-            return panes.Select(p => Math.Max(p.Preferred, p.Min)).ToArray();
+        double[] preferred = panes.Select(p => Math.Max(p.Preferred, p.Min)).ToArray();
+        if (preferred.Sum() <= room)
+            return preferred;
         double mins = panes.Sum(p => p.Min);
-        double share = preferred > mins ? Math.Max(0, room - mins) / (preferred - mins) : 0;
-        return panes.Select(p => p.Min + Math.Floor((Math.Max(p.Preferred, p.Min) - p.Min) * share)).ToArray();
+        double above = preferred.Sum() - mins;
+        double share = above > 0 ? Math.Max(0, room - mins) / above : 0;
+        return panes.Select((p, i) => p.Min + Math.Floor((preferred[i] - p.Min) * share)).ToArray();
     }
 
-    /// <summary>The width a pane takes while its divider is dragged: the divider follows the cursor,
-    /// within the pane's minimum and the most the editor can give up.</summary>
-    /// <param name="width">The pane's width as last laid out.</param>
-    /// <param name="dividerMiddle">The X of the middle of its divider as last laid out — the point
-    /// the cursor holds.</param>
-    /// <param name="cursorX">The cursor's X, in the same coordinates.</param>
+    /// <summary>The width a pane takes while its divider is dragged: the divider moves with the
+    /// cursor, within the pane's minimum and the most the editor can give up.</summary>
+    /// <param name="startWidth">The pane's width when the drag began.</param>
+    /// <param name="startX">The cursor's X when the drag began.</param>
+    /// <param name="cursorX">The cursor's X now, in the same coordinates.</param>
     /// <param name="min">The pane's minimum width.</param>
     /// <param name="max">The widest it can be with the editor at its minimum and the other panes as
     /// they are.</param>
-    internal static double DraggedPaneWidth(double width, double dividerMiddle, double cursorX, double min, double max) =>
-        // The divider is on the pane's left edge, so the pane grows by however far left of it the cursor is.
-        Math.Clamp(Math.Round(width + dividerMiddle - cursorX), min, Math.Max(min, Math.Floor(max)));
+    internal static double DraggedPaneWidth(double startWidth, double startX, double cursorX, double min, double max) =>
+        // The divider is on the pane's left edge, so the pane grows by however far left the cursor went.
+        Math.Clamp(Math.Round(startWidth + startX - cursorX), min, Math.Max(min, Math.Floor(max)));
 
     /// <summary>
     /// Resize a side pane by dragging its divider. We capture the mouse on the divider and size the
-    /// pane from the cursor's X relative to this control — a stable ancestor whose width doesn't
-    /// change during the drag. The editor takes up the difference; the other panes stay as they are.
+    /// pane by how far the cursor has moved, measured in this control — a stable ancestor whose width
+    /// doesn't change during the drag. The editor takes up the difference; the other panes stay as
+    /// they are.
     ///
     /// The dragging state is validated against the live button state on every move: if the button is
     /// no longer down (e.g. a mouse-up was missed, or capture was lost during the resize layout pass),
@@ -1090,37 +1095,47 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
     /// </summary>
     private void Splitter_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
-        if (sender is not Border splitter || !BeginSplitterDrag(splitter))
+        // A press means any drag still on lost its button-up somewhere: it is over.
+        EndSplitterDrag();
+        if (sender is not Border splitter || !BeginSplitterDrag(splitter, e.GetPosition(this).X))
             return;
-        splitter.CaptureMouse();
+        // Without the mouse, the button-up could land anywhere and never end the drag.
+        if (!splitter.CaptureMouse())
+        {
+            EndSplitterDrag();
+            return;
+        }
         splitter.LostMouseCapture += Splitter_LostMouseCapture;
         e.Handled = true;
     }
 
     private void Splitter_MouseMove(object sender, MouseEventArgs e)
     {
-        if (_draggingPane is not { } pane || !ReferenceEquals(sender, pane.Splitter))
+        if (_draggingPane is null)
             return;
         // Only resize while the left button is genuinely held; otherwise the drag is over.
-        if (e.LeftButton == MouseButtonState.Pressed)
-            DragSplitterTo(e.GetPosition(this).X);
-        else
+        if (e.LeftButton != MouseButtonState.Pressed)
             EndSplitterDrag();
+        else if (ReferenceEquals(sender, _draggingPane.Splitter))
+            DragSplitterTo(e.GetPosition(this).X);
     }
 
     /// <summary>Start dragging the divider <paramref name="splitter"/>. Taking the mouse is the
     /// caller's part.</summary>
+    /// <param name="cursorX">Where the cursor is, in this view: the point that moves the divider.</param>
     /// <returns>False, doing nothing, when it isn't an open pane's divider or a drag is already on.</returns>
-    internal bool BeginSplitterDrag(Border splitter)
+    internal bool BeginSplitterDrag(Border splitter, double cursorX)
     {
         var pane = _panes.FirstOrDefault(p => ReferenceEquals(p.Splitter, splitter));
         if (pane is null || !pane.IsOpen || _draggingPane is not null)
             return false;
         _draggingPane = pane;
+        _dragStartWidth = pane.Column.Width.Value;   // what LayOutPanes gave it, as EndSplitterDrag compares
+        _dragStartX = cursorX;
         return true;
     }
 
-    /// <summary>Move the dragged divider to where the cursor is.</summary>
+    /// <summary>Move the dragged divider with the cursor.</summary>
     /// <param name="cursorX">The cursor's X in this view.</param>
     internal void DragSplitterTo(double cursorX)
     {
@@ -1132,12 +1147,9 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
             EndSplitterDrag();
             return;
         }
-        // Both from the last layout pass, so a move that arrives before the previous one's width took
-        // effect still pairs a width with the divider position it produced.
-        double dividerMiddle = pane.Splitter.TranslatePoint(new Point(pane.Splitter.ActualWidth / 2, 0), this).X;
         double others = _panes.Where(p => p.IsOpen && !ReferenceEquals(p, pane)).Sum(p => p.Column.ActualWidth);
-        pane.Column.Width = new GridLength(DraggedPaneWidth(pane.Column.ActualWidth, dividerMiddle,
-            cursorX, pane.Min, PaneRoom() - others));
+        pane.Column.Width = new GridLength(DraggedPaneWidth(_dragStartWidth, _dragStartX, cursorX,
+            pane.Min, PaneRoom() - others));
     }
 
     private void Splitter_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
@@ -1161,30 +1173,31 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
         if (pane.Splitter.IsMouseCaptured)
             pane.Splitter.ReleaseMouseCapture();
 
-        // Every open pane's, not just the dragged one's: in a window too narrow for the old widths
-        // the others are showing narrower than remembered, and remembering only the dragged pane
-        // would make the next layout squeeze it too, springing it back from where it was let go.
+        // A click that didn't move the divider changes nothing — not even in a window too narrow for
+        // the remembered widths, where storing what shows would forget them.
         // Column.Width, not ActualWidth: the last move's width may not have been laid out yet.
-        bool changed = false;
-        foreach (var p in _panes.Where(p => p.IsOpen))
+        if (!pane.IsOpen || pane.Column.Width.Value == _dragStartWidth)
+            return;
+        // Every open pane's width, not just the dragged one's: in a window too narrow for the old
+        // widths the others are showing narrower than remembered, and remembering only the dragged
+        // pane would make the next layout squeeze it too, springing it back from where it was let go.
+        var open = _panes.Where(p => p.IsOpen).ToArray();
+        MainWindow.ChangeSettings(_ =>
         {
-            double w = p.Column.Width.Value;
-            if (w != p.Preferred)
-            {
-                p.SetRemembered(w);
-                changed = true;
-            }
-        }
-        if (changed)
-            MainWindow.RememberPaneWidths();
+            foreach (var p in open)
+                p.SetRemembered(p.Column.Width.Value);
+        });
     }
 
     /// <summary>The pane's own close button is a third way to turn the history-tree preference off,
     /// beside the toolbar toggle and View → Show History Tree, so the three can never disagree about
-    /// whether the tree is showing. A pane revealed only to pick a redo branch is closed too.</summary>
+    /// whether the tree is showing. A pane revealed only to pick a redo branch is closed too: the
+    /// preference is already off then, so turning it off changes nothing, and this document closes
+    /// its own.</summary>
     private void TreeClose_Click(object sender, RoutedEventArgs e)
     {
         MainWindow.SetTreePreference(false);
+        ApplyTreeVisible(false);
         Editor.Focus();   // the button that had focus has just been collapsed
     }
 
@@ -1222,12 +1235,7 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
         if (_suppressFitEvent)
             return;
         bool fit = FitWidthCheck.IsChecked == true;
-        AppSettings.Current.PreviewFitToWidth = fit;
-        AppSettings.Current.Save();
-        // Apply to every open document so the choice is process-wide.
-        foreach (var mw in MainWindow.ShownWindows())
-            foreach (var v in mw.AllEditorViews())
-                v.ApplyPreviewFit(fit);
+        MainWindow.ChangeSettings(s => s.PreviewFitToWidth = fit);   // process-wide, like every option
     }
 
     private bool _suppressHistoryModeEvent;
@@ -1238,12 +1246,7 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
             return;
         // The toggle reads "Show all edits", so checked = branches-only OFF.
         bool branchesOnly = ShowAllEditsToggle.IsChecked != true;
-        AppSettings.Current.HistoryBranchesOnly = branchesOnly;
-        AppSettings.Current.Save();
-        // Apply to every open document so the choice is process-wide.
-        foreach (var mw in MainWindow.ShownWindows())
-            foreach (var v in mw.AllEditorViews())
-                v.ApplyHistoryMode(branchesOnly);
+        MainWindow.ChangeSettings(s => s.HistoryBranchesOnly = branchesOnly);   // process-wide, like every option
     }
 
     /// <summary>Reflect the branches-only / show-all-edits preference in this view's toggle and

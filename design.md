@@ -374,13 +374,12 @@ trades width between that pane and the editor; the other panes keep theirs.
 
 - **The widths are process-wide preferences** (`AppSettings.TreePaneWidth` / `SearchPaneWidth` /
   `ReplacePaneWidth`), not per document: a pane is the same width in every tab and window, and keeps
-  it across restarts. A drag ends in `EndSplitterDrag`, which stores them and calls
-  `MainWindow.RememberPaneWidths` to save and re-lay-out every open document; other instances pick
-  them up on activation (see "Never touch the filesystem on the activation path").
-- **`LayOutPanes` is the one place that sizes the columns** — on opening or closing a pane, on a
-  width change of the view, on `Loaded` (a background tab is out of the visual tree, so it was laid
-  out without a width), and when the preferences change. A closed pane's column is 0 and its divider
-  is collapsed.
+  it across restarts. A drag ends in `EndSplitterDrag`, which stores them through
+  `MainWindow.ChangeSettings`, like any option (see "Shared settings").
+- **`LayOutPanes` sizes the columns** — on opening or closing a pane, on a width change of the view,
+  on `Loaded` (a background tab is out of the visual tree, so it was laid out without a width), and
+  when the preferences change. A closed pane's column is 0 and its divider is collapsed. The only
+  other writer is a drag in progress (`DragSplitterTo`), which sets the dragged pane's column alone.
 - **A window too narrow for the remembered widths squeezes the panes without forgetting them**
   (`FitPaneWidths`): each keeps its minimum and they share the rest in proportion to how far each
   wants to be above it. Widening the window gives them back. The editor's own `MinWidth` (200) is
@@ -389,11 +388,15 @@ trades width between that pane and the editor; the other panes keep theirs.
   others are showing narrower than remembered; storing only the dragged pane would make the next
   layout squeeze it too, springing it back from where it was let go. So what you see when you let go
   is what is remembered.
-- The drag itself (`DraggedPaneWidth`) moves the pane's width by the cursor's distance from the
-  divider's middle, both measured against the view (a stable ancestor), and is capped so the editor
-  keeps its minimum. Mouse capture lives in the mouse-down handler, not in `BeginSplitterDrag`:
-  taking capture raises a synthetic `MouseMove`, and with no real button held — as in a test — the
-  handler would end the drag on the spot.
+- **A press that doesn't move the divider remembers nothing.** In a squeezed window, storing what
+  shows would forget the real widths for every window, on a click.
+- The drag itself (`DraggedPaneWidth`) moves the pane's width by how far the cursor has moved since
+  the press, measured against the view (a stable ancestor), so grabbing the divider off-centre doesn't
+  make it jump. It is capped so the editor keeps its minimum. Mouse capture lives in the mouse-down
+  handler, not in `BeginSplitterDrag`: taking capture raises a synthetic `MouseMove`, and with no
+  real button held — as in a test — the handler would end the drag on the spot. A drag is never left
+  on: no capture, no drag; a move with the button up ends it, over any divider; and a press ends
+  any drag still on before starting its own.
 
 ### The view stays put when the editor is re-laid out
 
@@ -442,13 +445,35 @@ typing". `B` is beside `V` and `N`; one slip and every tab went italic, with no 
 check mark. In the Font dialog, next to the family and size, it is unmistakably a property of how the
 text is *shown*, which is also where Notepad puts it.
 
+### Shared settings
+
+Every option is one `AppSettings` value shared by every window and document, and by every instance
+through `settings.json`. Two calls carry a change to what the windows show:
+
+- **`MainWindow.ChangeSettings(change)`** is how anything in this instance changes an option — every
+  Options-menu handler, the history pane's toggles, a divider drag. It snapshots the settings
+  (`AppSettings.Snapshot`), applies the change, saves, and calls `ApplySettings`.
+- **`MainWindow.ApplySettings(before)`** re-checks every window's menus and applies to every document
+  in every window whatever differs from `before`. It is the one place that knows how each setting
+  shows in a document, so a new one that does is added there, and to `SyncOptionMenus` if it has a
+  menu. Activation calls it too, with what `AppSettings.Reload` returns, for changes another instance
+  saved (see "Never touch the filesystem on the activation path").
+
+Before, each handler did its own fan-out, and they disagreed: Word Wrap re-wrapped only its own
+window's documents, and a change from another instance reached only the menus.
+
+`ApplySettings` applies only differences, so a call that changes nothing does nothing to the
+documents. The history pane's ✕ relies on that: see "The history tree".
+
 ## The history tree
 
 Whether the pane shows is one process-wide, persisted preference (`AppSettings.ShowTree`), not a
 per-document state like the search pane's. That is why its ✕ calls `MainWindow.SetTreePreference`,
 the same switch as the toolbar toggle and View → Show History Tree: a per-document hide would leave
 the toolbar lit for a pane that isn't showing. The one per-document exception is a pane revealed
-only to pick an ambiguous redo branch (`RevealTreeTemporarily`), which the preference also closes.
+only to pick an ambiguous redo branch (`RevealTreeTemporarily`), which the preference also closes
+when it changes. Its ✕ finds the preference already off, so turning it off changes nothing
+(`ApplySettings` applies only differences), and the ✕ then closes its own document's pane.
 
 Every node stores one `TextEdit` — a single contiguous splice (`Pos`, `OldText`, `NewText`) from its
 parent's text to its own — and `UndoTree.Materialize` rebuilds any node's text by replaying splices
@@ -844,7 +869,12 @@ anything in their recovery folder.
 Being the only C# test project, it also holds checks unrelated to external changes: unit checks
 (`[unit]`) of pure rules such as `FitPaneWidths` and the sweep of old copies, and a `[layout]` test
 of the side panes in a real view, which drives a drag through `BeginSplitterDrag` /
-`DragSplitterTo` / `EndSplitterDrag` because a real mouse can't be had.
+`DragSplitterTo` / `EndSplitterDrag` because a real mouse can't be had. It sets the view's own
+width rather than its window's, which Windows keeps within the screen. `[settings]` tests check what
+`Reload` takes from a file, and that a change reaches the documents in two real `MainWindow`s; the
+harness merges `Themes/Palette.Base.xaml` and `Themes/Shared.xaml` into its `Application` for them,
+as `App.xaml` does, since running `App` would start the real app. That test runs last: the app ends
+when its last editor window closes.
 
 ## The merge viewer's two panes are levelled, not merely paired
 
@@ -892,7 +922,7 @@ set, so a scratch folder can never receive the user's real data.
 
 | File | Owner | Contents |
 |---|---|---|
-| `settings.json` | `AppSettings` | All options. `Reload()` re-reads on window activation so instances stay in sync — **any new setting must be added to `Reload()` as well as `Save()`**. Gated by a `FileSystemWatcher` dirty flag, so the usual activation costs no I/O (see below). |
+| `settings.json` | `AppSettings` | All options. `Reload()` re-reads on window activation so instances stay in sync, taking only the settings the file holds: one an older build wrote lacks those added since, whose defaults would otherwise undo them. It finds them by reflection, so a new setting needs no code there. Settings this build doesn't know (a newer build's) are kept in `Unknown` and written back, so saving here doesn't delete them. Gated by a `FileSystemWatcher` dirty flag, so the usual activation costs no I/O (see below). |
 | `session.json` | `SessionStore` | Paths of open *saved* files, for session restore. |
 | `recent.json` | `RecentFiles` | Up to 15 most-recently-opened paths for File → Open Recent. Re-read before each write so concurrent instances merge instead of clobbering; raises `Changed` so open windows rebuild their submenu. **`Changed` may be raised on a background thread** — handlers that touch UI must marshal to the dispatcher. |
 | `recovery\` | `EditorView` | Crash-recovery snapshots — this is where *unsaved* and untitled work lives, including for titled documents. |
@@ -936,12 +966,12 @@ So, the rule: **the `Activated` handler does no I/O.**
   saw a change. If the watcher can't be created, or reports an error, the flag is forced on and we
   fall back to re-reading every time — stale settings would be worse than the old cost, and
   `settings.json` is always local anyway.
-- When it did read, `Reload()` returns the settings as they were, and
-  `MainWindow.ApplyReloadedSettings` applies whatever changed to every window and open document — not
-  just this window's: the next window activated finds nothing new to read. Watching and locking the
-  file reach the document's own path, so they are posted to run after activation rather than done in
-  it. Before this, another instance's change reached only the menus' check marks, which then
-  disagreed with what the documents were doing.
+- When it did read, `Reload()` returns the settings as they were, and `MainWindow.ApplySettings`
+  applies whatever changed to every window and open document — not just this window's: the next
+  window activated finds nothing new to read (see "Shared settings"). Watching and locking the
+  file reach the document's own path, so they are posted to run after activation rather than done
+  in it. That moves them out of `WM_ACTIVATE`, not off the UI thread: see KNOWN-ISSUES.md, "The
+  watcher and the file lock are set up on the UI thread".
 
 ## The .txt registration
 
