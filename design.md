@@ -84,7 +84,8 @@ picture.
 
 To see which applies to a running instance, list its mapped files (Process Explorer's DLL view, or
 `VirtualQueryEx` with `GetMappedFileName`). An exposed instance has a *data* view of its exe, and a
-protected one maps `NotepadRedo.dll` from `%TEMP%\.net`.
+protected one maps `NotepadRedo.dll` from `%TEMP%\.net`. `tests/ExeIndependence/Run.ps1` makes
+that check, and the header-flag check, on a fresh build.
 
 ### Failures to load the program itself are reported
 

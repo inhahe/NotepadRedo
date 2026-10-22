@@ -76,6 +76,7 @@
   run over SMB, framework-dependent and self-contained. The notice was shown for an injected `Bad IL
   range` in `OpenMerge`, where the old handler showed nothing. Not reproduced end to end: making a
   server close a client's handle needs admin rights. The reporter's own instance reproduced it live.
+- **Regression test:** `tests/ExeIndependence/Run.ps1`. It fails all four of its checks on 1.0.29.
 - **Still exposed:** the self-contained release (tech debt above), and any instance started before
   1.0.30, until it is restarted.
 

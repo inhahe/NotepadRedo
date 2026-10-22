@@ -174,6 +174,12 @@ dotnet run --project tests\ExternalChange -- --share
 
 Drives the "changed on disk" prompt through a real editor and file watcher while another writer keeps changing the file, and exits non-zero on failure. `--share` repeats every test through `\\localhost\<drive>$` (SMB), the way a network drive is reached; leave it off where admin shares aren't available. `--filter=<text>` runs only the tests whose name contains the text. It parks windows off-screen and briefly opens dialogs. It keeps its own data in a scratch folder, so it never touches your running editor, settings or recovery files. It also checks which exceptions count as NotepadRedo's own files failing to load, the cue for telling you to restart.
 
+```sh
+powershell -File tests\ExeIndependence\Run.ps1
+```
+
+Publishes the app as `build.bat` does (or checks an existing one, given `-Exe <path>`), starts it, and checks that the running instance needs nothing more from its exe: the exe is marked to be copied into the paging file when started from a network drive, no part of it is mapped as data, and `NotepadRedo.dll` comes from an extracted copy. That's what keeps an instance working when the exe is replaced under it. The instance runs under its own name with a scratch data folder, and the `.txt` registration it makes is undone afterwards.
+
 ### Version
 
 The app version is stored in one place — the **`VERSION`** file at the project root — which the csproj reads into `<Version>`, so it's stamped into the exe. Each [release](https://github.com/inhahe/NotepadRedo/releases) is tagged with it and carries a self-contained `NotepadRedo.exe` plus `associate-txt.bat`.
@@ -221,6 +227,7 @@ On first launch, if a `%LOCALAPPDATA%\TreeNotepad\` folder exists (from before t
 | `Converters.cs` | XAML value converters (e.g. preview width). |
 | `CrashLog.cs` | Best-effort exception logging. |
 | `tests/ExternalChange/` | Regression tests for the "changed on disk" prompt (see *Tests* above). |
+| `tests/ExeIndependence/` | Regression test that a running instance needs nothing more from its exe (see *Tests* above). |
 
 ---
 
