@@ -114,11 +114,20 @@ internal static class Program
             try
             {
                 foreach (var loc in Locations(args.Contains("--share")))
+                {
+                    // Asked for and not to be had: a pass that tests nothing must not pass quietly.
+                    if (!Directory.Exists(loc.EditorDir))
+                    {
+                        Console.WriteLine($"FAIL [{loc.Name}] {loc.EditorDir} is not reachable, so nothing was tested there");
+                        failures++;
+                        continue;
+                    }
                     foreach (var test in Tests)
                         if ((!test.SmbOnly || loc.Name == "smb")
                             && test.Name.Contains(filter, StringComparison.OrdinalIgnoreCase)
                             && !await Run($"[{loc.Name}] {test.Name}", test, loc.WriterDir, loc.EditorDir))
                             failures++;
+                }
             }
             catch (Exception ex) { Console.WriteLine(ex); failures++; }
             finally { app.Shutdown(); }
@@ -131,13 +140,14 @@ internal static class Program
     }
 
     /// <summary>Which exceptions <see cref="App.ProgramLoadFailure"/> treats as the program's own files
-    /// failing to load, the cue for telling the user to restart. Not about external changes, but the
-    /// one test project there is. Returns the number of failed cases.</summary>
+    /// failing to load, the cue for telling the user to restart. Not about external changes, but this
+    /// is the only C# test project. Returns the number of failed cases.</summary>
     private static int CheckLoadFailureClassifier(string filter)
     {
         const string DisplayName = "System.Drawing.Common, Version=8.0.0.0, Culture=neutral, PublicKeyToken=cc7b13ffcd2ddd51";
         var badImage = new BadImageFormatException("Bad IL range.");
         var missingAssembly = new FileNotFoundException("Could not load file or assembly", DisplayName);
+        var dllGone = new DllNotFoundException("Unable to load DLL 'PenImc_cor3.dll'");
         var cases = new (string Name, Exception? Thrown, Exception? Expected)[]
         {
             ("a bad image", badImage, badImage),
@@ -149,7 +159,7 @@ internal static class Program
                 new AggregateException(new InvalidOperationException(), badImage), badImage),
             ("a document that can't be found, though its name has \", Version=\"",
                 new FileNotFoundException("gone", @"C:\notes\Plan, Version=2.txt"), null),
-            ("a DLL Windows doesn't have", new DllNotFoundException("x"), null),
+            ("a runtime DLL deleted by an update", dllGone, dllGone),
             ("an export Windows doesn't have", new EntryPointNotFoundException("x"), null),
             ("an ordinary bug", new InvalidOperationException("x"), null),
         };
@@ -198,11 +208,7 @@ internal static class Program
         // The same temp folder, reached through its drive's admin share. Not the test binaries' own
         // folder: that is on a share already when the project is checked out on one.
         string onDrive = temp.TrimEnd('\\');
-        string unc = @"\\localhost\" + onDrive[0] + "$" + onDrive.Substring(2);
-        if (Directory.Exists(unc))
-            yield return ("smb", onDrive, unc);
-        else
-            Console.WriteLine($"SKIP smb: {unc} is not reachable");
+        yield return ("smb", onDrive, @"\\localhost\" + onDrive[0] + "$" + onDrive.Substring(2));
     }
 
     private static async Task<bool> Run(string name, Test test, string writerRoot, string editorRoot)

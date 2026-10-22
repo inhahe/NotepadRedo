@@ -1789,7 +1789,9 @@ public partial class MainWindow : Window
                     {
                         CrashLog.Log("Minimize to tray failed; minimizing to the taskbar instead", ex);
                         WindowState = WindowState.Minimized;
-                        (Application.Current as App)?.AdviseRestartIfLoadFailure(ex);
+                        // Guarded like the UI-thread handler's call (see there), and for the same reason.
+                        try { (Application.Current as App)?.AdviseRestartIfLoadFailure(ex); }
+                        catch (Exception inner) { CrashLog.Log("Couldn't advise a restart", inner); }
                     }
                     return;
             }

@@ -66,9 +66,11 @@ $regSaved = @{}
 foreach ($k in $regPaths) {
     if (Test-Path -LiteralPath $k) { $regSaved[$k] = (Get-ItemProperty -LiteralPath $k).'(default)' }
 }
-$regKeys = 'HKCU:\Software\Classes\NotepadRedo.txt',
-           'HKCU:\Software\Classes\Applications\NotepadRedo.exe',
-           'HKCU:\Software\NotepadRedo'
+# Keys the launch may create: any that don't exist yet are removed afterwards, along with what it
+# put in them.
+$regKeys = $regPaths + 'HKCU:\Software\Classes\NotepadRedo.txt',
+                       'HKCU:\Software\Classes\Applications\NotepadRedo.exe',
+                       'HKCU:\Software\NotepadRedo'
 $regKeysNew = @($regKeys | Where-Object { -not (Test-Path -LiteralPath $_) })
 $regValues = @{ 'HKCU:\Software\Classes\.txt\OpenWithProgids' = 'NotepadRedo.txt'
                 'HKCU:\Software\RegisteredApplications' = 'NotepadRedo' }
@@ -82,8 +84,12 @@ try {
         # ("Microsoft.PowerShell.Core\FileSystem::\\server\...") that dotnet can't open.
         $repo = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
         Write-Output "publishing $repo\NotepadRedo.csproj as build.bat does..."
+        # 'Stop' would make Windows PowerShell throw at the first line dotnet writes to stderr, a mere
+        # notice included; the exit code is what says whether it worked.
+        $ErrorActionPreference = 'Continue'
         $log = & dotnet publish "$repo\NotepadRedo.csproj" -c Release -r win-x64 --self-contained false `
             -p:PublishSingleFile=true -o "$scratch\publish" 2>&1
+        $ErrorActionPreference = 'Stop'
         if ($LASTEXITCODE -ne 0) {
             $log | Write-Output
             throw "dotnet publish failed ($LASTEXITCODE)"
@@ -93,19 +99,28 @@ try {
     $exeCopy = "$scratch\bin\$name.exe"
     Copy-Item -LiteralPath $Exe -Destination $exeCopy
 
-    $bytes = [IO.File]::ReadAllBytes($exeCopy)
-    $pe = [BitConverter]::ToInt32($bytes, 0x3C)
-    $characteristics = [BitConverter]::ToUInt16($bytes, $pe + 4 + 18)
+    # Just the header: a self-contained exe given as -Exe is ~160 MB.
+    $stream = [IO.File]::OpenRead($exeCopy)
+    try {
+        $reader = New-Object IO.BinaryReader($stream)
+        $stream.Position = 0x3C                      # IMAGE_DOS_HEADER.e_lfanew
+        $stream.Position = $reader.ReadInt32() + 4 + 18   # IMAGE_FILE_HEADER.Characteristics
+        $characteristics = $reader.ReadUInt16()
+    } finally { $stream.Dispose() }
     Check (($characteristics -band 0x0800) -ne 0) 'exe is marked IMAGE_FILE_NET_RUN_FROM_SWAP'
     Check (($characteristics -band 0x0400) -ne 0) 'exe is marked IMAGE_FILE_REMOVABLE_RUN_FROM_SWAP'
 
-    # A document of its own, and settings that keep it from handing the file to a running instance.
-    '{ "OpenInNewInstance": true, "RestoreSession": 0 }' |
+    # A document of its own, and settings that keep it from handing the file to a running instance
+    # (new-instance mode) or asking about a session (RestoreSession 2 is Never).
+    '{ "OpenInNewInstance": true, "RestoreSession": 2 }' |
         Set-Content -LiteralPath "$scratch\data\settings.json" -Encoding ascii
     $doc = "$scratch\t.txt"
     [IO.File]::WriteAllText($doc, "text`r`n")
+    # Only for the instance: run in an interactive shell, the script must not leave it set there.
+    $dataBefore = $env:NOTEPADREDO_DATA_DIR
     $env:NOTEPADREDO_DATA_DIR = "$scratch\data"
-    $p = Start-Process -FilePath $exeCopy -ArgumentList '--detached', "`"$doc`"" -PassThru
+    try { $p = Start-Process -FilePath $exeCopy -ArgumentList '--detached', "`"$doc`"" -PassThru }
+    finally { $env:NOTEPADREDO_DATA_DIR = $dataBefore }
     $sw = [Diagnostics.Stopwatch]::StartNew()
     while ($p.MainWindowHandle -eq 0 -and -not $p.HasExited -and $sw.ElapsedMilliseconds -lt 30000) {
         Start-Sleep -Milliseconds 200

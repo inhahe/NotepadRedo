@@ -62,6 +62,12 @@ public partial class App : Application
         {
             CrashLog.Log("UnobservedTaskException", args.Exception);
             args.SetObserved();
+            // Raised on the finalizer thread; the advice belongs on the UI thread.
+            Dispatcher.BeginInvoke(new Action(() =>
+            {
+                try { AdviseRestartIfLoadFailure(args.Exception); }
+                catch (Exception inner) { CrashLog.Log("Couldn't advise a restart", inner); }
+            }));
         };
 
         // Signalling launch: tell every running instance to save/park its work and exit, then exit
@@ -263,8 +269,10 @@ public partial class App : Application
                 return null;
             case AggregateException aggregate:
                 return aggregate.InnerExceptions.Select(ProgramLoadFailure).FirstOrDefault(f => f is not null);
-            // A DLL or an export that Windows doesn't have: a restart changes nothing.
-            case DllNotFoundException or EntryPointNotFoundException:
+            // An export that Windows doesn't have: a restart changes nothing. (Though .NET counts it a
+            // type-load failure, as it does a missing DLL. That one stays in: the app imports only from
+            // DLLs every Windows has, so a missing one belongs to the runtime, deleted by an update.)
+            case EntryPointNotFoundException:
                 break;
             case BadImageFormatException or InvalidProgramException or TypeLoadException or MissingMemberException:
                 return ex;

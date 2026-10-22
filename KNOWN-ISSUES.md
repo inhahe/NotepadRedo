@@ -69,8 +69,9 @@
   in `design.md`.
 - **Also:** `build.bat` failed with a bare "Copy FAILED" whenever another computer was running the
   exe with its connection intact, because the share refuses that overwrite. It now moves the old
-  exe aside (a rename is allowed), copies the new one in, and deletes the old copy where nothing
-  holds it. Tested against an exe that an instance was running over `\\localhost`.
+  exe aside (a rename is allowed), copies the new one in, and deletes the old copy, which the share
+  allows as well. A failed copy puts the old exe back. Tested against an exe that an instance was
+  running over `\\localhost`, and with the copy made to fail.
 - **Verified:** by the files an instance maps. 1.0.29 run over SMB holds a data view of its exe;
   1.0.30 maps `NotepadRedo.dll` from `%TEMP%\.net` and has none. The merge viewer opens in 1.0.30
   run over SMB, framework-dependent and self-contained. The notice was shown for an injected `Bad IL
@@ -103,6 +104,19 @@
 - **Reproduce:** point `DOTNET_ROOT` at a private copy of the runtime, start an instance, delete
   `System.Drawing.Common.dll` from the copy, then close the window with "Minimize to tray" set. The
   window must end up minimized, with the restart notice on screen.
+
+### An exception out of `MainWindow.OnClosing` closes the window without saving (open)
+- **By inspection** (found by review, 2026-10-22): WPF finishes closing a window whose `OnClosing`
+  throws. If `PromptSaveEach`, a save it triggers, or the tear-down after it throws, the window
+  closes without the save the user was being asked about. The documents' recovery files survive,
+  since `Dispose` never ran, so the next launch offers them back, minus edits made since the last
+  autosave.
+- **Covered:** the one load failure there that a running instance can realistically meet, the tray
+  icon's, which now falls back to minimizing (1.0.31). The rest uses code and assemblies loaded at
+  startup, so what remains is ordinary bugs.
+- **Proper fix (deferred):** catching everything and cancelling the close would turn a bug that
+  repeats into a window that can't be closed. Better: on an exception, flush recovery for the
+  window's documents, keep it open once, and say so, letting a second close go through.
 
 ### A window whose constructor fails stays in `Application.Windows` and can keep the app alive (open)
 - **By inspection** (found by review, 2026-10-22): WPF's `Window` constructor registers the window

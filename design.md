@@ -43,7 +43,9 @@ The exe can be replaced while an instance runs it. On the development setup, one
 replaces it. `build.bat`'s quit sweep can't stop that, since IPC reaches only the instances on the
 computer running it, and the deploy doesn't wait for them. A share refuses to overwrite a file a
 client has open, but lets it be renamed. So `build.bat` moves the old exe aside, copies the new one
-in, and deletes the old copy once nothing holds it.
+in (moving the old one back if that fails), and deletes the old copy. The share allows the delete
+as well: a client's open handle keeps the contents until it closes. Only a copy run on the building
+computer itself can't be deleted, and is left for the next build.
 
 Windows doesn't load a program all at once. It maps the exe and reads each page when it is first
 touched, and may later discard a page and read it again. A single-file .NET build carries the app's
@@ -98,8 +100,12 @@ exception chain holds a load failure, the user is told once to save and restart.
 - **What counts** (`App.ProgramLoadFailure`, tested in `tests/ExternalChange`): a bad image, an
   invalid program, a missing type or member, or a `FileNotFoundException`/`FileLoadException`
   whose file name is an assembly's display name rather than a path. Inner exceptions are searched,
-  and every one of an aggregate's. A missing DLL or export is excluded, though .NET counts it as a
-  type-load failure: it's Windows lacking something, which no restart fixes.
+  and every one of an aggregate's. A missing export is excluded, though .NET counts it as a
+  type-load failure: it's Windows lacking an API, which no restart fixes. A missing DLL counts: the
+  app imports only from DLLs every Windows has, so a missing one is the runtime's own (WPF loads
+  `PenImc_cor3.dll` only when a pen first appears).
+- **Where from:** the UI-thread handler, the tray fallback below, and unobserved task exceptions,
+  which arrive on the finalizer thread and are passed to the UI thread.
 - **When it shows:** posted at background priority, after the failed operation has unwound, so
   never inside a layout pass, and never during a shutdown, which drops it. Its owner is the active
   window, else any visible one, else none. A window whose constructor failed is registered but was

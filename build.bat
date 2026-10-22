@@ -57,12 +57,17 @@ if errorlevel 1 (
 REM Put the new build in each place. The exe there is moved aside rather than overwritten: the quit
 REM sweep above reaches only this computer, and another computer may be running that exe over the
 REM network. A share refuses to overwrite a file a client has open, but lets it be renamed, and the
-REM instance keeps the file it opened. The old copies are deleted wherever nothing holds them.
+REM instance keeps reading the file it opened. Old copies are then deleted. A share allows that too
+REM (the instance's handle keeps the file's contents until it closes), while a copy that an instance
+REM on this computer runs can't be deleted and is left for the next build. If the copy fails, the old
+REM exe is moved back, so the place is never left without one.
 echo Copying NotepadRedo.exe into place...
+set "OLD=old-%RANDOM%%RANDOM%"
 for %%d in ("%~dp0NotepadRedo.exe" "d:\utils\NotepadRedo.exe") do (
-    if exist "%%~d" move /y "%%~d" "%%~d.old-%RANDOM%%RANDOM%" >nul
+    if exist "%%~d" move /y "%%~d" "%%~d.%OLD%" >nul
     copy /y "%~dp0publish\NotepadRedo.exe" "%%~d" >nul
     if errorlevel 1 (
+        if exist "%%~d.%OLD%" move /y "%%~d.%OLD%" "%%~d" >nul
         echo.
         echo Copy to %%~d FAILED.
         exit /b 1
