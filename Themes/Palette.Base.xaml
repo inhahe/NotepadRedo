@@ -30,6 +30,7 @@
     <!-- Status bar -->
     <SolidColorBrush x:Key="Theme.StatusBg"    Color="#F0F0F0"/>
     <SolidColorBrush x:Key="Theme.StatusFg"    Color="#1A1A1A"/>
+    <SolidColorBrush x:Key="Theme.StatusErrorFg" Color="#B3261E"/>
 
     <!-- Accent / controls (used by the themed control styles; harmless here) -->
     <SolidColorBrush x:Key="Theme.Accent"      Color="#2D7DF6"/>

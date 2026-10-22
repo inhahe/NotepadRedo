@@ -23,6 +23,7 @@
 
     <SolidColorBrush x:Key="Theme.StatusBg"    Color="#FBEFE7"/>
     <SolidColorBrush x:Key="Theme.StatusFg"    Color="#6B4A3C"/>
+    <SolidColorBrush x:Key="Theme.StatusErrorFg" Color="#B3261E"/>
 
     <SolidColorBrush x:Key="Theme.Accent"      Color="#E5533D"/>
     <SolidColorBrush x:Key="Theme.AccentHover" Color="#C8412D"/>

@@ -89,13 +89,25 @@ To see which applies to a running instance, list its mapped files (Process Explo
 protected one maps `NotepadRedo.dll` from `%TEMP%\.net`. `tests/ExeIndependence/Run.ps1` makes
 that check, and the header-flag check, on a fresh build.
 
+### Caught errors are shown, not only logged
+
+The UI-thread handler (`App.OnDispatcherUnhandledException`) and the unobserved-task handler log an
+exception and carry on, to keep documents alive. That used to be all they did, so a command whose
+code failed looked as if it had done nothing, which is how "Show a diff and merge…" was reported.
+Both now go through `App.ReportSwallowed`, which also calls `MainWindow.ShowErrorNotice` on the
+active window (else a visible one): a red hyperlink in the status bar, "Error: Type: first line of
+the message", for 20 seconds. Clicking it opens `crash.log` like any other file. The same message
+arriving again while it shows only counts up ("Error (3×)"), so an exception raised on every layout
+pass doesn't flicker. Failures that code catches on purpose and handles (a history sidecar that
+can't be written, say) are not reported this way: those are best-effort by design.
+
 ### Failures to load the program itself are reported
 
 The runtime's own files can still change under an instance: a .NET update installs the new patch
 version and deletes the old one, along with every assembly the instance hasn't loaded yet. The
-UI-thread handler (`App.OnDispatcherUnhandledException`) swallows exceptions to keep documents
-alive, which would make the next command needing such an assembly do nothing at all. So when the
-exception chain holds a load failure, the user is told once to save and restart.
+next command needing such an assembly fails, and goes on failing until a restart, which a passing
+status-bar message doesn't convey. So when the exception chain holds a load failure, the user is
+also told once, in a dialog, to save and restart.
 
 - **What counts** (`App.ProgramLoadFailure`, tested in `tests/ExternalChange`): a bad image, an
   invalid program, a missing type or member, or a `FileNotFoundException`/`FileLoadException`
@@ -111,8 +123,8 @@ exception chain holds a load failure, the user is told once to save and restart.
   window, else any visible one, else none. A window whose constructor failed is registered but was
   never shown, and can't own a dialog.
 - **Its own failure is contained.** The advice is code that hasn't run before, compiled from the
-  same files whose damage it reports, so the handler calls it inside a `try`. Otherwise its failure
-  would escape the handler and end the process.
+  same files whose damage it reports, so `ReportSwallowed` calls it, and the status-bar notice,
+  each inside a `try`. Otherwise a failure would escape the handler and end the process.
 - **Not out of `OnClosing`.** WPF finishes closing a window whose `OnClosing` throws, without asking
   about unsaved work, and the app exits if it was the last window. The one load that can fail there,
   the tray icon's `System.Drawing`, is caught: the window is minimized to the taskbar instead, and

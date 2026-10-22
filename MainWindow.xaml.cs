@@ -1598,6 +1598,51 @@ public partial class MainWindow : Window
     [StructLayout(LayoutKind.Sequential)]
     private struct POINT { public int X; public int Y; }
 
+    // ===================== Error notice =====================
+
+    /// <summary>How long a caught error stays in the status bar.</summary>
+    private static readonly TimeSpan ErrorNoticeTime = TimeSpan.FromSeconds(20);
+    private DispatcherTimer? _errorNoticeTimer;
+    private string? _errorNoticeText;
+    private int _errorNoticeCount;
+
+    /// <summary>Say in the status bar, for a while, that <paramref name="message"/> went wrong and
+    /// the app carried on, with crash.log a click away. The same message again while it shows only
+    /// counts up, so an error raised on every layout pass doesn't flicker.</summary>
+    internal void ShowErrorNotice(string message)
+    {
+        if (message == _errorNoticeText && ErrorItem.Visibility == Visibility.Visible)
+            _errorNoticeCount++;
+        else
+        {
+            _errorNoticeText = message;
+            _errorNoticeCount = 1;
+        }
+        ErrorText.Text = _errorNoticeCount > 1 ? $"Error ({_errorNoticeCount}×): {message}" : $"Error: {message}";
+        ErrorLink.ToolTip = $"{message}\n\nNotepadRedo carried on. The details are in crash.log: click to open it.";
+        ErrorItem.Visibility = ErrorSeparator.Visibility = Visibility.Visible;
+        if (_errorNoticeTimer is null)
+        {
+            _errorNoticeTimer = new DispatcherTimer { Interval = ErrorNoticeTime };
+            _errorNoticeTimer.Tick += (_, _) => HideErrorNotice();
+        }
+        _errorNoticeTimer.Stop();
+        _errorNoticeTimer.Start();
+    }
+
+    private void HideErrorNotice()
+    {
+        _errorNoticeTimer?.Stop();
+        _errorNoticeText = null;
+        ErrorItem.Visibility = ErrorSeparator.Visibility = Visibility.Collapsed;
+    }
+
+    private void ErrorLink_Click(object sender, RoutedEventArgs e)
+    {
+        HideErrorNotice();
+        OpenPaths(new[] { CrashLog.FilePath });
+    }
+
     // ===================== Closing =====================
 
     /// <summary>Set once the window has been shown. WPF registers a window in

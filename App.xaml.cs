@@ -62,12 +62,8 @@ public partial class App : Application
         {
             CrashLog.Log("UnobservedTaskException", args.Exception);
             args.SetObserved();
-            // Raised on the finalizer thread; the advice belongs on the UI thread.
-            Dispatcher.BeginInvoke(new Action(() =>
-            {
-                try { AdviseRestartIfLoadFailure(args.Exception); }
-                catch (Exception inner) { CrashLog.Log("Couldn't advise a restart", inner); }
-            }));
+            // Raised on the finalizer thread; telling the user belongs on the UI thread.
+            Dispatcher.BeginInvoke(new Action(() => ReportSwallowed(args.Exception)));
         };
 
         // Signalling launch: tell every running instance to save/park its work and exit, then exit
@@ -237,10 +233,33 @@ public partial class App : Application
         // Keep the app alive: the user's open documents are worth more than crashing on a
         // recoverable UI glitch. The full traceback is already on disk for diagnosis.
         e.Handled = true;
-        // The advice is code that may never have run before, compiled from the very files whose
-        // damage it reports. If that fails, it must not escape the handler and end the process.
-        try { AdviseRestartIfLoadFailure(e.Exception); }
+        ReportSwallowed(e.Exception);
+    }
+
+    /// <summary>Tell the user about <paramref name="ex"/>, which the app caught and carried on from:
+    /// in the status bar always, and by a restart notice if the program itself failed to load.</summary>
+    /// <remarks>This is code that may never have run before, compiled from the very files whose
+    /// damage it may be reporting. If it fails, the failure must not escape: out of the UI-thread
+    /// handler it would end the process.</remarks>
+    private void ReportSwallowed(Exception ex)
+    {
+        try { AdviseRestartIfLoadFailure(ex); }
         catch (Exception inner) { CrashLog.Log("Couldn't advise a restart", inner); }
+        try { NoteInStatusBar(ex); }
+        catch (Exception inner) { CrashLog.Log("Couldn't show the error in the status bar", inner); }
+    }
+
+    /// <summary>Show <paramref name="ex"/> in the status bar of the window the user is in. Without
+    /// it, a command whose code failed simply did nothing, and only crash.log knew why.</summary>
+    private static void NoteInStatusBar(Exception ex)
+    {
+        if (ex is AggregateException { InnerExceptions.Count: > 0 } aggregate)
+            ex = aggregate.InnerExceptions[0];
+        // Fully qualified: in here, MainWindow is Application's property.
+        var windows = NotepadRedo.MainWindow.ShownWindows().ToList();
+        var window = windows.FirstOrDefault(w => w.IsActive) ?? windows.FirstOrDefault(w => w.IsVisible);
+        string firstLine = ex.Message.Split('\n')[0].Trim();
+        window?.ShowErrorNotice($"{ex.GetType().Name}: {firstLine}");
     }
 
     /// <summary>Set once the user has been told to restart. The advice never changes, and a failure

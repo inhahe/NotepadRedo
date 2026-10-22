@@ -207,6 +207,14 @@
             <StatusBarItem>
                 <TextBlock x:Name="EndingStatus" Text="CRLF"/>
             </StatusBarItem>
+            <!-- An error the app caught and carried on from, for a while (ShowErrorNotice). -->
+            <Separator x:Name="ErrorSeparator" Visibility="Collapsed"/>
+            <StatusBarItem x:Name="ErrorItem" Visibility="Collapsed">
+                <TextBlock MaxWidth="520" TextTrimming="CharacterEllipsis">
+                    <Hyperlink x:Name="ErrorLink" Click="ErrorLink_Click" TextDecorations="{x:Null}"
+                               Foreground="{DynamicResource Theme.StatusErrorFg}"><Run x:Name="ErrorText"/></Hyperlink>
+                </TextBlock>
+            </StatusBarItem>
             <StatusBarItem HorizontalAlignment="Right">
                 <TextBlock x:Name="SaveStatus" Text="Saved" FontWeight="Bold" Foreground="ForestGreen"/>
             </StatusBarItem>
