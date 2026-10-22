@@ -199,6 +199,8 @@ internal static class Program
             ("a copy that is gone", "\"C:\\old\\NotepadRedo.exe\" \"%1\"", true),
             ("a copy on a drive that is offline", "\"Q:\\utils\\NotepadRedo.exe\" \"%1\"", false),
             ("a copy on a share that is offline", "\"\\\\server\\share\\NotepadRedo.exe\" \"%1\"", false),
+            ("a command that names no path", "\"<|>\" \"%1\"", true),
+            ("a relative path", "NotepadRedo.exe %1", true),
         };
         int failed = 0;
         foreach (var (name, command, expected) in cases)

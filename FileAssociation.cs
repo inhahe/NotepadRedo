@@ -105,9 +105,8 @@ internal static class FileAssociation
             return true;
         if (fileExists(registered))
             return false;
-        string? root;
-        try { root = Path.GetPathRoot(registered); }
-        catch (ArgumentException) { return true; }   // not a path at all: replace it
+        // No root (not a full path, or not a path at all): nothing to be offline, so it's gone.
+        string? root = Path.GetPathRoot(registered);
         return string.IsNullOrEmpty(root) || folderExists(root);
     }
 
