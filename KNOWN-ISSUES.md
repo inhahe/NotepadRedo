@@ -95,16 +95,17 @@
 - **Still exposed:** any instance started before 1.0.30 (before 1.0.32 for the self-contained
   release), until it is restarted.
 
-### A build starting just as a sweep takes its extraction folder fails to start once (open)
-- **By design analysis** (2026-10-22, not observed): `OldBuilds` sweeps another build's extraction
-  folder when it can rename it, which it can't while an instance holds a file there open. A build
-  starting at that moment has checked its folder exists (the .NET host does, before loading
-  anything) but holds nothing in it yet. If the sweep renames the folder in between, that start
-  fails. The next start extracts again.
-- **Window:** from the host's check to the first assembly load, well under a second, on a build
-  older than the one sweeping, within the 30 seconds after the newer one starts.
-- **Proper fix (deferred):** a cross-process lock that the host would take, which it doesn't. Or
-  sweep only folders whose files were last accessed long ago, which NTFS keeps only roughly.
+### An instance starting just as another sweeps can lose its extraction folder (open)
+- **By design analysis** (2026-10-22, not observed): `OldBuilds` sweeps an extraction folder when
+  it can rename it, which it can't while an instance holds a file there open. Every instance holds
+  one from the first line of `OnStartup` (`HoldOwnExtraction`). Before that, from the moment the
+  .NET host checks the folder exists (well under a second earlier), it holds nothing there. A
+  framework-dependent instance whose folder is taken in that gap fails to start, and the next start
+  extracts again. A self-contained one runs on, but any native library it hasn't loaded yet is gone:
+  pen input (`PenImc_cor3.dll`), say.
+- **When:** another instance of the same exe name, any version, runs its sweep (30 seconds after it
+  starts) inside that gap.
+- **Proper fix (deferred):** a lock that the host itself would take, which it doesn't.
 
 ### A framework-dependent instance loses unloaded assemblies when .NET is updated under it (open)
 - **Symptom:** `crash.log`, 2026-10-14 09:20, at a Windows restart:

@@ -50,7 +50,7 @@ internal static class TaskbarIdentity
 
     /// <summary>Set <paramref name="hwnd"/>'s AppUserModel ID and relaunch command to those of
     /// <paramref name="exe"/>. Best-effort: a failure costs only the pin, so it is logged.</summary>
-    public static void Apply(IntPtr hwnd, string exe)
+    private static void Apply(IntPtr hwnd, string exe)
     {
         try
         {
@@ -69,7 +69,7 @@ internal static class TaskbarIdentity
 
     /// <summary>Remove what <see cref="Apply"/> set. Windows asks for this before the window is
     /// destroyed.</summary>
-    public static void Clear(IntPtr hwnd)
+    private static void Clear(IntPtr hwnd)
     {
         try
         {

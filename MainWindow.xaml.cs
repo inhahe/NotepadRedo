@@ -1579,15 +1579,31 @@ public partial class MainWindow : Window
         if (Tabs.Items.Count <= 1)
             return;
 
-        RemoveTab(ti, dispose: false);
-
+        // The new window first: if it can't be made, the tab stays where it is, rather than leave its
+        // document in no window at all, still autosaving, watching and locking its file.
         var w = new MainWindow();
-        var p = CursorPositionDip();
-        w.WindowStartupLocation = WindowStartupLocation.Manual;
-        w.Left = p.X - 40;
-        w.Top = p.Y - 10;
-        w.Show();
-        w.AdoptView(view, select: true);
+        try
+        {
+            var p = CursorPositionDip();
+            w.WindowStartupLocation = WindowStartupLocation.Manual;
+            w.Left = p.X - 40;
+            w.Top = p.Y - 10;
+            w.Show();
+        }
+        catch
+        {
+            w._realClose = true;   // it holds nothing: close it, whatever the X button is set to do
+            LogFailure(w.Close, "Closing a torn-off window that failed to show");
+            throw;
+        }
+
+        RemoveTab(ti, dispose: false);
+        try { w.AdoptView(view, select: true); }
+        catch
+        {
+            AdoptView(view, select: true);   // back where it came from
+            throw;
+        }
 
         CloseIfEmpty();
     }
@@ -1665,11 +1681,15 @@ public partial class MainWindow : Window
         {
             string folder = Path.Combine(Path.GetTempPath(), "NotepadRedo");
             Directory.CreateDirectory(folder);
-            string copy = Path.Combine(folder, $"crash.log as of {DateTime.Now:yyyy-MM-dd HH.mm.ss}.log");
+            // Earlier copies go, where nothing holds them (a tab locking one keeps it): each is the
+            // whole log, which is never trimmed.
+            foreach (string earlier in Directory.EnumerateFiles(folder, "crash.log as of *.log"))
+                LogFailure(() => File.Delete(earlier), "Deleting an earlier copy of crash.log failed");
+            string copy = Path.Combine(folder, $"crash.log as of {DateTime.Now:yyyy-MM-dd HH.mm.ss.fff}.log");
             // Shared for writing: another instance may be adding an entry right now.
             using (var log = new FileStream(CrashLog.FilePath, FileMode.Open, FileAccess.Read,
                                             FileShare.ReadWrite | FileShare.Delete))
-            using (var target = File.Create(copy))
+            using (var target = new FileStream(copy, FileMode.CreateNew))
                 log.CopyTo(target);
             OpenPaths(new[] { copy });
         }
@@ -1809,11 +1829,13 @@ public partial class MainWindow : Window
             return false;   // user cancelled — keep everything open, don't quit
 
         // Everyone confirmed (saved or chose to discard). Tear each document down cleanly (clearing
-        // its recovery snapshot and releasing any file lock), then shut the whole app down.
+        // its recovery snapshot and releasing any file lock), then shut the whole app down. Every
+        // fate is decided, so one teardown failing stops neither the others nor the quit: stopping
+        // would leave windows open with some documents disposed, and _forceQuitting set.
         _forceQuitting = true;   // OnClosing must not prompt a second time during shutdown
         foreach (var mw in windows)
             foreach (var v in mw.AllViews())
-                v.Dispose();
+                LogFailure(v.Dispose, "Disposing a document while quitting failed");
 
         // Shut down after this returns so the IPC "OK" reply reaches the caller before we tear down.
         Application.Current.Dispatcher.BeginInvoke(new Action(() => Application.Current.Shutdown()));
@@ -1883,10 +1905,11 @@ public partial class MainWindow : Window
     {
         if (_forceQuitting)
         {
-            // Forced quit for redeploy: recovery was already flushed above. Stop timers but keep
-            // the recovery files (do NOT Dispose) so the work is restored next launch — no prompts.
+            // Forced quit for redeploy: recovery was already flushed above. Release the documents
+            // but keep the recovery files (do NOT Dispose) so the work is restored next launch — no
+            // prompts. Released, not only stopped: a watcher left running could still raise a check.
             foreach (var view in AllViews())
-                view.StopTimers();
+                view.Release();
             DisposeTray();
             return;
         }

@@ -1370,7 +1370,7 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
     }
 
     /// <summary>Stop this document's timers without touching its recovery file.</summary>
-    public void StopTimers()
+    private void StopTimers()
     {
         _debounce.Stop();
         _autosave.Stop();

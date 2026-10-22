@@ -107,7 +107,7 @@ internal static class Program
         Environment.SetEnvironmentVariable(AppPaths.OverrideVariable, data);
 
         string filter = args.FirstOrDefault(a => a.StartsWith("--filter="))?["--filter=".Length..] ?? "";
-        int failures = CheckLoadFailureClassifier(filter) + CheckRegistrationRule(filter);
+        int failures = CheckLoadFailureClassifier(filter) + CheckRegistrationRule(filter) + CheckSweepRule(filter);
         var app = new Application { ShutdownMode = ShutdownMode.OnExplicitShutdown };
         app.Dispatcher.InvokeAsync(async () =>
         {
@@ -214,6 +214,50 @@ internal static class Program
             else
             {
                 Console.WriteLine($"FAIL {label}\n     expected {expected}, got {actual}");
+                failed++;
+            }
+        }
+        return failed;
+    }
+
+    /// <summary>Which local copies the sweep deletes (<see cref="OldBuilds.CopiesToSweep"/>): never
+    /// another name's (a name that another starts with included), the newest version, the one
+    /// running, or a recent one. Returns the number of failed cases.</summary>
+    private static int CheckSweepRule(string filter)
+    {
+        var now = new DateTime(2026, 10, 22, 12, 0, 0, DateTimeKind.Utc);
+        DateTime ago(int minutes) => now.AddMinutes(-minutes);
+        string root = @"C:\T\NotepadRedo\run\";
+        var folders = new (string Folder, DateTime Created, DateTime Written)[]
+        {
+            (root + "NotepadRedo-9a5ec3c-100", ago(600), ago(600)),           // old version, idle: goes
+            (root + "NotepadRedo-9a5ec3c-200", ago(600), ago(600)),           // running: stays
+            (root + "NotepadRedo-9a5ec3c-300", ago(600), ago(3)),             // used minutes ago: stays
+            (root + "NotepadRedo-9a5ec3c-400", ago(2), ago(2)),               // just made: stays
+            (root + "NotepadRedo-9a5ec3c-500", ago(600), ago(600)),           // newest version: stays
+            (root + "NotepadRedo-standalone-9a5ec3c-100", ago(600), ago(600)), // another name: stays
+            (root + "NotepadRedo-abc-9a5ec3c-100", ago(600), ago(600)),       // a variant named like hex: stays
+            (root + "Unrelated", ago(600), ago(600)),                         // not a copy: stays
+        };
+        var cases = new (string Name, string Exe, string? Mine, string[] Expected)[]
+        {
+            ("NotepadRedo, running from 200", "NotepadRedo", root + "NotepadRedo-9a5ec3c-200",
+                new[] { root + "NotepadRedo-9a5ec3c-100" }),
+            ("NotepadRedo-abc, its only copy is the newest", "NotepadRedo-abc", null, Array.Empty<string>()),
+            ("NotepadRedo-standalone, its only copy is the newest", "NotepadRedo-standalone", null, Array.Empty<string>()),
+        };
+        int failed = 0;
+        foreach (var (name, exe, mine, expected) in cases)
+        {
+            string label = $"[unit] OldBuilds.CopiesToSweep: {name}";
+            if (!label.Contains(filter, StringComparison.OrdinalIgnoreCase))
+                continue;
+            var actual = OldBuilds.CopiesToSweep(folders, exe, mine, now);
+            if (actual.OrderBy(f => f).SequenceEqual(expected.OrderBy(f => f)))
+                Console.WriteLine($"ok   {label}");
+            else
+            {
+                Console.WriteLine($"FAIL {label}\n     expected [{string.Join(", ", expected)}]\n     got      [{string.Join(", ", actual)}]");
                 failed++;
             }
         }

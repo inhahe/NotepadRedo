@@ -21,6 +21,10 @@ public partial class App : Application
         // closed, so it would keep the process running with nothing on screen.
         ShutdownMode = ShutdownMode.OnExplicitShutdown;
 
+        // Keep this build's own extracted copy from being swept by another instance while this one
+        // runs (see OldBuilds), from as early as possible.
+        OldBuilds.HoldOwnExtraction();
+
         // Detach from a launching console so its prompt returns immediately. cmd.exe (and batch
         // scripts) WAIT for a process they start to exit before returning — this is true for GUI
         // apps too, not just console apps (the reason `notepad`/`calc` seem to return instantly is
@@ -101,11 +105,18 @@ public partial class App : Application
         }
 
         bool blankRequested = e.Args.Contains("--new");
-        if (FilesLeftAfterSiblings(e.Args) is not List<string> files)
+        var files = FilesNamedIn(e.Args);
+        // A launcher that made a local copy has offered the files to the siblings already, and
+        // passed on only those left (see TryRelaunchDetached).
+        if (!e.Args.Contains(RoutedFlag))
         {
-            // Everything was handed to a sibling: exit without ever showing a window.
-            Shutdown();
-            return;
+            if (FilesLeftAfterSiblings(files, blankRequested) is not List<string> left)
+            {
+                // Everything was handed to a sibling: exit without ever showing a window.
+                Shutdown();
+                return;
+            }
+            files = left;
         }
 
         // Running from a local copy, every window takes the taskbar identity of the exe the user
@@ -156,29 +167,32 @@ public partial class App : Application
         window.ForceForeground();
         window.Initialize(files, blankRequested, firstInstance);
 
-        // Keep this build's own extracted copy from being swept while it runs, then delete the
-        // extracted and local copies of earlier builds that nothing uses any more.
-        OldBuilds.HoldOwnExtraction();
+        // Delete the extracted and local copies of earlier builds that nothing uses any more.
         OldBuilds.SweepSoon();
     }
 
-    /// <summary>Offer the files named in <paramref name="args"/> to the instances already running,
-    /// and return those left for this one to open, or null if nothing is left for it to do.</summary>
-    /// <remarks>A file already open in a sibling is focused there. In tab mode a sibling takes the
-    /// rest, and a bare launch (no files) brings the existing editor forward instead of opening a
-    /// second, empty window. In new-instance mode, or with <c>--new</c>, the files stay here.</remarks>
-    private static List<string>? FilesLeftAfterSiblings(string[] args)
-    {
+    /// <summary>Tells a relaunched instance that its launcher has offered its files to the
+    /// instances already running (<see cref="FilesLeftAfterSiblings"/>), and passed on only those
+    /// left: offering them again would repeat what an OPEN does, a "create it?" question say.</summary>
+    private const string RoutedFlag = "--routed";
+
+    /// <summary>The files named in <paramref name="args"/> (everything that isn't a flag), made
+    /// absolute.</summary>
+    private static List<string> FilesNamedIn(string[] args) =>
         // Resolve every file arg to an absolute path *here*, while this process's working directory
         // is still the one the user launched from. A relative name (e.g. "notes.txt") otherwise gets
         // handed over IPC to a sibling instance that has a different cwd, which would resolve it
         // against the wrong folder — opening/creating the file in the wrong place.
-        var files = args
-            .Where(a => !a.StartsWith("--", StringComparison.Ordinal))
-            .Select(ToAbsolutePath)
-            .ToList();
-        bool blankRequested = args.Contains("--new");
+        args.Where(a => !a.StartsWith("--", StringComparison.Ordinal)).Select(ToAbsolutePath).ToList();
 
+    /// <summary>Offer <paramref name="files"/> to the instances already running, and return those
+    /// left for this one to open, or null if nothing is left for it to do.</summary>
+    /// <param name="blankRequested">Whether <c>--new</c> asked for a fresh blank document.</param>
+    /// <remarks>A file already open in a sibling is focused there. In tab mode a sibling takes the
+    /// rest, and a bare launch (no files) brings the existing editor forward instead of opening a
+    /// second, empty window. In new-instance mode, or with <c>--new</c>, the files stay here.</remarks>
+    private static List<string>? FilesLeftAfterSiblings(List<string> files, bool blankRequested)
+    {
         if (files.Count > 0 && !blankRequested)
         {
             var remaining = new List<string>();
@@ -370,24 +384,34 @@ public partial class App : Application
         if (LocalCopy.Needed(exe))
         {
             // Started from a share or removable drive, a build whose code stays in its exe runs from
-            // a local copy instead (see LocalCopy), told which exe the user started.
-            string? copy = LocalCopy.Find(exe);
-            // A first copy of a new version reads ~160 MB over the network. Not for a launch that
-            // only hands its files to an instance already running: hand them over first. (The
-            // relaunched instance offers what's left again, which costs only the asking.)
-            if (copy is null && FilesLeftAfterSiblings(args) is null)
-                return true;
-            copy ??= MakeLocalCopy(exe);
-            Environment.SetEnvironmentVariable(LocalCopy.OriginVariable, exe);
-            if (copy is not null)
+            // a local copy instead (see LocalCopy), told which exe the user started. Anything going
+            // wrong with that (the share dropping mid-launch, say) runs the exe as it is: this is
+            // before the error handlers exist, so an exception would end the launch unlogged.
+            try
             {
-                if (StartDetached(copy, args))
-                    return true;
-                // Swept between being found and started: once more. (One that is there but won't
-                // start, blocked by a policy say, would only fail again.)
-                if (!File.Exists(copy) && MakeLocalCopy(exe) is string again && StartDetached(again, args))
-                    return true;
+                string? copy = LocalCopy.Find(exe);
+                if (copy is null)
+                {
+                    // A first copy of a new version reads ~160 MB over the network. Not for a launch
+                    // that only hands its files to an instance already running: hand them over first,
+                    // and pass on only the rest, marked so that they aren't offered again.
+                    if (FilesLeftAfterSiblings(FilesNamedIn(args), args.Contains("--new")) is not List<string> left)
+                        return true;
+                    args = [.. args.Where(a => a.StartsWith("--", StringComparison.Ordinal)), .. left, RoutedFlag];
+                    copy = MakeLocalCopy(exe);
+                }
+                if (copy is not null)
+                {
+                    Environment.SetEnvironmentVariable(LocalCopy.OriginVariable, exe);
+                    if (StartDetached(copy, args))
+                        return true;
+                    // Swept between being found and started: once more. (One that is there but won't
+                    // start, blocked by a policy say, would only fail again.)
+                    if (!File.Exists(copy) && MakeLocalCopy(exe) is string again && StartDetached(again, args))
+                        return true;
+                }
             }
+            catch (Exception ex) { CrashLog.Log("Running from a local copy failed", ex); }
             Environment.SetEnvironmentVariable(LocalCopy.OriginVariable, null);
             CrashLog.Log($"No local copy of {exe} could be started; it runs from where it is, so replacing it "
                          + "there while this instance runs can break the instance", null);

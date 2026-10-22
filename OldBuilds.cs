@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.IO;
 using System.Text.RegularExpressions;
 
@@ -46,26 +45,27 @@ internal static class OldBuilds
     /// being renamed, and so swept, while the instance runs. A loaded library doesn't do that by
     /// itself: Windows keeps no handle open on a DLL loaded with LoadLibrary, which is all a
     /// self-contained build has there. (The framework-dependent build's app assembly is held open
-    /// by .NET already; holding it again costs nothing.) Call once the window is up, by when the
-    /// native libraries are loaded.</summary>
+    /// by .NET once loaded; holding something too costs nothing.) Call first thing at startup.</summary>
+    /// <remarks>The folder is the native search directory .NET was given under the app's
+    /// extraction folder: it is there from the start, before any library has been loaded from it.</remarks>
     public static void HoldOwnExtraction()
     {
         try
         {
             if (_held is not null || AppExtractionFolder is not string folder)
                 return;
-            string? file = typeof(OldBuilds).Assembly.Location is { Length: > 0 } assembly && IsUnder(assembly, folder)
-                ? assembly
-                : Process.GetCurrentProcess().Modules.Cast<ProcessModule>()
-                      .Select(m => m.FileName).FirstOrDefault(f => f is not null && IsUnder(f, folder));
-            if (file is not null)
+            string? own = (AppContext.GetData("NATIVE_DLL_SEARCH_DIRECTORIES") as string ?? "")
+                .Split(';', StringSplitOptions.RemoveEmptyEntries)
+                .Select(d => d.TrimEnd(Path.DirectorySeparatorChar))
+                .FirstOrDefault(d => LocalCopy.IsInside(d, folder));
+            if (own is null && typeof(OldBuilds).Assembly.Location is { Length: > 0 } assembly
+                && LocalCopy.IsInside(assembly, folder))
+                own = Path.GetDirectoryName(assembly);
+            if (own is not null && Directory.EnumerateFiles(own).FirstOrDefault() is string file)
                 _held = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
         }
         catch (Exception ex) { CrashLog.Log("Holding this build's extraction folder failed", ex); }
     }
-
-    private static bool IsUnder(string file, string folder) =>
-        Path.GetFullPath(file).StartsWith(folder + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
 
     private static void Sweep()
     {
@@ -106,29 +106,16 @@ internal static class OldBuilds
         }
     }
 
-    /// <summary>The local copies of exes named <paramref name="name"/>, in <see cref="LocalCopy.Root"/>.
-    /// Spared: the one this instance runs from; the newest, which the next launch of the current
-    /// version will want (another build sweeping shouldn't make it copy 160 MB again); and any used
-    /// or made in the last few minutes, which a launch may be about to start.</summary>
+    /// <summary>The local copies of exes named <paramref name="name"/>, in <see cref="LocalCopy.Root"/>,
+    /// that <see cref="CopiesToSweep"/> picks.</summary>
     private static void SweepCopies(string name)
     {
         if (!Directory.Exists(LocalCopy.Root))
             return;
-        string? mine = Path.GetDirectoryName(Environment.ProcessPath);
-        var copies = Directory.EnumerateDirectories(LocalCopy.Root)
-            .Select(f => (Folder: f, Ok: LocalCopy.TryParseFolder(Path.GetFileName(f), name, out long t), Ticks: t))
-            .Where(c => c.Ok)
-            .ToList();
-        if (copies.Count == 0)
-            return;
-        long newest = copies.Max(c => c.Ticks);
-        foreach (var (folder, _, ticks) in copies)
+        var folders = Directory.EnumerateDirectories(LocalCopy.Root)
+            .Select(f => (f, Directory.GetCreationTimeUtc(f), Directory.GetLastWriteTimeUtc(f)));
+        foreach (string folder in CopiesToSweep(folders, name, Path.GetDirectoryName(Environment.ProcessPath), DateTime.UtcNow))
         {
-            if (ticks == newest || string.Equals(folder, mine, StringComparison.OrdinalIgnoreCase))
-                continue;
-            var touched = new[] { Directory.GetCreationTimeUtc(folder), Directory.GetLastWriteTimeUtc(folder) }.Max();
-            if (DateTime.UtcNow - touched < TimeSpan.FromMinutes(10))
-                continue;
             try
             {
                 foreach (string copy in Directory.EnumerateFiles(folder, "*.exe"))
@@ -141,5 +128,35 @@ internal static class OldBuilds
             catch (IOException) { }
             catch (UnauthorizedAccessException) { }
         }
+    }
+
+    /// <summary>How recently a copy folder must have been made or used to be spared regardless.</summary>
+    private static readonly TimeSpan RecentlyUsed = TimeSpan.FromMinutes(10);
+
+    /// <summary>Which of <paramref name="folders"/> (folders under <see cref="LocalCopy.Root"/>, with
+    /// their creation and last-write times, UTC) to delete, for an instance of an exe named
+    /// <paramref name="name"/> running from the folder <paramref name="mine"/> at <paramref name="now"/>.
+    /// Only copies of that name are candidates (see <see cref="LocalCopy.TryParseFolder"/>), and of
+    /// those, spared are: the one this instance runs from; the newest version, which the next launch
+    /// of the current version will want (another build sweeping mustn't make it copy 160 MB again);
+    /// and any made or used in the last few minutes, which a launch may be writing or about to start.
+    /// Whether a candidate is in use is for the caller to find out.</summary>
+    internal static List<string> CopiesToSweep(IEnumerable<(string Folder, DateTime Created, DateTime Written)> folders,
+                                               string name, string? mine, DateTime now)
+    {
+        var copies = folders
+            .Select(f => (f.Folder, f.Created, f.Written,
+                          Ok: LocalCopy.TryParseFolder(Path.GetFileName(f.Folder), name, out long ticks), Ticks: ticks))
+            .Where(c => c.Ok)
+            .ToList();
+        if (copies.Count == 0)
+            return [];
+        long newest = copies.Max(c => c.Ticks);
+        return copies
+            .Where(c => c.Ticks != newest
+                        && !string.Equals(c.Folder, mine, StringComparison.OrdinalIgnoreCase)
+                        && now - (c.Created > c.Written ? c.Created : c.Written) >= RecentlyUsed)
+            .Select(c => c.Folder)
+            .ToList();
     }
 }

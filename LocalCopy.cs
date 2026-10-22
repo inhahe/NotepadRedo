@@ -36,8 +36,7 @@ internal static class LocalCopy
         CodeReadFromExe && OnNetworkOrRemovableDrive(exe) && !IsCopy(exe);
 
     /// <summary>Whether <paramref name="exe"/> is one of the copies.</summary>
-    public static bool IsCopy(string exe) =>
-        Path.GetFullPath(exe).StartsWith(Root + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
+    public static bool IsCopy(string exe) => IsInside(exe, Root);
 
     /// <summary>The exe the user started: the one this instance is a copy of, else this one.</summary>
     public static string? OriginalExe { get; } = ResolveOriginal();
@@ -79,14 +78,29 @@ internal static class LocalCopy
             string copy = CopyPathFor(source);
             string folder = Path.GetDirectoryName(copy)!;
             using var turn = new Mutex(false, @"Local\NotepadRedo.LocalCopy." + Path.GetFileName(folder));
-            try { turn.WaitOne(); }
-            catch (AbandonedMutexException) { }   // a launch that died while copying: ours now
+            bool mine;
+            try { mine = turn.WaitOne(TurnWait); }
+            catch (AbandonedMutexException) { mine = true; }   // a launch that died while copying: ours now
+            if (!mine)
+            {
+                // Another launch has been copying for minutes (a share that stopped answering, say).
+                // Rather than queue behind it indefinitely, run the exe as it is.
+                CrashLog.Log($"Gave up waiting for another launch to copy {exe}", null);
+                return null;
+            }
             try
             {
                 if (File.Exists(copy))
                     return copy;   // made by the launch this one waited for
                 Directory.CreateDirectory(folder);
-                Directory.SetLastWriteTimeUtc(folder, DateTime.UtcNow);   // fresh, for the sweep
+                // Partial copies left by launches that died: none is being written while we hold the
+                // turn (one being written can't be deleted anyway, which leaves it alone).
+                foreach (string stale in Directory.EnumerateFiles(folder, "*.partial"))
+                {
+                    try { File.Delete(stale); }
+                    catch (IOException) { }
+                    catch (UnauthorizedAccessException) { }
+                }
                 // Under a name of its own, then renamed: a copy under the real name is always complete.
                 string partial = $"{copy}.{Environment.ProcessId}.partial";
                 File.Copy(exe, partial, overwrite: true);
@@ -100,7 +114,10 @@ internal static class LocalCopy
                     File.Delete(partial);
                     return null;
                 }
-                File.Move(partial, copy);
+                // The turn is per logon session; the same user starting it in another session may
+                // have finished first.
+                try { File.Move(partial, copy); }
+                catch (IOException) when (File.Exists(copy)) { File.Delete(partial); }
                 return copy;
             }
             finally { turn.ReleaseMutex(); }
@@ -111,6 +128,14 @@ internal static class LocalCopy
             return null;
         }
     }
+
+    /// <summary>How long a launch waits for another one making the same copy before giving up.</summary>
+    private static readonly TimeSpan TurnWait = TimeSpan.FromMinutes(2);
+
+    /// <summary>Whether <paramref name="path"/> lies inside <paramref name="folder"/> (a full path
+    /// without a trailing separator), at any depth.</summary>
+    internal static bool IsInside(string path, string folder) =>
+        Path.GetFullPath(path).StartsWith(folder + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
 
     /// <summary>Where the copy of <paramref name="source"/>, as it is now, belongs. Size and time
     /// tell versions apart, so a new build gets a folder of its own.</summary>

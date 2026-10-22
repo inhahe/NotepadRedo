@@ -84,13 +84,18 @@ Instead it runs from a local copy of its exe, and only where that is needed (`Lo
   - The copy is written under a temporary name and renamed, so a copy under its real name is always
     complete. It is made not read-only, whatever the source was, so the sweep can tell it unused.
   - Launches that need the same copy at once take turns (a named mutex per copy folder), and the
-    later ones use what the first made, rather than each reading 160 MB.
+    later ones use what the first made, rather than each reading 160 MB. One waits at most two
+    minutes, then runs the exe as it is: a share that stopped answering mustn't queue every launch
+    behind one copy. The turn also clears partial copies that launches which died left behind.
   - While the first copy of a version is made, a small window says so, with messages pumped so
     Windows doesn't call it hung.
   - A launch that would only hand its files to an instance already running (`FilesLeftAfterSiblings`)
-    does that before copying, so it never waits on a copy it won't use.
+    does that before copying, so it never waits on a copy it won't use. It relaunches with only the
+    files left and `--routed`, which tells the new instance not to offer them again: offering repeats
+    what an `OPEN` does, a "create it?" question included.
   - A copy that was found is marked as just used, and one swept between being found and started
-    is made once more. If no copy can be started, the exe is relaunched as it is, still detached,
+    is made once more. If no copy can be started, or anything in this goes wrong (a share dropping
+    mid-launch, before the error handlers exist), the exe is relaunched as it is, still detached,
     and the log says the instance is exposed.
 - **Who it says it is:** a process running from a copy is told the exe the user started
   (`NOTEPADREDO_ORIGIN`, which only a copy honours, since whatever the process starts inherits it).
@@ -119,7 +124,9 @@ running instance uses. Each kind tells "in use" differently, as tried on this ma
   doesn't hold its file open (LoadLibrary keeps no handle), and a self-contained build has nothing
   else there: its instances used to sweep their own folder 30 seconds in, and lose every native
   library not yet loaded. So every instance holds a file in its own folder open for as long as it
-  runs (`OldBuilds.HoldOwnExtraction`). Only folders named like a bundle id (12 characters of
+  runs (`OldBuilds.HoldOwnExtraction`), from the first line of `OnStartup`, launchers included. It
+  finds the folder as the native search directory .NET was given under the app's extraction folder
+  (`NATIVE_DLL_SEARCH_DIRECTORIES`), which is there before any library is loaded from it. Only folders named like a bundle id (12 characters of
   base64) are touched, so a base folder pointed somewhere unexpected loses nothing but what .NET
   put there.
 - **Local copies** (`<name>-<size>-<time>` under `LocalCopy.Root`, read by `LocalCopy.TryParseFolder`):
@@ -129,9 +136,9 @@ running instance uses. Each kind tells "in use" differently, as tried on this ma
   copy 160 MB again); and any created or used in the last ten minutes, which a launch may be writing
   or about to start.
 
-One race remains: an older build that has just checked its extraction folder exists, but not yet
-opened anything in it, fails to start if a sweep takes the folder in between. Its next start
-extracts again. Logged in KNOWN-ISSUES.
+One race remains: between the .NET host checking that its extraction folder exists and `OnStartup`
+holding it, well under a second, a sweep by another instance of the same name can take the folder.
+Logged in KNOWN-ISSUES.
 
 Nor does the app's own code read the exe. The tray icon is the system's generic application icon:
 the exe carries no icon, so asking the shell for it would read the file only to get the same
@@ -152,7 +159,8 @@ code failed looked as if it had done nothing, which is how "Show a diff and merg
 Both now go through `App.ReportSwallowed`, which also calls `MainWindow.ShowErrorNotice` on
 `MainWindow.Foremost()` (the active editor window, else a visible one, else any): a red hyperlink
 in the status bar, "Error: Type: first line of the message", for 20 seconds. Clicking it opens a
-copy of `crash.log` (`%TEMP%\NotepadRedo\crash.log as of <time>.log`), not the log itself. As a
+copy of `crash.log` (`%TEMP%\NotepadRedo\crash.log as of <time>.log`; earlier copies are deleted
+then, where nothing holds them), not the log itself. As a
 document the log would be watched, so every entry added would raise the changed-on-disk question,
 and with "Lock open files" on it would be held against the writes that add them. The same message
 arriving again while it shows only counts up ("Error (3×)"), so an exception raised on every layout
@@ -249,6 +257,12 @@ looks at how far it got:
 
 Each step of that runs on regardless of the one before failing (`LogFailure`). Cancelling every
 time instead would turn a bug that repeats into a window that can't be closed.
+
+The same rule holds elsewhere. `RequestQuitWithPrompt` (`--quit-prompt`) disposes every document
+once all the questions are answered, and one failing to dispose stops neither the rest nor the
+quit. A forced quit releases the documents rather than only stopping their timers. Tearing a tab off
+builds and shows the new window before taking the tab out, so a window that can't be made leaves
+the tab where it was, not its document in no window at all.
 
 ### Tab selection history
 
