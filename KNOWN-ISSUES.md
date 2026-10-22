@@ -45,6 +45,21 @@
   previous commit it fails all three of its checks: the instance ran from the share, mapped the
   bundle over SMB, and had no relaunch identity. On this one they pass: a 160 MB first copy took
   about 4 s over `\\localhost`, and a second launch reused it.
+- **Hardened after review (Opus max, Fable xhigh):**
+  - A self-contained instance used to sweep its *own* extraction folder 30 seconds in, since a
+    library loaded with LoadLibrary doesn't hold its folder; checked, and fixed by holding a file
+    there open.
+  - Concurrent launches take turns copying.
+  - A launch that only hands its files over doesn't copy.
+  - A copy that won't start falls back to a fresh copy, then to the exe itself, detached.
+  - Copies are not left read-only.
+  - The newest copy survives other builds' sweeps.
+  - Every window of a relocated instance, the merge viewer included, takes the original's
+    identity.
+
+  Each checked on a self-contained build: the folder kept 5 of 5 files, where the previous commit
+  left 0; three simultaneous launches made one copy; the merge window had the original's ID and
+  relaunch command.
 
 ### "Show a diff and merge…" did nothing in an instance run from a network drive (fixed 2026-10-22, 1.0.30)
 - **Symptom:** in the "changed on disk" prompt, choosing "Show a diff and merge…" closed the prompt
@@ -79,6 +94,17 @@
 - **Regression test:** `tests/ExeIndependence/Run.ps1`. It fails all four of its checks on 1.0.29.
 - **Still exposed:** any instance started before 1.0.30 (before 1.0.32 for the self-contained
   release), until it is restarted.
+
+### A build starting just as a sweep takes its extraction folder fails to start once (open)
+- **By design analysis** (2026-10-22, not observed): `OldBuilds` sweeps another build's extraction
+  folder when it can rename it, which it can't while an instance holds a file there open. A build
+  starting at that moment has checked its folder exists (the .NET host does, before loading
+  anything) but holds nothing in it yet. If the sweep renames the folder in between, that start
+  fails. The next start extracts again.
+- **Window:** from the host's check to the first assembly load, well under a second, on a build
+  older than the one sweeping, within the 30 seconds after the newer one starts.
+- **Proper fix (deferred):** a cross-process lock that the host would take, which it doesn't. Or
+  sweep only folders whose files were last accessed long ago, which NTFS keeps only roughly.
 
 ### A framework-dependent instance loses unloaded assemblies when .NET is updated under it (open)
 - **Symptom:** `crash.log`, 2026-10-14 09:20, at a Windows restart:

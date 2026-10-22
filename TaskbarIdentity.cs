@@ -1,16 +1,53 @@
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Windows;
+using System.Windows.Interop;
 
 namespace NotepadRedo;
 
 /// <summary>
-/// Gives a window of an instance running from a local copy (<see cref="LocalCopy"/>) the taskbar
-/// identity of the exe the user started. Without it, the taskbar knows the window only by the copy
-/// it runs from: a pin made from it would launch that copy, which the next build's sweep deletes
-/// (<see cref="OldBuilds"/>), and the copy's windows wouldn't group with a pin of the original.
+/// Gives the windows of an instance running from a local copy (<see cref="LocalCopy"/>) the taskbar
+/// identity of the exe the user started. Without it, the taskbar knows them only by the copy they
+/// run from: a pin made from one would launch that copy, which a later build's sweep deletes
+/// (<see cref="OldBuilds"/>). With it, they group under an ID of their own, and a pin made from them
+/// launches the original. (A pin made on the exe file itself is another matter: Windows derives its
+/// ID from the path by an undocumented rule, so it can't be matched, and shows as a separate button.)
 /// </summary>
 internal static class TaskbarIdentity
 {
+    /// <summary>Give every window this process shows the identity of <paramref name="exe"/>: the
+    /// process's ID at once, before any window exists, and each window's relaunch command as it
+    /// loads. Call once, at startup, before the first window.</summary>
+    public static void ApplyToEveryWindow(string exe)
+    {
+        try { Marshal.ThrowExceptionForHR(SetCurrentProcessExplicitAppUserModelID(IdFor(exe))); }
+        catch (Exception ex) { CrashLog.Log("Setting the process's taskbar identity failed", ex); }
+        EventManager.RegisterClassHandler(typeof(Window), FrameworkElement.LoadedEvent,
+            new RoutedEventHandler((sender, _) =>
+            {
+                if (sender is Window window && PresentationSource.FromVisual(window) is HwndSource source
+                    && Applied.Add(source.Handle))
+                {
+                    Apply(source.Handle, exe);
+                    source.AddHook(ClearOnDestroy);
+                }
+            }));
+    }
+
+    /// <summary>The windows given the identity, so that one loaded again isn't hooked twice.</summary>
+    private static readonly HashSet<IntPtr> Applied = new();
+
+    private static IntPtr ClearOnDestroy(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
+    {
+        const int WM_DESTROY = 0x0002;
+        if (msg == WM_DESTROY)
+        {
+            Clear(hwnd);
+            Applied.Remove(hwnd);
+        }
+        return IntPtr.Zero;
+    }
+
     /// <summary>Set <paramref name="hwnd"/>'s AppUserModel ID and relaunch command to those of
     /// <paramref name="exe"/>. Best-effort: a failure costs only the pin, so it is logged.</summary>
     public static void Apply(IntPtr hwnd, string exe)
@@ -114,4 +151,7 @@ internal static class TaskbarIdentity
     [DllImport("shell32.dll")]
     private static extern int SHGetPropertyStoreForWindow(IntPtr hwnd, ref Guid iid,
         [MarshalAs(UnmanagedType.Interface)] out IPropertyStore store);
+
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
+    private static extern int SetCurrentProcessExplicitAppUserModelID(string appId);
 }

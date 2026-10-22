@@ -1692,21 +1692,6 @@ public partial class MainWindow : Window
     {
         base.OnSourceInitialized(e);
         _everShown = true;
-        // Running from a local copy, the window takes the taskbar identity of the exe the user started.
-        if (LocalCopy.IsRelocated && LocalCopy.OriginalExe is string exe)
-        {
-            var source = (HwndSource)PresentationSource.FromVisual(this);
-            TaskbarIdentity.Apply(source.Handle, exe);
-            source.AddHook(ClearTaskbarIdentityOnDestroy);
-        }
-    }
-
-    private static IntPtr ClearTaskbarIdentityOnDestroy(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
-    {
-        const int WM_DESTROY = 0x0002;
-        if (msg == WM_DESTROY)
-            TaskbarIdentity.Clear(hwnd);
-        return IntPtr.Zero;
     }
 
     /// <summary>Every editor window of this process that has been shown, hidden in the tray

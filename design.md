@@ -79,18 +79,28 @@ Instead it runs from a local copy of its exe, and only where that is needed (`Lo
   assembly has a file location: `LocalCopy.CodeReadFromExe`), and the exe is on a network or
   removable drive. Everyone else pays nothing.
 - **How:** the launcher, which relaunches itself detached anyway, copies the exe to
-  `%TEMP%\NotepadRedo\run\<name>-<size>-<time>\<name>.exe` and launches that. The copy is written
-  under a temporary name and renamed, so a copy under its real name is always complete, and two
-  launches at once don't write into each other's. While the first copy of a version is made, a
-  small window says so, with messages pumped so Windows doesn't call it hung. Later launches of the
-  same version reuse the copy. If copying fails, the exe runs as it is.
+  `%TEMP%\NotepadRedo\run\<name>-<size>-<time>\<name>.exe` and launches that. Later launches of
+  the same version reuse the copy. Details that matter:
+  - The copy is written under a temporary name and renamed, so a copy under its real name is always
+    complete. It is made not read-only, whatever the source was, so the sweep can tell it unused.
+  - Launches that need the same copy at once take turns (a named mutex per copy folder), and the
+    later ones use what the first made, rather than each reading 160 MB.
+  - While the first copy of a version is made, a small window says so, with messages pumped so
+    Windows doesn't call it hung.
+  - A launch that would only hand its files to an instance already running (`FilesLeftAfterSiblings`)
+    does that before copying, so it never waits on a copy it won't use.
+  - A copy that was found is marked as just used, and one swept between being found and started
+    is made once more. If no copy can be started, the exe is relaunched as it is, still detached,
+    and the log says the instance is exposed.
 - **Who it says it is:** a process running from a copy is told the exe the user started
   (`NOTEPADREDO_ORIGIN`, which only a copy honours, since whatever the process starts inherits it).
-  That exe, `LocalCopy.OriginalExe`, is what the `.txt` registration names. The windows take its
-  taskbar identity (`TaskbarIdentity`: an AppUserModel ID from the exe's name, and a relaunch
-  command naming it). Without that, a pin made from a window would launch the copy, which a later
-  build's sweep deletes. Windows asks for those properties to be cleared before a window is
-  destroyed, which `WM_DESTROY` does.
+  That exe, `LocalCopy.OriginalExe`, is what the `.txt` registration names. Every window takes its
+  taskbar identity (`TaskbarIdentity.ApplyToEveryWindow`: the process's AppUserModel ID from the
+  exe's name, set before the first window, and each window's relaunch command, set as it loads).
+  Without that, a pin made from a window would launch the copy, which a later build's sweep
+  deletes. Windows asks for the window properties to be cleared before a window is destroyed, which
+  `WM_DESTROY` does. One thing it can't do: group with a pin made on the exe file itself, whose ID
+  Windows derives from the path by an undocumented rule. That pin shows as a separate button.
 
 The framework-dependent build could use the same copy, but needs none: extracting 230 KB is cheaper
 than copying the exe, and its windows keep the identity of the exe they run from.
@@ -104,18 +114,24 @@ each build would leave its own behind for good: about 230 KB per framework-depen
 running instance uses. Each kind tells "in use" differently, as tried on this machine:
 
 - **Extraction folders** (`<DOTNET_BUNDLE_EXTRACT_BASE_DIR or %TEMP%\.net>\<name>\<bundle id>`):
-  Windows refuses to rename a folder while a process has a library from it loaded. So each is
-  renamed (`<id>.old`) and then deleted: a starting instance never finds one half gone. Only folders
-  named like a bundle id (12 characters of base64url) are touched, so a base folder pointed somewhere
-  unexpected loses nothing but what .NET put there.
-- **Local copies** (`<name>-<size>-<time>` under `LocalCopy.Root`): a folder *can* be renamed while
-  its exe runs, but the exe can't be deleted. So the exe goes first, then the folder. The copy this
-  instance runs from is skipped, and so is any made in the last ten minutes, which another build's
-  launch may be writing or about to start.
+  Windows refuses to rename a folder while any process holds a file in it open. So each is renamed
+  (`<id>.old`) and then deleted: a starting instance never finds one half gone. A *loaded library*
+  doesn't hold its file open (LoadLibrary keeps no handle), and a self-contained build has nothing
+  else there: its instances used to sweep their own folder 30 seconds in, and lose every native
+  library not yet loaded. So every instance holds a file in its own folder open for as long as it
+  runs (`OldBuilds.HoldOwnExtraction`). Only folders named like a bundle id (12 characters of
+  base64) are touched, so a base folder pointed somewhere unexpected loses nothing but what .NET
+  put there.
+- **Local copies** (`<name>-<size>-<time>` under `LocalCopy.Root`, read by `LocalCopy.TryParseFolder`):
+  a folder *can* be renamed while its exe runs, but the exe can't be deleted. So the exe goes
+  first, then the folder. Spared are the copy this instance runs from; the newest copy of the name,
+  which the next launch of the current version will want (another build sweeping must not make it
+  copy 160 MB again); and any created or used in the last ten minutes, which a launch may be writing
+  or about to start.
 
 One race remains: an older build that has just checked its extraction folder exists, but not yet
-loaded from it, fails to start if the sweep takes the folder in between. Its next start extracts
-again.
+opened anything in it, fails to start if a sweep takes the folder in between. Its next start
+extracts again. Logged in KNOWN-ISSUES.
 
 Nor does the app's own code read the exe. The tray icon is the system's generic application icon:
 the exe carries no icon, so asking the shell for it would read the file only to get the same

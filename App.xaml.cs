@@ -100,52 +100,18 @@ public partial class App : Application
             return;
         }
 
-        // Resolve every file arg to an absolute path *here*, while this process's working directory
-        // is still the one the user launched from. A relative name (e.g. "notes.txt") otherwise gets
-        // handed over IPC to a sibling instance that has a different cwd, which would resolve it
-        // against the wrong folder — opening/creating the file in the wrong place.
-        var files = e.Args
-            .Where(a => !a.StartsWith("--", StringComparison.Ordinal))
-            .Select(ToAbsolutePath)
-            .ToList();
         bool blankRequested = e.Args.Contains("--new");
-
-        if (files.Count > 0 && !blankRequested)
+        if (FilesLeftAfterSiblings(e.Args) is not List<string> files)
         {
-            var remaining = new List<string>();
-            foreach (var f in files)
-            {
-                // Already open somewhere? Just focus that tab/instance.
-                if (IpcServer.TryFocusInSibling(f))
-                    continue;
-                // Tab mode: hand the file to the existing instance so it opens as a new tab there
-                // (rather than spawning a second window). Instance mode: fall through and open here.
-                if (!AppSettings.Current.OpenInNewInstance && IpcServer.OpenInSibling(f))
-                    continue;
-                remaining.Add(f);
-            }
+            // Everything was handed to a sibling: exit without ever showing a window.
+            Shutdown();
+            return;
+        }
 
-            // Everything was routed to a sibling — exit without ever showing a window.
-            if (remaining.Count == 0)
-            {
-                Shutdown();
-                return;
-            }
-            files = remaining;
-        }
-        else if (files.Count == 0 && !blankRequested && !AppSettings.Current.OpenInNewInstance)
-        {
-            // Bare "notepadredo" with no filenames while an instance is already running: the user
-            // wants the editor they already have, not a second empty window on top of it. Ask a
-            // sibling to come forward and exit without ever showing one. (In *new instance* mode
-            // that's exactly what the user asked us not to do, and "--new" is an explicit request
-            // for a fresh blank, so both fall through to opening normally.)
-            if (IpcServer.PresentSibling())
-            {
-                Shutdown();
-                return;
-            }
-        }
+        // Running from a local copy, every window takes the taskbar identity of the exe the user
+        // started; the process's own part of that has to come before the first window.
+        if (LocalCopy.IsRelocated && LocalCopy.OriginalExe is string original)
+            TaskbarIdentity.ApplyToEveryWindow(original);
 
         // Are we the first NotepadRedo process? Only the first instance restores the previous session;
         // secondary instances (new-instance mode) just open what they were launched with. Checked here,
@@ -190,8 +156,53 @@ public partial class App : Application
         window.ForceForeground();
         window.Initialize(files, blankRequested, firstInstance);
 
-        // Delete extracted and local copies of earlier builds that nothing uses any more.
+        // Keep this build's own extracted copy from being swept while it runs, then delete the
+        // extracted and local copies of earlier builds that nothing uses any more.
+        OldBuilds.HoldOwnExtraction();
         OldBuilds.SweepSoon();
+    }
+
+    /// <summary>Offer the files named in <paramref name="args"/> to the instances already running,
+    /// and return those left for this one to open, or null if nothing is left for it to do.</summary>
+    /// <remarks>A file already open in a sibling is focused there. In tab mode a sibling takes the
+    /// rest, and a bare launch (no files) brings the existing editor forward instead of opening a
+    /// second, empty window. In new-instance mode, or with <c>--new</c>, the files stay here.</remarks>
+    private static List<string>? FilesLeftAfterSiblings(string[] args)
+    {
+        // Resolve every file arg to an absolute path *here*, while this process's working directory
+        // is still the one the user launched from. A relative name (e.g. "notes.txt") otherwise gets
+        // handed over IPC to a sibling instance that has a different cwd, which would resolve it
+        // against the wrong folder — opening/creating the file in the wrong place.
+        var files = args
+            .Where(a => !a.StartsWith("--", StringComparison.Ordinal))
+            .Select(ToAbsolutePath)
+            .ToList();
+        bool blankRequested = args.Contains("--new");
+
+        if (files.Count > 0 && !blankRequested)
+        {
+            var remaining = new List<string>();
+            foreach (var f in files)
+            {
+                // Already open somewhere? Just focus that tab/instance.
+                if (IpcServer.TryFocusInSibling(f))
+                    continue;
+                // Tab mode: hand the file to the existing instance so it opens as a new tab there
+                // (rather than spawning a second window). Instance mode: fall through and open here.
+                if (!AppSettings.Current.OpenInNewInstance && IpcServer.OpenInSibling(f))
+                    continue;
+                remaining.Add(f);
+            }
+            return remaining.Count == 0 ? null : remaining;
+        }
+        // Bare "notepadredo" with no filenames while an instance is already running: the user
+        // wants the editor they already have, not a second empty window on top of it. (In *new
+        // instance* mode that's exactly what the user asked us not to do, and "--new" is an explicit
+        // request for a fresh blank, so both fall through to opening normally.)
+        if (files.Count == 0 && !blankRequested && !AppSettings.Current.OpenInNewInstance
+            && IpcServer.PresentSibling())
+            return null;
+        return files;
     }
 
     /// <summary>
@@ -348,30 +359,55 @@ public partial class App : Application
     /// Started via ShellExecute (UseShellExecute = true) so it is NOT a console child of the launching
     /// cmd/batch — the caller can then exit right away and free the prompt. The working directory is
     /// preserved so relative file paths on the command line still resolve. Returns true when the new
-    /// process was started (so the caller should exit); false on failure (so the caller runs in-place).
+    /// process was started, or nothing was left to start it for (so the caller should exit); false on
+    /// failure (so the caller runs in-place).
     /// </summary>
     private static bool TryRelaunchDetached(string[] args)
     {
-        try
+        string? exe = Environment.ProcessPath;
+        if (string.IsNullOrEmpty(exe))
+            return false;
+        if (LocalCopy.Needed(exe))
         {
-            string? exe = Environment.ProcessPath;
-            if (string.IsNullOrEmpty(exe))
-                return false;
-
             // Started from a share or removable drive, a build whose code stays in its exe runs from
             // a local copy instead (see LocalCopy), told which exe the user started.
-            string run = exe;
-            if (LocalCopy.Needed(exe)
-                && (LocalCopy.Find(exe) ?? WhileShowing("Copying NotepadRedo to this computer before it starts…",
-                                                        () => LocalCopy.Make(exe))) is string copy)
+            string? copy = LocalCopy.Find(exe);
+            // A first copy of a new version reads ~160 MB over the network. Not for a launch that
+            // only hands its files to an instance already running: hand them over first. (The
+            // relaunched instance offers what's left again, which costs only the asking.)
+            if (copy is null && FilesLeftAfterSiblings(args) is null)
+                return true;
+            copy ??= MakeLocalCopy(exe);
+            Environment.SetEnvironmentVariable(LocalCopy.OriginVariable, exe);
+            if (copy is not null)
             {
-                run = copy;
-                Environment.SetEnvironmentVariable(LocalCopy.OriginVariable, exe);
+                if (StartDetached(copy, args))
+                    return true;
+                // Swept between being found and started: once more. (One that is there but won't
+                // start, blocked by a policy say, would only fail again.)
+                if (!File.Exists(copy) && MakeLocalCopy(exe) is string again && StartDetached(again, args))
+                    return true;
             }
+            Environment.SetEnvironmentVariable(LocalCopy.OriginVariable, null);
+            CrashLog.Log($"No local copy of {exe} could be started; it runs from where it is, so replacing it "
+                         + "there while this instance runs can break the instance", null);
+        }
+        return StartDetached(exe, args);
+    }
 
+    private static string? MakeLocalCopy(string exe) =>
+        WhileShowing("Copying NotepadRedo to this computer before it starts…", () => LocalCopy.Make(exe));
+
+    /// <summary>Start <paramref name="exe"/> with <paramref name="args"/> and <c>--detached</c>, detached
+    /// from any console (see <see cref="TryRelaunchDetached"/>). Returns false, having logged why, if
+    /// it couldn't be started.</summary>
+    private static bool StartDetached(string exe, string[] args)
+    {
+        try
+        {
             var psi = new ProcessStartInfo
             {
-                FileName = run,
+                FileName = exe,
                 UseShellExecute = true,                              // detach from the parent console
                 WorkingDirectory = Directory.GetCurrentDirectory(),  // keep relative paths resolving
             };
@@ -389,7 +425,7 @@ public partial class App : Application
         }
         catch (Exception ex)
         {
-            CrashLog.Log("Detached relaunch failed; starting in-place instead", ex);
+            CrashLog.Log($"Starting {exe} detached failed", ex);
             return false;
         }
     }

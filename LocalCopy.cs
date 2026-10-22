@@ -54,37 +54,56 @@ internal static class LocalCopy
     }
 
     /// <summary>The existing, complete copy of <paramref name="exe"/> as it is now, or null if
-    /// there is none yet.</summary>
+    /// there is none yet. A copy found is marked as just used, so that a sweep running meanwhile
+    /// (which spares recent folders) doesn't take it before it starts.</summary>
     public static string? Find(string exe)
     {
         string copy = CopyPathFor(new FileInfo(exe));
-        return File.Exists(copy) ? copy : null;
+        if (!File.Exists(copy))
+            return null;
+        try { Directory.SetLastWriteTimeUtc(Path.GetDirectoryName(copy)!, DateTime.UtcNow); }
+        catch (IOException) { }
+        catch (UnauthorizedAccessException) { }
+        return copy;
     }
 
     /// <summary>Copy <paramref name="exe"/> to its place under <see cref="Root"/> and return the
     /// copy's path, or null if that failed (the caller then runs the exe as it is). Can take a
-    /// while: the self-contained exe is about 160 MB, read over the network.</summary>
+    /// while: the self-contained exe is about 160 MB, read over the network. Launches making the
+    /// same copy at once take turns, and the later ones use what the first made.</summary>
     public static string? Make(string exe)
     {
         try
         {
             var source = new FileInfo(exe);
             string copy = CopyPathFor(source);
-            Directory.CreateDirectory(Path.GetDirectoryName(copy)!);
-            // Under a name of its own, then renamed: a copy under the real name is always complete,
-            // and two launches at once don't write into each other's.
-            string partial = $"{copy}.{Environment.ProcessId}.partial";
-            File.Copy(exe, partial, overwrite: true);
-            source.Refresh();
-            if (CopyPathFor(source) != copy)
+            string folder = Path.GetDirectoryName(copy)!;
+            using var turn = new Mutex(false, @"Local\NotepadRedo.LocalCopy." + Path.GetFileName(folder));
+            try { turn.WaitOne(); }
+            catch (AbandonedMutexException) { }   // a launch that died while copying: ours now
+            try
             {
-                // Replaced while it was being copied: the copy is of neither version.
-                File.Delete(partial);
-                return null;
+                if (File.Exists(copy))
+                    return copy;   // made by the launch this one waited for
+                Directory.CreateDirectory(folder);
+                Directory.SetLastWriteTimeUtc(folder, DateTime.UtcNow);   // fresh, for the sweep
+                // Under a name of its own, then renamed: a copy under the real name is always complete.
+                string partial = $"{copy}.{Environment.ProcessId}.partial";
+                File.Copy(exe, partial, overwrite: true);
+                // Not read-only, as a file on read-only media or an admin's share may be: the sweep
+                // couldn't delete it, and would take that for its being in use.
+                File.SetAttributes(partial, FileAttributes.Normal);
+                source.Refresh();
+                if (CopyPathFor(source) != copy)
+                {
+                    // Replaced while it was being copied: the copy is of neither version.
+                    File.Delete(partial);
+                    return null;
+                }
+                File.Move(partial, copy);
+                return copy;
             }
-            try { File.Move(partial, copy); }
-            catch (IOException) when (File.Exists(copy)) { File.Delete(partial); }   // another launch won
-            return copy;
+            finally { turn.ReleaseMutex(); }
         }
         catch (Exception ex)
         {
@@ -97,8 +116,26 @@ internal static class LocalCopy
     /// tell versions apart, so a new build gets a folder of its own.</summary>
     private static string CopyPathFor(FileInfo source) =>
         Path.Combine(Root,
-            $"{Path.GetFileNameWithoutExtension(source.Name)}-{source.Length:x}-{source.LastWriteTimeUtc.Ticks:x}",
+            FolderName(Path.GetFileNameWithoutExtension(source.Name), source.Length, source.LastWriteTimeUtc.Ticks),
             source.Name);
+
+    /// <summary>The folder a copy of version (<paramref name="length"/>, <paramref name="ticks"/>)
+    /// of an exe named <paramref name="name"/> lives in. <see cref="TryParseFolder"/> reads it back.</summary>
+    private static string FolderName(string name, long length, long ticks) => $"{name}-{length:x}-{ticks:x}";
+
+    /// <summary>Whether <paramref name="folder"/>, a folder name under <see cref="Root"/>, holds a
+    /// copy of an exe named <paramref name="name"/>, and if so the time of the version it is a copy
+    /// of (<paramref name="ticks"/>: later is newer).</summary>
+    public static bool TryParseFolder(string folder, string name, out long ticks)
+    {
+        ticks = 0;
+        if (!folder.StartsWith(name + "-", StringComparison.OrdinalIgnoreCase))
+            return false;
+        var parts = folder[(name.Length + 1)..].Split('-');
+        return parts.Length == 2
+            && long.TryParse(parts[0], System.Globalization.NumberStyles.AllowHexSpecifier, null, out _)
+            && long.TryParse(parts[1], System.Globalization.NumberStyles.AllowHexSpecifier, null, out ticks);
+    }
 
     private static bool OnNetworkOrRemovableDrive(string path)
     {

@@ -201,7 +201,7 @@ Everything is stored under `%LOCALAPPDATA%\NotepadRedo\`:
 
 Setting the environment variable `NOTEPADREDO_DATA_DIR` to a folder makes NotepadRedo keep all of this there instead (the tests use it).
 
-Two temp folders hold copies of the program itself, so that a running NotepadRedo never depends on its exe (see *Building*): `%TEMP%\.net\NotepadRedo\` (the code .NET unpacks from the exe) and `%TEMP%\NotepadRedo\run\` (a local copy of a self-contained exe started from a network or removable drive). A copy no running NotepadRedo uses is deleted automatically, half a minute after a later start.
+Two temp folders hold copies of the program itself, so that a running NotepadRedo never depends on its exe (see *Building*): `%TEMP%\.net\NotepadRedo\` (the code .NET unpacks from the exe) and `%TEMP%\NotepadRedo\run\` (a local copy of a self-contained exe started from a network or removable drive). A copy no running NotepadRedo uses is deleted automatically, half a minute after a later start, except the newest local copy, which the next start of that version reuses.
 
 On first launch, if a `%LOCALAPPDATA%\TreeNotepad\` folder exists (from before the rename), it is automatically moved to `NotepadRedo\` so all settings and recovery data carry over.
 
