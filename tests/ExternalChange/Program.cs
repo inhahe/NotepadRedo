@@ -107,8 +107,8 @@ internal static class Program
         Environment.SetEnvironmentVariable(AppPaths.OverrideVariable, data);
 
         string filter = args.FirstOrDefault(a => a.StartsWith("--filter="))?["--filter=".Length..] ?? "";
+        int failures = CheckLoadFailureClassifier(filter);
         var app = new Application { ShutdownMode = ShutdownMode.OnExplicitShutdown };
-        int failures = 0;
         app.Dispatcher.InvokeAsync(async () =>
         {
             try
@@ -128,6 +128,49 @@ internal static class Program
 
         Console.WriteLine(failures == 0 ? "PASS" : $"FAIL: {failures} test(s)");
         return failures == 0 ? 0 : 1;
+    }
+
+    /// <summary>Which exceptions <see cref="App.ProgramLoadFailure"/> treats as the program's own files
+    /// failing to load, the cue for telling the user to restart. Not about external changes, but the
+    /// one test project there is. Returns the number of failed cases.</summary>
+    private static int CheckLoadFailureClassifier(string filter)
+    {
+        const string DisplayName = "System.Drawing.Common, Version=8.0.0.0, Culture=neutral, PublicKeyToken=cc7b13ffcd2ddd51";
+        var badImage = new BadImageFormatException("Bad IL range.");
+        var missingAssembly = new FileNotFoundException("Could not load file or assembly", DisplayName);
+        var cases = new (string Name, Exception? Thrown, Exception? Expected)[]
+        {
+            ("a bad image", badImage, badImage),
+            ("a bad image inside a TargetInvocationException",
+                new System.Reflection.TargetInvocationException(badImage), badImage),
+            ("an assembly that can't be found, inside a XamlParseException",
+                new System.Windows.Markup.XamlParseException("xaml", missingAssembly), missingAssembly),
+            ("the second of an aggregate's inner exceptions",
+                new AggregateException(new InvalidOperationException(), badImage), badImage),
+            ("a document that can't be found, though its name has \", Version=\"",
+                new FileNotFoundException("gone", @"C:\notes\Plan, Version=2.txt"), null),
+            ("a DLL Windows doesn't have", new DllNotFoundException("x"), null),
+            ("an export Windows doesn't have", new EntryPointNotFoundException("x"), null),
+            ("an ordinary bug", new InvalidOperationException("x"), null),
+        };
+        int failed = 0;
+        foreach (var (name, thrown, expected) in cases)
+        {
+            string label = $"[unit] ProgramLoadFailure: {name}";
+            if (!label.Contains(filter, StringComparison.OrdinalIgnoreCase))
+                continue;
+            var actual = App.ProgramLoadFailure(thrown);
+            if (ReferenceEquals(actual, expected))
+                Console.WriteLine($"ok   {label}");
+            else
+            {
+                Console.WriteLine($"FAIL {label}\n     expected {Describe(expected)}, got {Describe(actual)}");
+                failed++;
+            }
+        }
+        return failed;
+
+        static string Describe(Exception? e) => e is null ? "none" : e.GetType().Name;
     }
 
     /// <summary>The settings every test starts from (in memory only): the other program must be able

@@ -172,7 +172,7 @@ That signal reaches only the instances on the computer running `build.bat`. An i
 dotnet run --project tests\ExternalChange -- --share
 ```
 
-Drives the "changed on disk" prompt through a real editor and file watcher while another writer keeps changing the file, and exits non-zero on failure. `--share` repeats every test through `\\localhost\<drive>$` (SMB), the way a network drive is reached; leave it off where admin shares aren't available. `--filter=<text>` runs only the tests whose name contains the text. It parks windows off-screen and briefly opens dialogs. It keeps its own data in a scratch folder, so it never touches your running editor, settings or recovery files.
+Drives the "changed on disk" prompt through a real editor and file watcher while another writer keeps changing the file, and exits non-zero on failure. `--share` repeats every test through `\\localhost\<drive>$` (SMB), the way a network drive is reached; leave it off where admin shares aren't available. `--filter=<text>` runs only the tests whose name contains the text. It parks windows off-screen and briefly opens dialogs. It keeps its own data in a scratch folder, so it never touches your running editor, settings or recovery files. It also checks which exceptions count as NotepadRedo's own files failing to load, the cue for telling you to restart.
 
 ### Version
 

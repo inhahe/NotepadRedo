@@ -1781,7 +1781,16 @@ public partial class MainWindow : Window
                     return;
                 case CloseButtonBehavior.MinimizeToTray:
                     e.Cancel = true;
-                    MinimizeToTray();
+                    // An exception out of OnClosing makes WPF finish closing the window, unsaved work
+                    // and all. The tray icon needs System.Drawing, which nothing loads before it: after
+                    // a .NET update has deleted the runtime this process started on, it can't load.
+                    try { MinimizeToTray(); }
+                    catch (Exception ex)
+                    {
+                        CrashLog.Log("Minimize to tray failed; minimizing to the taskbar instead", ex);
+                        WindowState = WindowState.Minimized;
+                        (Application.Current as App)?.AdviseRestartIfLoadFailure(ex);
+                    }
                     return;
             }
         }
@@ -1853,29 +1862,14 @@ public partial class MainWindow : Window
 
         _tray = new System.Windows.Forms.NotifyIcon
         {
-            Icon = TryLoadAppIcon(),
+            // The exe carries no icon of its own, so this is what the shell would show for it anyway.
+            // Asking the shell would read the exe, which a running instance must not do (design.md).
+            Icon = System.Drawing.SystemIcons.Application,
             Text = "NotepadRedo",
             ContextMenuStrip = menu,
         };
         // Double-click (or a plain left click) restores the window.
         _tray.DoubleClick += (_, _) => Dispatcher.Invoke(RestoreFromTray);
-    }
-
-    /// <summary>The app's own exe icon, falling back to the generic application icon.</summary>
-    private static System.Drawing.Icon TryLoadAppIcon()
-    {
-        try
-        {
-            var path = Environment.ProcessPath;
-            if (!string.IsNullOrEmpty(path))
-            {
-                var ico = System.Drawing.Icon.ExtractAssociatedIcon(path);
-                if (ico is not null)
-                    return ico;
-            }
-        }
-        catch { /* fall through to the system default */ }
-        return System.Drawing.SystemIcons.Application;
     }
 }
 

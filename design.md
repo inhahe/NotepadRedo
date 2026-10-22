@@ -59,9 +59,10 @@ constructor, never run before in that process, raised `BadImageFormatException: 
 
 So the build makes an instance independent of its exe once it has started:
 
-- **`IncludeAllContentForSelfExtract`** extracts the bundle to
-  `%TEMP%\.net\NotepadRedo\<bundle id>\` on the first launch of each build, and the assembly is
-  loaded from there. Each build gets a folder of its own, so a new build never writes into the one
+- **`IncludeAllContentForSelfExtract`**, set by the `ExtractAppAssembly` target, extracts the
+  bundle to `%TEMP%\.net\NotepadRedo\<bundle id>\` on the first launch of each build, and the
+  assembly is loaded from there. It is set in a target, not the project body, because only by then
+  have a publish profile or the SDK's defaults settled `SelfContained`. Each build gets a folder of its own, so a new build never writes into the one
   a running instance uses. Each leaves about 230 KB behind, which .NET never deletes.
 - **`IMAGE_FILE_NET_RUN_FROM_SWAP`**, and its removable-media twin, are set in the exe's header by
   the `MarkRunFromSwap` target after bundling. Started from a network drive, Windows then copies the
@@ -77,6 +78,10 @@ kinds, but the process would then run from the copy. Taskbar pins, the `.txt` re
 (`FileAssociation`, which records `Environment.ProcessPath`) and "Open with" would all point into a
 cache folder that the next build empties.
 
+Nor does the app's own code read the exe. The tray icon is the system's generic application icon:
+the exe carries no icon, so asking the shell for it would read the file only to get the same
+picture.
+
 To see which applies to a running instance, list its mapped files (Process Explorer's DLL view, or
 `VirtualQueryEx` with `GetMappedFileName`). An exposed instance has a *data* view of its exe, and a
 protected one maps `NotepadRedo.dll` from `%TEMP%\.net`.
@@ -87,12 +92,24 @@ The runtime's own files can still change under an instance: a .NET update instal
 version and deletes the old one, along with every assembly the instance hasn't loaded yet. The
 UI-thread handler (`App.OnDispatcherUnhandledException`) swallows exceptions to keep documents
 alive, which would make the next command needing such an assembly do nothing at all. So when the
-exception chain holds a load failure (`ProgramLoadFailure`: bad image, invalid program, missing
-type or member, or a `FileNotFoundException`/`FileLoadException` naming an assembly), the user is
-told once to save and restart. The dialog is posted at background priority, after the failed
-operation has unwound, so it never appears inside a layout pass or a shutdown. A load failure in
-`OnClosing` (the tray icon's first use) is the exception: WPF finishes closing a window whose
-`OnClosing` throws, and if that was the last window the app exits before the dialog can show.
+exception chain holds a load failure, the user is told once to save and restart.
+
+- **What counts** (`App.ProgramLoadFailure`, tested in `tests/ExternalChange`): a bad image, an
+  invalid program, a missing type or member, or a `FileNotFoundException`/`FileLoadException`
+  whose file name is an assembly's display name rather than a path. Inner exceptions are searched,
+  and every one of an aggregate's. A missing DLL or export is excluded, though .NET counts it as a
+  type-load failure: it's Windows lacking something, which no restart fixes.
+- **When it shows:** posted at background priority, after the failed operation has unwound, so
+  never inside a layout pass, and never during a shutdown, which drops it. Its owner is the active
+  window, else any visible one, else none. A window whose constructor failed is registered but was
+  never shown, and can't own a dialog.
+- **Its own failure is contained.** The advice is code that hasn't run before, compiled from the
+  same files whose damage it reports, so the handler calls it inside a `try`. Otherwise its failure
+  would escape the handler and end the process.
+- **Not out of `OnClosing`.** WPF finishes closing a window whose `OnClosing` throws, without asking
+  about unsaved work, and the app exits if it was the last window. The one load that can fail there,
+  the tray icon's `System.Drawing`, is caught: the window is minimized to the taskbar instead, and
+  the advice is given from there.
 
 ## Windows, tabs and documents
 

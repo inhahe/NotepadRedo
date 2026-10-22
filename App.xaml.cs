@@ -214,50 +214,32 @@ public partial class App : Application
         // Keep the app alive: the user's open documents are worth more than crashing on a
         // recoverable UI glitch. The full traceback is already on disk for diagnosis.
         e.Handled = true;
-        if (ProgramLoadFailure(e.Exception) is Exception failure)
-            AdviseRestart(failure);
+        // The advice is code that may never have run before, compiled from the very files whose
+        // damage it reports. If that fails, it must not escape the handler and end the process.
+        try { AdviseRestartIfLoadFailure(e.Exception); }
+        catch (Exception inner) { CrashLog.Log("Couldn't advise a restart", inner); }
     }
 
     /// <summary>Set once the user has been told to restart. The advice never changes, and a failure
     /// raised on every layout pass must not bring the dialog back each time.</summary>
     private bool _restartAdvised;
 
-    /// <summary>The exception in <paramref name="ex"/>'s chain saying that part of the program itself
-    /// couldn't be loaded, or null if there is none.</summary>
-    /// <remarks>Such a failure is no bug in what the user did. The program's files changed under the
-    /// running process (a .NET update deleted the runtime it started on, say), and it will go on
-    /// failing at that point until it is restarted. Swallowed silently, it makes a command look as if
-    /// it did nothing at all.</remarks>
-    private static Exception? ProgramLoadFailure(Exception? ex)
+    /// <summary>If <paramref name="ex"/> says part of the program couldn't be loaded, tell the user,
+    /// once, to restart NotepadRedo. For a failure caught where it happens as well as one that
+    /// reaches the UI-thread handler.</summary>
+    internal void AdviseRestartIfLoadFailure(Exception ex)
     {
-        for (; ex is not null; ex = ex.InnerException)
-        {
-            switch (ex)
-            {
-                case BadImageFormatException:
-                case InvalidProgramException:
-                case TypeLoadException:
-                case MissingMemberException:
-                // An assembly rather than a document: its name is a display name ("System.Foo, Version=…").
-                case FileNotFoundException { FileName: string f } when f.Contains(", Version="):
-                case FileLoadException { FileName: string l } when l.Contains(", Version="):
-                    return ex;
-            }
-        }
-        return null;
-    }
-
-    /// <summary>Tell the user, once, that NotepadRedo must be restarted, citing <paramref name="failure"/>.</summary>
-    private void AdviseRestart(Exception failure)
-    {
-        if (_restartAdvised)
+        if (_restartAdvised || ProgramLoadFailure(ex) is not Exception failure)
             return;
         _restartAdvised = true;
         // Once the failed operation has unwound: it may have been a layout pass, and no dialog belongs
         // in the middle of one. A shutdown drops the posted call, so then nothing is shown.
         Dispatcher.BeginInvoke(new Action(() =>
         {
-            var owner = Windows.OfType<Window>().FirstOrDefault(w => w.IsActive) ?? MainWindow;
+            // Never a window that was never shown (one whose constructor failed, say): setting it as
+            // the owner would throw. With no owner the dialog is centred on the screen.
+            var owner = Windows.OfType<Window>().FirstOrDefault(w => w.IsActive)
+                     ?? Windows.OfType<Window>().FirstOrDefault(w => w.IsVisible);
             ThemedDialog.Show(owner,
                 "Part of NotepadRedo couldn't be loaded, so what you just did may not have worked.\n\n"
                 + "This happens when the program's files change while it is running, after a .NET "
@@ -266,6 +248,38 @@ public partial class App : Application
                 "NotepadRedo needs a restart", MessageBoxButton.OK, MessageBoxImage.Warning);
         }), DispatcherPriority.Background);
     }
+
+    /// <summary>The exception among <paramref name="ex"/> and its inner exceptions (each of an
+    /// aggregate's) saying that part of the program itself couldn't be loaded, or null if none does.</summary>
+    /// <remarks>Such a failure is no bug in what the user did. The program's files changed under the
+    /// running process (a .NET update deleted the runtime it started on, say), and it will go on
+    /// failing at that point until it is restarted. Swallowed silently, it makes a command look as if
+    /// it did nothing at all.</remarks>
+    internal static Exception? ProgramLoadFailure(Exception? ex)
+    {
+        switch (ex)
+        {
+            case null:
+                return null;
+            case AggregateException aggregate:
+                return aggregate.InnerExceptions.Select(ProgramLoadFailure).FirstOrDefault(f => f is not null);
+            // A DLL or an export that Windows doesn't have: a restart changes nothing.
+            case DllNotFoundException or EntryPointNotFoundException:
+                break;
+            case BadImageFormatException or InvalidProgramException or TypeLoadException or MissingMemberException:
+                return ex;
+            case FileNotFoundException { FileName: string name } when IsAssemblyName(name):
+                return ex;
+            case FileLoadException { FileName: string name } when IsAssemblyName(name):
+                return ex;
+        }
+        return ProgramLoadFailure(ex.InnerException);
+    }
+
+    /// <summary>Whether a load failure's file name is an assembly's display name
+    /// ("System.Foo, Version=8.0.0.0, …") rather than the path of a document.</summary>
+    private static bool IsAssemblyName(string name) =>
+        name.Contains(", Version=") && name.IndexOfAny(['\\', '/']) < 0;
 
     protected override void OnExit(ExitEventArgs e)
     {

@@ -29,14 +29,15 @@
   price is reading the whole file on each such event, our own saves included.
 
 ### The self-contained release still reads its code from the exe while it runs
-- **Where:** `NotepadRedo.csproj`: `IncludeAllContentForSelfExtract` is set only when not
-  self-contained.
+- **Where:** `NotepadRedo.csproj`: the `ExtractAppAssembly` target sets
+  `IncludeAllContentForSelfExtract` only when not self-contained.
 - **Consequence:** the GitHub release, run from a network share, has the exposure the
   framework-dependent build no longer has. If the exe is replaced on the share while another
   computer runs it, after a dropped connection has closed that computer's handle, the instance reads
   parts of the new build. Its runtime is safe (the exe is marked run-from-swap), but its managed
   code, the framework's included, is mapped from the bundle. Expect `BadImageFormatException` and
-  the like on code it hadn't run yet, which now at least produces the restart notice.
+  the like on code it hadn't run yet. The restart notice may report it, but can't be counted on:
+  its own code is read the same way.
 - **Proper fix (deferred):** extracting everything would cost every release user about 160 MB of
   `%TEMP%` per version, for a setup few of them have. Candidates: ReadyToRun-compile the app, if
   .NET then copies R2R images out of the bundle at load rather than mapping them (unverified); or,
@@ -87,14 +88,38 @@
   assemblies it hasn't loaded yet are gone. Any command that first needs one then fails until the
   instance is restarted. Today only two of the app's references load lazily:
   `System.Security.Cryptography` (history sidecars, whose failures are caught and only lose the
-  history) and `System.Drawing.Common` (the tray icon, whose failure in `OnClosing` closes the
-  window). WPF and the framework load more on their own, as the shutdown case shows.
-- **Mitigation (2026-10-22, 1.0.30):** a load failure that reaches the UI-thread handler tells the
-  user to restart, rather than leaving the command to do nothing.
-- **Proper fix:** none cheap. A self-contained build can't be serviced under it, but the local
-  deploy would then have to extract about 160 MB per build to stay safe on a network drive (above).
-  Reproduce with `DOTNET_ROOT` pointed at a private copy of the runtime: start an instance, delete
-  `System.Drawing.Common.dll` from the copy, then close the window with "Minimize to tray" set.
+  history) and `System.Drawing.Common` (the tray icon). WPF and the framework load more on their
+  own, as the shutdown case shows.
+- **Mitigation:** a load failure that reaches the UI-thread handler tells the user to restart,
+  rather than leaving the command to do nothing (1.0.30). A tray icon that can't be made no longer
+  throws out of `OnClosing`: WPF then finished closing the window without asking about unsaved
+  work, and the app exited. The window is minimized to the taskbar instead, and the user is told to
+  restart (1.0.31).
+- **Proper fix:** none cheap. Loading the app's lazy references at startup would lock only those
+  assemblies, not the ones they load in turn when used. A self-contained build can't be serviced
+  under it, but the local deploy would then have to extract about 160 MB per build to stay safe on
+  a network drive (above).
+- **Reproduce:** point `DOTNET_ROOT` at a private copy of the runtime, start an instance, delete
+  `System.Drawing.Common.dll` from the copy, then close the window with "Minimize to tray" set. The
+  window must end up minimized, with the restart notice on screen.
+
+### A window whose constructor fails stays in `Application.Windows` and can keep the app alive (open)
+- **By inspection** (found by review, 2026-10-22): WPF's `Window` constructor registers the window
+  in `Application.Windows` before the derived constructor runs. If `InitializeComponent`, or
+  anything after it in a window's constructor, throws, the half-made window stays registered, never
+  shown and never closed. The app shuts down when its last window closes (`OnLastWindowClose`), so
+  once the user closes every real window, that one keeps the process alive with nothing on screen.
+  The next launch then counts it as a running instance: it doesn't restore the session, and in tab
+  mode hands its files to the invisible process. (The 2026-07-17 NullReferenceException entry
+  below shows that early registration at work.)
+- **When:** any exception in a window's constructor. A load failure in `DiffMergeWindow`'s
+  `InitializeComponent` after a .NET update, or a failure while tearing a tab off into a new
+  `MainWindow`. The reported `Bad IL range` did not do it: that one is raised while compiling the
+  constructor, before any of it runs.
+- **Proper fix:** tie the app's lifetime to its editor windows rather than to every `Window`: shut
+  down when the last loaded `MainWindow` closes. Closing the orphans instead is not safe: a
+  never-shown `MainWindow`'s `OnClosing` would still run, and with "Minimize to tray" set it would
+  put an icon in the tray.
 
 ### "Reload from disk" loaded an older version, not the latest (fixed 2026-10-20, 1.0.29)
 - **Symptom:** on a mapped network drive, the "changed on disk" prompt appeared after the file was

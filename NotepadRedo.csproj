@@ -16,18 +16,13 @@
          the built binary reports the same version. -->
     <Version>$([System.IO.File]::ReadAllText('$(MSBuildProjectDirectory)\VERSION').Trim())</Version>
 
-    <!-- Single-file publishing (the release build and the local deploy build a self-contained
-         single-file exe). WPF's native DLLs (PresentationNative, wpfgfx) cannot be loaded from
-         inside the bundle; without extracting them to disk the app crashes at window creation with
-         a DllNotFoundException (SetWindowLongPtrWndProc) before any handler can log it. Extract
-         native libraries at startup so single-file WPF actually runs. -->
+    <!-- Single-file publishing. The self-contained release carries WPF's native DLLs
+         (PresentationNative, wpfgfx) inside the bundle, where they cannot be loaded; without
+         extracting them to disk the app crashes at window creation with a DllNotFoundException
+         (SetWindowLongPtrWndProc) before any handler can log it. Extract native libraries at startup
+         so single-file WPF actually runs. (build.bat's framework-dependent exe takes them from the
+         installed runtime instead.) -->
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
-
-    <!-- A running instance must not read its exe after startup (see "A running instance reads
-         nothing from its exe" in design.md). This loads the app's own assembly from an extracted copy under
-         %TEMP%\.net\NotepadRedo\, not out of the bundle as code is first needed. Framework-dependent
-         builds only: a self-contained bundle would extract the whole runtime, ~160 MB per version. -->
-    <IncludeAllContentForSelfExtract Condition="'$(SelfContained)' != 'true'">true</IncludeAllContentForSelfExtract>
 
     <!-- The test projects under tests\ are built on their own; without this the default globs would
          compile their sources, and their generated obj\ files, into the app as well. -->
@@ -40,6 +35,23 @@
     <Using Remove="System.Windows.Forms" />
     <Using Remove="System.Drawing" />
   </ItemGroup>
+
+  <!-- tests\ExternalChange checks App.ProgramLoadFailure directly. -->
+  <ItemGroup>
+    <InternalsVisibleTo Include="ExternalChange" />
+  </ItemGroup>
+
+  <!-- A running instance must not read its exe after startup (see "A running instance reads nothing
+       from its exe" in design.md). This loads the app's own assembly from an extracted copy under
+       %TEMP%\.net\NotepadRedo\, not out of the bundle as code is first needed. Framework-dependent
+       builds only: a self-contained bundle would extract the whole runtime, ~160 MB per version.
+       Decided in a target because the project body is evaluated before a publish profile or the
+       SDK's defaults have settled SelfContained. -->
+  <Target Name="ExtractAppAssembly" BeforeTargets="PrepareForBundle" Condition="'$(SelfContained)' != 'true'">
+    <PropertyGroup>
+      <IncludeAllContentForSelfExtract>true</IncludeAllContentForSelfExtract>
+    </PropertyGroup>
+  </Target>
 
   <!-- Marks the published exe IMAGE_FILE_NET_RUN_FROM_SWAP and IMAGE_FILE_REMOVABLE_RUN_FROM_SWAP:
        started from a network drive or removable media, Windows copies the whole image into the
