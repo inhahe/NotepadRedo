@@ -267,11 +267,9 @@ public partial class App : Application
     {
         if (ex is AggregateException { InnerExceptions.Count: > 0 } aggregate)
             ex = aggregate.InnerExceptions[0];
-        // Fully qualified: in here, MainWindow is Application's property.
-        var windows = NotepadRedo.MainWindow.ShownWindows().ToList();
-        var window = windows.FirstOrDefault(w => w.IsActive) ?? windows.FirstOrDefault(w => w.IsVisible);
         string firstLine = ex.Message.Split('\n')[0].Trim();
-        window?.ShowErrorNotice($"{ex.GetType().Name}: {firstLine}");
+        // Fully qualified: in here, MainWindow is Application's property.
+        NotepadRedo.MainWindow.Foremost()?.ShowErrorNotice($"{ex.GetType().Name}: {firstLine}");
     }
 
     /// <summary>Set once the user has been told to restart. The advice never changes, and a failure
@@ -290,10 +288,11 @@ public partial class App : Application
         // in the middle of one. A shutdown drops the posted call, so then nothing is shown.
         Dispatcher.BeginInvoke(new Action(() =>
         {
-            // Never a window that was never shown (one whose constructor failed, say): setting it as
-            // the owner would throw. With no owner the dialog is centred on the screen.
+            // Whatever window is active, a dialog included, else a visible editor window. Never one
+            // that was never shown (whose constructor failed, say): setting that as the owner would
+            // throw. With no owner the dialog is centred on the screen.
             var owner = Windows.OfType<Window>().FirstOrDefault(w => w.IsActive)
-                     ?? Windows.OfType<Window>().FirstOrDefault(w => w.IsVisible);
+                     ?? (NotepadRedo.MainWindow.Foremost() is { IsVisible: true } editor ? editor : null);
             ThemedDialog.Show(owner,
                 "Part of NotepadRedo couldn't be loaded, so what you just did may not have worked.\n\n"
                 + "This happens when the program's files change while it is running, after a .NET "

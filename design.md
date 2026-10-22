@@ -133,9 +133,12 @@ either kind.
 The UI-thread handler (`App.OnDispatcherUnhandledException`) and the unobserved-task handler log an
 exception and carry on, to keep documents alive. That used to be all they did, so a command whose
 code failed looked as if it had done nothing, which is how "Show a diff and merge…" was reported.
-Both now go through `App.ReportSwallowed`, which also calls `MainWindow.ShowErrorNotice` on the
-active window (else a visible one): a red hyperlink in the status bar, "Error: Type: first line of
-the message", for 20 seconds. Clicking it opens `crash.log` like any other file. The same message
+Both now go through `App.ReportSwallowed`, which also calls `MainWindow.ShowErrorNotice` on
+`MainWindow.Foremost()` (the active editor window, else a visible one, else any): a red hyperlink
+in the status bar, "Error: Type: first line of the message", for 20 seconds. Clicking it opens a
+copy of `crash.log` (`%TEMP%\NotepadRedo\crash.log as of <time>.log`), not the log itself. As a
+document the log would be watched, so every entry added would raise the changed-on-disk question,
+and with "Lock open files" on it would be held against the writes that add them. The same message
 arriving again while it shows only counts up ("Error (3×)"), so an exception raised on every layout
 pass doesn't flicker. Failures that code catches on purpose and handles (a history sidecar that
 can't be written, say) are not reported this way: those are best-effort by design.

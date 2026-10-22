@@ -558,8 +558,7 @@ public partial class MainWindow : Window
     /// </summary>
     public static bool PresentExisting()
     {
-        var windows = ShownWindows().ToList();
-        var mw = windows.FirstOrDefault(w => w.IsActive) ?? windows.FirstOrDefault();
+        var mw = Foremost();
         if (mw is null)
             return false;
         mw.ForceForeground();
@@ -1659,7 +1658,27 @@ public partial class MainWindow : Window
     private void ErrorLink_Click(object sender, RoutedEventArgs e)
     {
         HideErrorNotice();
-        OpenPaths(new[] { CrashLog.FilePath });
+        // A copy, not the log: opened as a document, the log would be watched, so every entry added
+        // would raise the changed-on-disk question, and with "Lock open files" on it would be held
+        // against the very writes that add them.
+        try
+        {
+            string folder = Path.Combine(Path.GetTempPath(), "NotepadRedo");
+            Directory.CreateDirectory(folder);
+            string copy = Path.Combine(folder, $"crash.log as of {DateTime.Now:yyyy-MM-dd HH.mm.ss}.log");
+            // Shared for writing: another instance may be adding an entry right now.
+            using (var log = new FileStream(CrashLog.FilePath, FileMode.Open, FileAccess.Read,
+                                            FileShare.ReadWrite | FileShare.Delete))
+            using (var target = File.Create(copy))
+                log.CopyTo(target);
+            OpenPaths(new[] { copy });
+        }
+        catch (Exception ex)
+        {
+            CrashLog.Log("Opening a copy of crash.log failed", ex);
+            ThemedDialog.Show(this, $"Couldn't open a copy of the log.\n\n{ex.Message}\n\nThe log is {CrashLog.FilePath}",
+                "crash.log", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
     }
 
     // ===================== Closing =====================
@@ -1695,6 +1714,16 @@ public partial class MainWindow : Window
     /// constructor failed is never asked to host, focus, count or save anything.</summary>
     internal static IEnumerable<MainWindow> ShownWindows() =>
         Application.Current.Windows.OfType<MainWindow>().Where(w => w._everShown);
+
+    /// <summary>The editor window to show something in or bring forward: the active one, else a
+    /// visible one, else any (hidden in the tray), or null if there is none.</summary>
+    internal static MainWindow? Foremost()
+    {
+        var windows = ShownWindows().ToList();
+        return windows.FirstOrDefault(w => w.IsActive)
+            ?? windows.FirstOrDefault(w => w.IsVisible)
+            ?? windows.FirstOrDefault();
+    }
 
     protected override void OnClosed(EventArgs e)
     {
