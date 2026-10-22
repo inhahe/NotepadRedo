@@ -111,12 +111,16 @@
   `PromptSaveEach`, a save it triggered, or the tear-down after it threw, the window closed without
   the save the user was being asked about. Recovery files survived only as of the last autosave, and
   with autosave off there were none: the work was gone.
-- **Fix:** the close runs inside a `try`. A failure flushes every document's recovery snapshot,
-  keeps the window open once and says so. A second close, or a forced quit, goes through, keeping
-  the snapshots for the next launch. See "A failed close keeps the work" in `design.md`.
+- **Fix:** the close runs inside a `try`. A failure before the documents' teardown flushes every
+  document's recovery snapshot, keeps the window open once and says so. A second close, or a forced
+  quit, goes through, releasing the documents (watchers and file locks too) but keeping the
+  snapshots for the next launch. A failure in the teardown, when every question has been answered,
+  finishes the close. See "A failed close keeps the work" in `design.md`.
 - **Verified** with a build whose save prompt throws (injected, not committed). With autosave off,
   dirty document, X: before, the window and process closed with no snapshot written. After, the
   window stayed open with the notice and one snapshot; a second X closed it and kept the snapshot.
+  And with disposing a document throwing: 1.0.32 as first committed kept the window open with its
+  documents half shut down; now it closes.
 
 ### A window whose constructor failed could keep the app alive invisibly (fixed 2026-10-22, 1.0.32)
 - **Found by review** (2026-10-22): WPF's `Window` constructor registers the window
@@ -132,8 +136,9 @@
   `MainWindow`. The reported `Bad IL range` did not do it: that one is raised while compiling the
   constructor, before any of it runs.
 - **Fix:** the app ends when its last *shown* `MainWindow` closes (`ShutdownMode` is
-  `OnExplicitShutdown`). Everything that looks across windows goes through
-  `MainWindow.ShownWindows()`, which skips a never-shown one, and `OnClosing` does nothing for one.
+  `OnExplicitShutdown`). A `MainWindow` whose constructor fails closes itself before rethrowing.
+  Everything that looks across windows goes through `MainWindow.ShownWindows()`, which skips a
+  never-shown one, and `OnClosing` and `OnClosed` do nothing for one.
   Before, an orphaned `MainWindow` could also be picked to host a file or sync its menus, and throw.
   See "The app lives as long as its editor windows" in `design.md`.
 - **Verified** with a build whose merge window constructor throws after `InitializeComponent`

@@ -170,10 +170,15 @@ public partial class App : Application
         }
         catch (Exception ex)
         {
-            // No window means nothing whose closing would end the process: end it here.
+            // No window means nothing whose closing would end the process: end it here, even if
+            // saying why fails as well (out of window handles, say, which would fail both).
             CrashLog.Log("The main window couldn't be created", ex);
-            ThemedDialog.Show(null, $"NotepadRedo couldn't start.\n\n{ex.GetType().Name}: {ex.Message}\n"
-                + $"Details are in {CrashLog.FilePath}", "NotepadRedo", MessageBoxButton.OK, MessageBoxImage.Error);
+            try
+            {
+                ThemedDialog.Show(null, $"NotepadRedo couldn't start.\n\n{ex.GetType().Name}: {ex.Message}\n"
+                    + $"Details are in {CrashLog.FilePath}", "NotepadRedo", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+            catch (Exception shown) { CrashLog.Log("Couldn't report the failed start", shown); }
             Shutdown(1);
             return;
         }

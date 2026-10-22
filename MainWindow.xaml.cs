@@ -38,6 +38,20 @@ public partial class MainWindow : Window
 
     public MainWindow()
     {
+        // WPF registered this window in Application.Windows before this constructor began. If the
+        // rest fails, take it out again rather than leave it there half built: closing a window that
+        // was never shown runs none of OnClosing's or OnClosed's logic.
+        try { Build(); }
+        catch
+        {
+            try { Close(); }
+            catch (Exception closing) { CrashLog.Log("Closing a window whose constructor failed", closing); }
+            throw;
+        }
+    }
+
+    private void Build()
+    {
         InitializeComponent();
         SetUpKeyBindings();
         SyncOptionMenus();
@@ -1582,7 +1596,12 @@ public partial class MainWindow : Window
     private void CloseIfEmpty()
     {
         if (Tabs.Items.Count == 0)
+        {
+            // A real close: with the X button set to minimize, an emptied window would otherwise
+            // hide itself, and keep the app running for nothing.
+            _realClose = true;
             Close();
+        }
     }
 
     private Point CursorPositionDip()
@@ -1682,8 +1701,9 @@ public partial class MainWindow : Window
         base.OnClosed(e);
         // The app lives as long as its editor windows (ShutdownMode is OnExplicitShutdown), not as
         // long as any Window: one whose constructor failed would otherwise keep the process running
-        // with nothing on screen, and the next launch would hand its files to it.
-        if (!ShownWindows().Any(w => w != this))
+        // with nothing on screen, and the next launch would hand its files to it. Such a window,
+        // closed by its own constructor, ends nothing: whoever was creating it decides.
+        if (_everShown && !ShownWindows().Any(w => w != this))
             Application.Current.Shutdown();
     }
 
@@ -1895,32 +1915,56 @@ public partial class MainWindow : Window
             return;
         }
 
-        // Clean shutdown for this window's documents.
+        // Clean shutdown for this window's documents. Every question has been answered by now.
+        _tearingDown = true;
         foreach (var view in AllViews())
             view.Dispose();
 
         DisposeTray();
     }
 
+    /// <summary>Run <paramref name="action"/>, logging rather than throwing if it fails: for steps
+    /// that must not stop the ones after them.</summary>
+    private static void LogFailure(Action action, string what)
+    {
+        try { action(); }
+        catch (Exception ex) { CrashLog.Log(what, ex); }
+    }
+
     /// <summary>Set once closing this window has failed. The next attempt closes it regardless.</summary>
     private bool _closeFailed;
 
-    /// <summary>Closing failed with <paramref name="ex"/>, perhaps halfway through asking about
-    /// unsaved work. That work goes into crash recovery, whatever happens next. The first time, the
-    /// window stays open and says so: the user can save by hand, or close again. Closing again, or a
-    /// forced quit, closes it, and the next launch offers the work back.</summary>
+    /// <summary>Set once the documents' teardown has begun, when what becomes of each is decided.</summary>
+    private bool _tearingDown;
+
+    /// <summary>Closing failed with <paramref name="ex"/>. In the teardown, every document's fate was
+    /// already decided, so the close is finished. Before it, perhaps halfway through asking about
+    /// unsaved work, that work goes into crash recovery, whatever happens next. The first time, the
+    /// window then stays open, intact, and says so: the user can save by hand, or close again.
+    /// Closing again, or a forced quit, closes it, and the next launch offers the work back.</summary>
     private void KeepWorkAfterFailedClose(System.ComponentModel.CancelEventArgs e, Exception ex)
     {
         CrashLog.Log("Closing a window failed", ex);
+        if (_tearingDown)
+        {
+            // Some documents are disposed already: a window kept open now would look intact while
+            // they no longer autosave, watch or lock. Finish what the close set out to do.
+            e.Cancel = false;
+            foreach (var view in AllViews())
+                LogFailure(view.Dispose, "Disposing a document failed");
+            LogFailure(DisposeTray, "Disposing the tray icon failed");
+            return;
+        }
         foreach (var view in AllViews())
             view.FlushRecovery();   // writes a dirty document's snapshot; a clean one has none
         if (_closeFailed || _forceQuitting)
         {
-            // Close, keeping the snapshots: the documents are not disposed, which would delete them.
+            // Close, keeping the snapshots: the documents are released, not disposed, which would
+            // delete them. Released, they hold no file lock or watcher once the window is gone.
             e.Cancel = false;
             foreach (var view in AllViews())
-                view.StopTimers();
-            try { DisposeTray(); } catch (Exception inner) { CrashLog.Log("Disposing the tray icon failed", inner); }
+                LogFailure(view.Release, "Releasing a document failed");
+            LogFailure(DisposeTray, "Disposing the tray icon failed");
             return;
         }
         _closeFailed = true;

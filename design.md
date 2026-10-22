@@ -191,31 +191,45 @@ closed. Under WPF's default `ShutdownMode` (`OnLastWindowClose`), that window ke
 running, invisibly, after the user closed every real one. The next launch then counted it as a
 running instance, skipped the session restore, and in tab mode handed its files to it. So:
 
-- **`ShutdownMode` is `OnExplicitShutdown`** once startup has decided to show a window, and
-  `MainWindow.OnClosed` shuts the app down when no other *shown* `MainWindow` is left. A window
-  hidden in the tray counts as shown.
-- **`MainWindow.ShownWindows()`** is the only way code looks across windows. It skips a window that
-  was never shown (`_everShown`, set in `OnSourceInitialized`), so such a window is never asked to
-  host a file, take focus, sync its menus or contribute to the session.
-- **`OnClosing` does nothing for a never-shown window.** WPF closes it at shutdown like any other,
-  and the close logic would act on its missing parts (and, with "Minimize to tray" set, put an icon
-  in the tray).
-- **If the first window can't be created**, startup reports it and exits: with no window, nothing
-  else would ever end the process.
+- **`ShutdownMode` is `OnExplicitShutdown`** from the first line of `App.OnStartup`, so every
+  startup path that shows no editor window (the detach relaunch, the `--quit*` modes, handing files
+  to a sibling) must call `Shutdown` itself, as each does. After that, `MainWindow.OnClosed` shuts
+  the app down when no other *shown* `MainWindow` is left. A window hidden in the tray counts as
+  shown.
+- **A `MainWindow` whose constructor fails takes itself out:** the constructor runs its body
+  (`Build`) in a `try`, and on failure closes the window and rethrows. `OnClosing` and `OnClosed`
+  do nothing for a window that was never shown, so that close neither runs the close logic (which
+  would act on missing parts, and with "Minimize to tray" set put an icon in the tray) nor ends the
+  app.
+- **`MainWindow.ShownWindows()`** is still the only way code looks across windows. It skips a window
+  not yet shown (`_everShown`, set in `OnSourceInitialized`): one under construction as well as one
+  whose constructor failed in a way the `try` didn't catch, or a window class other than
+  `MainWindow` (whose half-built window is never a `MainWindow`, so it isn't enumerated anyway).
+- **An emptied window closes for real** (`CloseIfEmpty` sets `_realClose`). With the X button set to
+  minimize, a window whose last tab was dragged away used to hide itself and keep the app running.
+- **If the first window can't be created**, startup reports it and exits, even if reporting fails:
+  with no window, nothing else would ever end the process.
 
 ### A failed close keeps the work
 
 An exception out of `OnClosing` makes WPF finish closing the window, possibly halfway through asking
 about unsaved documents, so the save the user was asked about never happens. `OnClosing` therefore
-runs the close (`CloseOrStayOpen`) inside a `try`, and on failure `KeepWorkAfterFailedClose`:
+runs the close (`CloseOrStayOpen`) inside a `try`, and on failure `KeepWorkAfterFailedClose`
+looks at how far it got:
 
-- flushes every document's crash-recovery snapshot first, whatever happens next;
-- the first time, cancels the close and says so. The user can save by hand, or close again;
-- the second time, or during a forced quit (`--quit*`), lets the window close. It stops the
-  documents' timers rather than disposing them, because disposing deletes the snapshots, and the
-  next launch offers the work back.
+- **In the teardown** (`_tearingDown`), every question has been answered and some documents are
+  disposed already. Keeping the window open would show tabs that look intact but no longer
+  autosave, watch or lock their files. So the close is finished: the remaining documents are
+  disposed and the window closes.
+- **Before it**, the documents are intact but perhaps unsettled. Every one's crash-recovery snapshot
+  is flushed first, whatever happens next. The first time, the close is cancelled and the user is
+  told: they can save by hand, or close again. The second time, or during a forced quit
+  (`--quit*`), the window closes, its documents *released* (`EditorView.Release`: timers, watcher
+  and file lock gone) rather than disposed, because disposing deletes the snapshots. The next launch
+  offers the work back.
 
-Cancelling every time instead would turn a bug that repeats into a window that can't be closed.
+Each step of that runs on regardless of the one before failing (`LogFailure`). Cancelling every
+time instead would turn a bug that repeats into a window that can't be closed.
 
 ### Tab selection history
 

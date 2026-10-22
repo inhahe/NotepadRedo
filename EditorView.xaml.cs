@@ -1387,13 +1387,22 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
     /// <summary>Stop timers and clear the recovery file — called when the tab is closed cleanly.</summary>
     public void Dispose()
     {
+        Release();
+        DeleteRecovery();
+    }
+
+    /// <summary>Everything <see cref="Dispose"/> does except delete the recovery snapshot: for a
+    /// document whose window closes without its work having been saved or discarded (a close that
+    /// failed), whose snapshot the next launch must offer back. The watcher and the file lock go, so
+    /// a closed window holds no file and asks no questions.</summary>
+    public void Release()
+    {
         _disposed = true;
         _waitingForPrompt.Remove(this);
         PersistHistory();   // capture any post-save branch exploration while the doc is clean
         StopTimers();
         StopWatching();
         ReleaseFileLock();
-        DeleteRecovery();
     }
 
     /// <summary>Enumerate recovery snapshots left behind by a previous (crashed) session.</summary>
