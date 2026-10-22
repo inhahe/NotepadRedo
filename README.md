@@ -185,10 +185,10 @@ Publishes the app as `build.bat` does (or checks an existing one, given `-Exe <p
 
 The app version is stored in one place — the **`VERSION`** file at the project root — which the csproj reads into `<Version>`, so it's stamped into the exe. Each [release](https://github.com/inhahe/NotepadRedo/releases) is tagged with it and carries two builds of the same program, plus `associate-txt.bat`:
 
-- **`NotepadRedo-standalone.exe`** (about 160 MB) has .NET built in and runs on any 64-bit Windows.
-- **`NotepadRedo-needs-dotnet8.exe`** (under 1 MB) needs the [.NET 8 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/8.0) installed. It is what `build.bat` deploys.
+- **`NotepadRedo.exe`** (about 160 MB) has .NET built in and runs on any 64-bit Windows.
+- **`NotepadRedoFD.exe`** (under 1 MB, *FD* for framework-dependent) is the same program, needing the [.NET 8 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/8.0) installed. It is what `build.bat` deploys.
 
-Either can be renamed (to `NotepadRedo.exe`, say). A name containing `Graphite` or `Sunset` picks that theme.
+The release notes say the same. Either can be renamed; a name containing `Graphite` or `Sunset` picks that theme.
 
 ---
 

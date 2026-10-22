@@ -930,8 +930,8 @@ the prompt can come up behind and look like a silent hang.
 `VERSION` at the project root is the single source of truth; the csproj reads it into `<Version>`
 and releases are tagged from it. Bump it on every build.
 
-Each release carries both kinds of build, by standing request: `NotepadRedo-standalone.exe`
-(self-contained) and `NotepadRedo-needs-dotnet8.exe` (framework-dependent, the kind `build.bat`
-deploys). The names matter only in that they still start with `NotepadRedo`, which is how
+Each release carries both kinds of build, by standing request: `NotepadRedo.exe` (self-contained)
+and `NotepadRedoFD.exe` (framework-dependent, the kind `build.bat` deploys), with release notes
+saying which needs .NET. The names matter only in that they start with `NotepadRedo`, which is how
 instances find each other (`IpcServer.AppProcesses`), and contain no theme name. The maintainer's
-`release-github.bat` builds and attaches both.
+`release-github.bat` builds and attaches both, and writes the notes.
