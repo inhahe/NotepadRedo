@@ -195,8 +195,9 @@ internal static class Program
         if (!share)
             yield break;
 
-        // The admin share of the drive the test binaries are on, which is a local fixed drive.
-        string onDrive = AppContext.BaseDirectory.TrimEnd('\\');
+        // The same temp folder, reached through its drive's admin share. Not the test binaries' own
+        // folder: that is on a share already when the project is checked out on one.
+        string onDrive = temp.TrimEnd('\\');
         string unc = @"\\localhost\" + onDrive[0] + "$" + onDrive.Substring(2);
         if (Directory.Exists(unc))
             yield return ("smb", onDrive, unc);
