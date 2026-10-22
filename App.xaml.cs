@@ -15,6 +15,12 @@ public partial class App : Application
     {
         base.OnStartup(e);
 
+        // The app ends when its last editor window closes (MainWindow.OnClosed), or where startup says
+        // so; never because some window was the last to close. WPF's default would end it when the
+        // window shown while copying the exe closes, and a window whose constructor failed is never
+        // closed, so it would keep the process running with nothing on screen.
+        ShutdownMode = ShutdownMode.OnExplicitShutdown;
+
         // Detach from a launching console so its prompt returns immediately. cmd.exe (and batch
         // scripts) WAIT for a process they start to exit before returning — this is true for GUI
         // apps too, not just console apps (the reason `notepad`/`calc` seem to return instantly is
@@ -156,10 +162,6 @@ public partial class App : Application
         // registered exe can stall for as long as an offline share takes to give up.
         Task.Run(FileAssociation.EnsureTxtRegistered);
 
-        // From here the app ends when its last editor window closes (MainWindow.OnClosed). Not when
-        // its last Window of any kind does, which is WPF's default: a window whose constructor
-        // failed is never closed, and would keep the process running with nothing on screen.
-        ShutdownMode = ShutdownMode.OnExplicitShutdown;
         MainWindow window;
         try
         {
@@ -182,6 +184,9 @@ public partial class App : Application
         // them now, before those dialogs appear.
         window.ForceForeground();
         window.Initialize(files, blankRequested, firstInstance);
+
+        // Delete extracted and local copies of earlier builds that nothing uses any more.
+        OldBuilds.SweepSoon();
     }
 
     /// <summary>
@@ -349,9 +354,20 @@ public partial class App : Application
             if (string.IsNullOrEmpty(exe))
                 return false;
 
+            // Started from a share or removable drive, a build whose code stays in its exe runs from
+            // a local copy instead (see LocalCopy), told which exe the user started.
+            string run = exe;
+            if (LocalCopy.Needed(exe)
+                && (LocalCopy.Find(exe) ?? WhileShowing("Copying NotepadRedo to this computer before it starts…",
+                                                        () => LocalCopy.Make(exe))) is string copy)
+            {
+                run = copy;
+                Environment.SetEnvironmentVariable(LocalCopy.OriginVariable, exe);
+            }
+
             var psi = new ProcessStartInfo
             {
-                FileName = exe,
+                FileName = run,
                 UseShellExecute = true,                              // detach from the parent console
                 WorkingDirectory = Directory.GetCurrentDirectory(),  // keep relative paths resolving
             };
@@ -372,6 +388,32 @@ public partial class App : Application
             CrashLog.Log("Detached relaunch failed; starting in-place instead", ex);
             return false;
         }
+    }
+
+    /// <summary>Run <paramref name="work"/> on the thread pool, showing <paramref name="message"/>
+    /// in a small window meanwhile, and return its result. The window keeps responding: messages are
+    /// pumped while the work runs, so Windows doesn't call it hung.</summary>
+    private static T WhileShowing<T>(string message, Func<T> work)
+    {
+        var note = new Window
+        {
+            WindowStyle = WindowStyle.ToolWindow,
+            ResizeMode = ResizeMode.NoResize,
+            SizeToContent = SizeToContent.WidthAndHeight,
+            WindowStartupLocation = WindowStartupLocation.CenterScreen,
+            Title = "NotepadRedo",
+            Content = new System.Windows.Controls.TextBlock { Text = message, Margin = new Thickness(24, 18, 24, 18) },
+        };
+        note.Show();
+        try
+        {
+            var task = Task.Run(work);
+            var frame = new DispatcherFrame();
+            task.ContinueWith(_ => frame.Continue = false, TaskScheduler.Default);
+            Dispatcher.PushFrame(frame);
+            return task.GetAwaiter().GetResult();
+        }
+        finally { note.Close(); }
     }
 
     [DllImport("user32.dll")]

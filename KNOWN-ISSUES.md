@@ -28,24 +28,23 @@
   least when a watcher event arrives with an unchanged stamp (an event is evidence of a write). The
   price is reading the whole file on each such event, our own saves included.
 
-### The self-contained release still reads its code from the exe while it runs
-- **Where:** `NotepadRedo.csproj`: the `ExtractAppAssembly` target sets
-  `IncludeAllContentForSelfExtract` only when not self-contained.
-- **Consequence:** the GitHub release, run from a network share, has the exposure the
-  framework-dependent build no longer has. If the exe is replaced on the share while another
-  computer runs it, after a dropped connection has closed that computer's handle, the instance reads
-  parts of the new build. Its runtime is safe (the exe is marked run-from-swap), but its managed
-  code, the framework's included, is mapped from the bundle. Expect `BadImageFormatException` and
-  the like on code it hadn't run yet. The restart notice may report it, but can't be counted on:
-  its own code is read the same way.
-- **Proper fix (deferred):** extracting everything would cost every release user about 160 MB of
-  `%TEMP%` per version, for a setup few of them have. Candidates: ReadyToRun-compile the app, if
-  .NET then copies R2R images out of the bundle at load rather than mapping them (unverified); or,
-  for an exe found on a network drive only, run from a local copy and repair what that breaks
-  (pins, the `.txt` registration). See "A running instance reads nothing from its exe" in
-  `design.md`.
-
 ## Bugs
+
+### The self-contained release read its code from the exe while it ran (fixed 2026-10-22, 1.0.32)
+- **Was:** the GitHub release, run from a network share, had the exposure the framework-dependent
+  build lost in 1.0.30. Its code stays in the bundle, mapped from the exe as it runs, and extracting
+  it would cost every release user about 160 MB of `%TEMP%` per version. If the exe was replaced on
+  the share while another computer ran it, after a dropped connection had closed that computer's
+  handle, the instance read parts of the new build.
+- **Fix:** started from a network or removable drive, it copies itself to `%TEMP%\NotepadRedo\run`
+  and runs from there (`LocalCopy`); started anywhere else it costs nothing. The copy is told which
+  exe the user started, and names that one in the `.txt` registration and as its windows' taskbar
+  identity (`TaskbarIdentity`), so a pin still launches the original. Unused copies are swept
+  (`OldBuilds`). See "A running instance reads nothing from its exe" in `design.md`.
+- **Verified:** `tests/ExeIndependence/Run.ps1 -SelfContained`. On a self-contained build of the
+  previous commit it fails all three of its checks: the instance ran from the share, mapped the
+  bundle over SMB, and had no relaunch identity. On this one they pass: a 160 MB first copy took
+  about 4 s over `\\localhost`, and a second launch reused it.
 
 ### "Show a diff and merge…" did nothing in an instance run from a network drive (fixed 2026-10-22, 1.0.30)
 - **Symptom:** in the "changed on disk" prompt, choosing "Show a diff and merge…" closed the prompt
@@ -78,8 +77,8 @@
   range` in `OpenMerge`, where the old handler showed nothing. Not reproduced end to end: making a
   server close a client's handle needs admin rights. The reporter's own instance reproduced it live.
 - **Regression test:** `tests/ExeIndependence/Run.ps1`. It fails all four of its checks on 1.0.29.
-- **Still exposed:** the self-contained release (tech debt above), and any instance started before
-  1.0.30, until it is restarted.
+- **Still exposed:** any instance started before 1.0.30 (before 1.0.32 for the self-contained
+  release), until it is restarted.
 
 ### A framework-dependent instance loses unloaded assemblies when .NET is updated under it (open)
 - **Symptom:** `crash.log`, 2026-10-14 09:20, at a Windows restart:
@@ -97,10 +96,12 @@
   throws out of `OnClosing`: WPF then finished closing the window without asking about unsaved
   work, and the app exited. The window is minimized to the taskbar instead, and the user is told to
   restart (1.0.31).
-- **Proper fix:** none cheap. Loading the app's lazy references at startup would lock only those
-  assemblies, not the ones they load in turn when used. A self-contained build can't be serviced
-  under it, but the local deploy would then have to extract about 160 MB per build to stay safe on
-  a network drive (above).
+- **Proper fix (a trade-off, not taken):** loading the app's lazy references at startup would lock
+  only those assemblies, not the ones they load in turn when used. A self-contained build can't be
+  serviced under it, and since 1.0.32 it is safe on a network drive too (it runs from a local copy),
+  so `build.bat` could publish self-contained. The price: a ~160 MB exe per build instead of
+  ~380 KB, written to both deploy places, and on each computer that runs it over the network a
+  160 MB copy per build (swept once unused).
 - **Reproduce:** point `DOTNET_ROOT` at a private copy of the runtime, start an instance, delete
   `System.Drawing.Common.dll` from the copy, then close the window with "Minimize to tray" set. The
   window must end up minimized, with the restart notice on screen.

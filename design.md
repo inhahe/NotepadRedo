@@ -64,21 +64,58 @@ So the build makes an instance independent of its exe once it has started:
 - **`IncludeAllContentForSelfExtract`**, set by the `ExtractAppAssembly` target, extracts the
   bundle to `%TEMP%\.net\NotepadRedo\<bundle id>\` on the first launch of each build, and the
   assembly is loaded from there. It is set in a target, not the project body, because only by then
-  have a publish profile or the SDK's defaults settled `SelfContained`. Each build gets a folder of its own, so a new build never writes into the one
-  a running instance uses. Each leaves about 230 KB behind, which .NET never deletes.
+  have a publish profile or the SDK's defaults settled `SelfContained`. Each build gets a folder of
+  its own, so a new build never writes into the one a running instance uses. .NET never deletes
+  them; `OldBuilds` does (below).
 - **`IMAGE_FILE_NET_RUN_FROM_SWAP`**, and its removable-media twin, are set in the exe's header by
   the `MarkRunFromSwap` target after bundling. Started from a network drive, Windows then copies the
   whole image into the paging file at load, rather than paging it in from the share.
 
 The extraction applies only to framework-dependent builds (`build.bat`'s). A self-contained bundle,
-the GitHub release, would extract the entire runtime, about 160 MB per version, so it gets the
-header flag only. Its managed code is still mapped from the exe, and replacing a release exe on a
-share while another computer runs it remains unsafe (see KNOWN-ISSUES).
+the GitHub release, would extract the entire runtime, about 160 MB per version, for every user.
+Instead it runs from a local copy of its exe, and only where that is needed (`LocalCopy`):
 
-The alternative, copying the exe to a local folder and relaunching from there, would cover both
-kinds, but the process would then run from the copy. Taskbar pins, the `.txt` registration
-(`FileAssociation`, which records `Environment.ProcessPath`) and "Open with" would all point into a
-cache folder that the next build empties.
+- **When:** its code is read from the exe, which is so only of a self-contained bundle (no
+  assembly has a file location: `LocalCopy.CodeReadFromExe`), and the exe is on a network or
+  removable drive. Everyone else pays nothing.
+- **How:** the launcher, which relaunches itself detached anyway, copies the exe to
+  `%TEMP%\NotepadRedo\run\<name>-<size>-<time>\<name>.exe` and launches that. The copy is written
+  under a temporary name and renamed, so a copy under its real name is always complete, and two
+  launches at once don't write into each other's. While the first copy of a version is made, a
+  small window says so, with messages pumped so Windows doesn't call it hung. Later launches of the
+  same version reuse the copy. If copying fails, the exe runs as it is.
+- **Who it says it is:** a process running from a copy is told the exe the user started
+  (`NOTEPADREDO_ORIGIN`, which only a copy honours, since whatever the process starts inherits it).
+  That exe, `LocalCopy.OriginalExe`, is what the `.txt` registration names. The windows take its
+  taskbar identity (`TaskbarIdentity`: an AppUserModel ID from the exe's name, and a relaunch
+  command naming it). Without that, a pin made from a window would launch the copy, which a later
+  build's sweep deletes. Windows asks for those properties to be cleared before a window is
+  destroyed, which `WM_DESTROY` does.
+
+The framework-dependent build could use the same copy, but needs none: extracting 230 KB is cheaper
+than copying the exe, and its windows keep the identity of the exe they run from.
+
+### Old copies are swept
+
+Neither .NET's extraction folders nor `LocalCopy`'s copies are ever deleted by what made them, so
+each build would leave its own behind for good: about 230 KB per framework-dependent build, about
+10 MB of native libraries per self-contained one, and the whole 160 MB exe per relocated one.
+`OldBuilds.SweepSoon` runs 30 seconds after startup, on the thread pool, and deletes the ones no
+running instance uses. Each kind tells "in use" differently, as tried on this machine:
+
+- **Extraction folders** (`<DOTNET_BUNDLE_EXTRACT_BASE_DIR or %TEMP%\.net>\<name>\<bundle id>`):
+  Windows refuses to rename a folder while a process has a library from it loaded. So each is
+  renamed (`<id>.old`) and then deleted: a starting instance never finds one half gone. Only folders
+  named like a bundle id (12 characters of base64url) are touched, so a base folder pointed somewhere
+  unexpected loses nothing but what .NET put there.
+- **Local copies** (`<name>-<size>-<time>` under `LocalCopy.Root`): a folder *can* be renamed while
+  its exe runs, but the exe can't be deleted. So the exe goes first, then the folder. The copy this
+  instance runs from is skipped, and so is any made in the last ten minutes, which another build's
+  launch may be writing or about to start.
+
+One race remains: an older build that has just checked its extraction folder exists, but not yet
+loaded from it, fails to start if the sweep takes the folder in between. Its next start extracts
+again.
 
 Nor does the app's own code read the exe. The tray icon is the system's generic application icon:
 the exe carries no icon, so asking the shell for it would read the file only to get the same
@@ -86,8 +123,10 @@ picture.
 
 To see which applies to a running instance, list its mapped files (Process Explorer's DLL view, or
 `VirtualQueryEx` with `GetMappedFileName`). An exposed instance has a *data* view of its exe, and a
-protected one maps `NotepadRedo.dll` from `%TEMP%\.net`. `tests/ExeIndependence/Run.ps1` makes
-that check, and the header-flag check, on a fresh build.
+protected one maps `NotepadRedo.dll` from `%TEMP%\.net`, or (self-contained, started from a share)
+runs from a copy under `%TEMP%\NotepadRedo\run` and maps nothing from the share.
+`tests/ExeIndependence/Run.ps1` makes those checks, and the header-flag check, on a fresh build of
+either kind.
 
 ### Caught errors are shown, not only logged
 

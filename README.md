@@ -165,7 +165,7 @@ build.bat
 
 `build.bat` first signals every running instance to close (prompting you to save each unsaved document) and **waits** until they have all exited. Then it publishes a single-file `NotepadRedo.exe` that uses the installed .NET 8 runtime, and copies it into place. If you cancel a save prompt the redeploy aborts, leaving that instance untouched.
 
-That signal reaches only the instances on the computer running `build.bat`. An instance on another computer, started from the exe over a network drive, keeps running the build it started with and picks up the new one when it is restarted. To get past it, `build.bat` moves the old exe aside rather than overwriting it (a share refuses to overwrite a file another computer has open, but lets it be renamed), then deletes the old copy. The share allows that too: the instance's open handle keeps the file's contents until it closes. If the copy fails, the old exe is put back. Replacing the exe under a running instance is safe from 1.0.30 on: it reads nothing from its exe after startup. (Before, it read its code from the exe as it went, so an exe replaced after a dropped connection could leave it with half of each version. "Show a diff and merge…" then did nothing at all, and other commands could fail the same way.)
+That signal reaches only the instances on the computer running `build.bat`. An instance on another computer, started from the exe over a network drive, keeps running the build it started with and picks up the new one when it is restarted. To get past it, `build.bat` moves the old exe aside rather than overwriting it (a share refuses to overwrite a file another computer has open, but lets it be renamed), then deletes the old copy. The share allows that too: the instance's open handle keeps the file's contents until it closes. If the copy fails, the old exe is put back. Replacing the exe under a running instance is safe from 1.0.30 on: it reads nothing from its exe after startup. From 1.0.32 the self-contained release is safe too: started from a network or removable drive, it copies itself to `%TEMP%\NotepadRedo\run` and runs from there (the first start of each version shows a short "copying" note). Its `.txt` registration and taskbar pins still name the exe you started. (Before, it read its code from the exe as it went, so an exe replaced after a dropped connection could leave it with half of each version. "Show a diff and merge…" then did nothing at all, and other commands could fail the same way.)
 
 ### Tests
 
@@ -179,7 +179,7 @@ Drives the "changed on disk" prompt through a real editor and file watcher while
 powershell -File tests\ExeIndependence\Run.ps1
 ```
 
-Publishes the app as `build.bat` does (or checks an existing one, given `-Exe <path>`), starts it, and checks that the running instance needs nothing more from its exe: the exe is marked to be copied into the paging file when started from a network drive, no part of it is mapped as data, and `NotepadRedo.dll` comes from an extracted copy. That's what keeps an instance working when the exe is replaced under it. The instance runs under its own name with a scratch data folder, and the `.txt` registration it makes is undone afterwards.
+Publishes the app as `build.bat` does (or checks an existing one, given `-Exe <path>`), starts it, and checks that the running instance needs nothing more from its exe: the exe is marked to be copied into the paging file when started from a network drive, no part of it is mapped as data, and `NotepadRedo.dll` comes from an extracted copy. With `-SelfContained` it publishes as the release is, starts it through `\\localhost\<drive>$`, and checks that it runs from a local copy, maps nothing from the share, and pins as the exe it was started from. That's what keeps an instance working when the exe is replaced under it. The instance runs under its own name with a scratch data folder, and the `.txt` registration it makes is undone afterwards.
 
 ### Version
 
@@ -200,6 +200,8 @@ Everything is stored under `%LOCALAPPDATA%\NotepadRedo\`:
 | `history\` | Per-file branching-history sidecars (when *Remember edit history between sessions* is on), keyed by a hash of the file path and anchored to a content stamp; pruned after 90 days. |
 
 Setting the environment variable `NOTEPADREDO_DATA_DIR` to a folder makes NotepadRedo keep all of this there instead (the tests use it).
+
+Two temp folders hold copies of the program itself, so that a running NotepadRedo never depends on its exe (see *Building*): `%TEMP%\.net\NotepadRedo\` (the code .NET unpacks from the exe) and `%TEMP%\NotepadRedo\run\` (a local copy of a self-contained exe started from a network or removable drive). A copy no running NotepadRedo uses is deleted automatically, half a minute after a later start.
 
 On first launch, if a `%LOCALAPPDATA%\TreeNotepad\` folder exists (from before the rename), it is automatically moved to `NotepadRedo\` so all settings and recovery data carry over.
 
@@ -227,6 +229,10 @@ On first launch, if a `%LOCALAPPDATA%\TreeNotepad\` folder exists (from before t
 | `ThemedDialog.cs` | Themed replacements for `MessageBox` (incl. the multi-choice resolution prompts). |
 | `Converters.cs` | XAML value converters (e.g. preview width). |
 | `CrashLog.cs` | Best-effort exception logging. |
+| `FileAssociation.cs` | Per-user `.txt` registration, made only when no NotepadRedo that still exists is registered. |
+| `LocalCopy.cs` | Runs a self-contained exe started from a network or removable drive from a local copy. |
+| `TaskbarIdentity.cs` | Gives such a copy's windows the taskbar identity (ID, pin target) of the exe the user started. |
+| `OldBuilds.cs` | Deletes extracted and local copies of earlier builds that nothing uses. |
 | `tests/ExternalChange/` | Regression tests for the "changed on disk" prompt (see *Tests* above). |
 | `tests/ExeIndependence/` | Regression test that a running instance needs nothing more from its exe (see *Tests* above). |
 

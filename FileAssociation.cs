@@ -30,7 +30,9 @@ internal static class FileAssociation
     {
         try
         {
-            string? exe = Environment.ProcessPath;
+            // The exe the user started, not the local copy this instance may run from (LocalCopy):
+            // the copy goes when a later build is swept.
+            string? exe = LocalCopy.OriginalExe;
             if (string.IsNullOrEmpty(exe) || !File.Exists(exe))
                 return;
 
