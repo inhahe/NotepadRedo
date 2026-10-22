@@ -149,10 +149,12 @@ public partial class App : Application
         _ipc = new IpcServer();
         _ipc.Start();
 
-        // Declare ourselves a .txt handler for the current user (idempotent, no admin), so Windows
-        // offers "Always use this app" and lists us in Settings > Default apps. Doesn't force the
-        // default — the user still picks it. Only runs on a real UI launch, not the --quit* modes.
-        FileAssociation.EnsureTxtRegistered();
+        // Declare ourselves a .txt handler for the current user (no admin), so Windows offers
+        // "Always use this app" and lists us in Settings > Default apps, unless a NotepadRedo that
+        // still exists is registered already. Doesn't force the default: the user still picks it.
+        // Only on a real UI launch, not the --quit* modes. Off the UI thread, because checking the
+        // registered exe can stall for as long as an offline share takes to give up.
+        Task.Run(FileAssociation.EnsureTxtRegistered);
 
         // From here the app ends when its last editor window closes (MainWindow.OnClosed). Not when
         // its last Window of any kind does, which is WPF's default: a window whose constructor

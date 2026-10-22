@@ -107,7 +107,7 @@ internal static class Program
         Environment.SetEnvironmentVariable(AppPaths.OverrideVariable, data);
 
         string filter = args.FirstOrDefault(a => a.StartsWith("--filter="))?["--filter=".Length..] ?? "";
-        int failures = CheckLoadFailureClassifier(filter);
+        int failures = CheckLoadFailureClassifier(filter) + CheckRegistrationRule(filter);
         var app = new Application { ShutdownMode = ShutdownMode.OnExplicitShutdown };
         app.Dispatcher.InvokeAsync(async () =>
         {
@@ -181,6 +181,41 @@ internal static class Program
         return failed;
 
         static string Describe(Exception? e) => e is null ? "none" : e.GetType().Name;
+    }
+
+    /// <summary>When a launch takes over the .txt registration (<see cref="FileAssociation.ShouldRegister"/>):
+    /// only when none is there, or the registered exe is gone, never because a different copy
+    /// started. Checked against a pretend file system. Returns the number of failed cases.</summary>
+    private static int CheckRegistrationRule(string filter)
+    {
+        var files = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { @"D:\utils\NotepadRedo.exe" };
+        var folders = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { @"C:\", @"D:\" };
+        var cases = new (string Name, string? Command, bool Expected)[]
+        {
+            ("nothing registered", null, true),
+            ("an empty command", "  ", true),
+            ("a copy that still exists", "\"D:\\utils\\NotepadRedo.exe\" \"%1\"", false),
+            ("a copy that still exists, unquoted", @"D:\utils\NotepadRedo.exe %1", false),
+            ("a copy that is gone", "\"C:\\old\\NotepadRedo.exe\" \"%1\"", true),
+            ("a copy on a drive that is offline", "\"Q:\\utils\\NotepadRedo.exe\" \"%1\"", false),
+            ("a copy on a share that is offline", "\"\\\\server\\share\\NotepadRedo.exe\" \"%1\"", false),
+        };
+        int failed = 0;
+        foreach (var (name, command, expected) in cases)
+        {
+            string label = $"[unit] FileAssociation.ShouldRegister: {name}";
+            if (!label.Contains(filter, StringComparison.OrdinalIgnoreCase))
+                continue;
+            bool actual = FileAssociation.ShouldRegister(command, files.Contains, folders.Contains);
+            if (actual == expected)
+                Console.WriteLine($"ok   {label}");
+            else
+            {
+                Console.WriteLine($"FAIL {label}\n     expected {expected}, got {actual}");
+                failed++;
+            }
+        }
+        return failed;
     }
 
     /// <summary>The settings every test starts from (in memory only): the other program must be able

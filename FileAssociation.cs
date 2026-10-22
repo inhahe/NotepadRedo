@@ -13,16 +13,19 @@ namespace NotepadRedo;
 /// <c>UserChoice</c> key that only the shell can set on the user's behalf. All this does is make
 /// NotepadRedo a first-class, selectable handler, so the user can then pick "Always".
 ///
-/// Every write is under <c>HKEY_CURRENT_USER</c> (no admin needed) and idempotent, so it is safe to
-/// call on each launch. The registered open-command points at the *current* executable path, so the
-/// association follows the exe if it moves and a fresh build re-registers itself automatically.
+/// Every write is under <c>HKEY_CURRENT_USER</c> (no admin needed). A launch registers its own exe
+/// only when no NotepadRedo is registered, or the registered one is gone (see
+/// <see cref="ShouldRegister"/>), so the association follows the exe when it moves, but a copy run
+/// from somewhere else (a build folder, a test, a themed variant) doesn't take it over by starting.
 /// </summary>
 internal static class FileAssociation
 {
     private const string ProgId = "NotepadRedo.txt";
     private const string AppExe = "NotepadRedo.exe";   // key under Software\Classes\Applications
 
-    /// <summary>Write/refresh the per-user .txt registration. Best-effort; never throws.</summary>
+    /// <summary>Write the per-user .txt registration for this exe, if <see cref="ShouldRegister"/>
+    /// says so. Best-effort; never throws. Checking the registered exe can block for as long as an
+    /// unreachable share takes to give up, so call this off the UI thread.</summary>
     public static void EnsureTxtRegistered()
     {
         try
@@ -34,13 +37,12 @@ internal static class FileAssociation
             string open = $"\"{exe}\" \"%1\"";
             string icon = $"{exe},0";
 
-            // Fast path: already registered for THIS exe path — skip the churn.
+            string? registered;
             using (var existing = Registry.CurrentUser.OpenSubKey(
                        $@"Software\Classes\{ProgId}\shell\open\command"))
-            {
-                if (existing?.GetValue(null) as string == open)
-                    return;
-            }
+                registered = existing?.GetValue(null) as string;
+            if (!ShouldRegister(registered, File.Exists, Directory.Exists))
+                return;
 
             using (var classes = Registry.CurrentUser.CreateSubKey(@"Software\Classes"))
             {
@@ -84,5 +86,42 @@ internal static class FileAssociation
         {
             CrashLog.Log("FileAssociation.EnsureTxtRegistered failed", ex);
         }
+    }
+
+    /// <summary>Whether a launch should register itself, given the open command already registered
+    /// (<paramref name="command"/>, null if none). Yes when there is none, or the exe it names is
+    /// gone. No while that exe is still there, whichever copy it is: which NotepadRedo opens .txt
+    /// files is the user's choice (associate-txt.bat makes it), not the last one started. And no
+    /// while it can't be told: a registered exe on a share that is offline is not gone.</summary>
+    /// <param name="fileExists">Checks a file (<see cref="File.Exists"/>; a test passes its own).</param>
+    /// <param name="folderExists">Checks a folder (<see cref="Directory.Exists"/>), here the root of
+    /// the registered exe's drive or share, to tell "gone" from "unreachable".</param>
+    internal static bool ShouldRegister(string? command, Func<string, bool> fileExists,
+                                        Func<string, bool> folderExists)
+    {
+        if (ExeOf(command) is not string registered)
+            return true;
+        if (fileExists(registered))
+            return false;
+        string? root;
+        try { root = Path.GetPathRoot(registered); }
+        catch (ArgumentException) { return true; }   // not a path at all: replace it
+        return string.IsNullOrEmpty(root) || folderExists(root);
+    }
+
+    /// <summary>The program an open command runs: its first token, quoted or not, or null if the
+    /// command is empty.</summary>
+    internal static string? ExeOf(string? command)
+    {
+        if (string.IsNullOrWhiteSpace(command))
+            return null;
+        command = command.Trim();
+        if (command[0] == '"')
+        {
+            int end = command.IndexOf('"', 1);
+            return end > 1 ? command[1..end] : null;
+        }
+        int space = command.IndexOf(' ');
+        return space < 0 ? command : command[..space];
     }
 }

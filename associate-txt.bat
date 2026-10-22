@@ -3,9 +3,11 @@ setlocal
 REM ===========================================================================================
 REM Optional: make NotepadRedo your DEFAULT .txt handler (per-user; no admin required).
 REM
-REM You normally do NOT need this script. NotepadRedo already registers itself as *able* to open
-REM .txt every time it launches, so it shows up in "Open with" with an "Always use this app"
-REM option. This script is only a convenience for setting it as the default in one step.
+REM You normally do NOT need this script. NotepadRedo registers itself as *able* to open .txt when
+REM it launches, so it shows up in "Open with" with an "Always use this app" option. (A launch leaves
+REM an existing registration alone while the exe it names still exists, so this script is also the
+REM way to point the registration at a different copy.) Otherwise it is only a convenience for
+REM setting NotepadRedo as the default in one step.
 REM
 REM It ASKS before changing anything. On "Yes" it (re)writes the per-user capability registration
 REM and opens Windows' Default Apps settings so you can pick NotepadRedo. Windows guards the final

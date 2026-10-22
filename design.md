@@ -817,6 +817,20 @@ So, the rule: **the `Activated` handler does no I/O.**
   fall back to re-reading every time — stale settings would be worse than the old cost, and
   `settings.json` is always local anyway.
 
+## The .txt registration
+
+`FileAssociation.EnsureTxtRegistered` makes NotepadRedo a selectable `.txt` handler (a ProgId, an
+`Applications` entry, `OpenWithProgids`, Capabilities) under HKCU. It used to rewrite the paths
+whenever the running exe differed from the registered one, so any copy started anywhere (a build
+folder, a test's scratch copy, a themed variant) took the association over. Now
+`FileAssociation.ShouldRegister` decides: register when nothing is registered or the registered exe
+is gone; leave it while that exe exists, whichever copy it is. "Gone" means its drive or share is
+reachable and the file isn't there: a registered copy on an offline share is left alone.
+`associate-txt.bat` writes an explicit path, and is how a user moves the association on purpose.
+
+The check can stall for as long as an unreachable share takes to give up, so startup runs it on the
+thread pool.
+
 ## Dialogs
 
 `ThemedDialog` replaces `MessageBox` so prompts follow the palette. All three entry points —
