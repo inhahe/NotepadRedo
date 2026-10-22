@@ -161,7 +161,9 @@ Or produce a single-file `win-x64` executable and deploy it via the helper scrip
 build.bat
 ```
 
-`build.bat` publishes a self-contained single-file `NotepadRedo.exe`, then signals every running instance to close (prompting you to save each unsaved document) and **waits** until they have all exited before copying the new build into place. If you cancel a save prompt the redeploy aborts, leaving that instance untouched.
+`build.bat` first signals every running instance to close (prompting you to save each unsaved document) and **waits** until they have all exited. Then it publishes a single-file `NotepadRedo.exe` that uses the installed .NET 8 runtime, and copies it into place. If you cancel a save prompt the redeploy aborts, leaving that instance untouched.
+
+That signal reaches only the instances on the computer running `build.bat`. An instance on another computer, started from the exe over a network drive, keeps running the build it started with and picks up the new one when it is restarted. Replacing the exe under it is safe from 1.0.30 on: a running instance reads nothing from its exe after startup. (Before, it read its code from the exe as it went, so a rebuild could leave it with half of each version. "Show a diff and merge…" then did nothing at all, and other commands could fail the same way.)
 
 ### Tests
 

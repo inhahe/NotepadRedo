@@ -36,6 +36,48 @@ prefix (`NotepadRedo*`, so themed variants are reached too) and stop at the firs
 verbs block on `Timeout.Infinite` because their handler blocks on the user's Save prompts; the
 document verbs use a bounded timeout so a wedged sibling can't hang a launch.
 
+## A running instance reads nothing from its exe
+
+The exe can be replaced while an instance runs it. On the development setup, one computer runs
+`D:\utils\NotepadRedo.exe` over a mapped share of another, and a build on that other computer
+overwrites it. `build.bat`'s quit sweep can't prevent this: IPC reaches only the instances on the
+computer running it.
+
+Windows doesn't load a program all at once. It maps the exe and reads each page when it is first
+touched, and may later discard a page and read it again. A single-file .NET build carries the app's
+own assembly inside the exe, and .NET maps that assembly's IL straight out of the bundle, so a
+method's IL is read from the exe the first time it runs. Locally the file can't change meanwhile:
+Windows refuses to write to a running exe. Over SMB the server enforces that only while the client's
+handle is open. When a computer sleeps or the connection drops, the server closes the handle, the
+exe can be overwritten, and the client reopens it by name to read its next page. The instance then
+reads parts of the new build as if they were the old one. In the reported case, the merge viewer's
+constructor, never run before in that process, raised `BadImageFormatException: Bad IL range`, and
+"Show a diff and merge…" did nothing.
+
+So the build makes an instance independent of its exe once it has started:
+
+- **`IncludeAllContentForSelfExtract`** extracts the bundle to
+  `%TEMP%\.net\NotepadRedo\<bundle id>\` on the first launch of each build, and the assembly is
+  loaded from there. Each build gets a folder of its own, so a new build never writes into the one
+  a running instance uses. Each leaves about 230 KB behind, which .NET never deletes.
+- **`IMAGE_FILE_NET_RUN_FROM_SWAP`**, and its removable-media twin, are set in the exe's header by
+  the `MarkRunFromSwap` target after bundling. Started from a network drive, Windows then copies the
+  whole image into the paging file at load, rather than paging it in from the share.
+
+The extraction applies only to framework-dependent builds (`build.bat`'s). A self-contained bundle,
+the GitHub release, would extract the entire runtime, about 160 MB per version, so it gets the
+header flag only. Its managed code is still mapped from the exe, and replacing a release exe on a
+share while another computer runs it remains unsafe (see KNOWN-ISSUES).
+
+The alternative, copying the exe to a local folder and relaunching from there, would cover both
+kinds, but the process would then run from the copy. Taskbar pins, the `.txt` registration
+(`FileAssociation`, which records `Environment.ProcessPath`) and "Open with" would all point into a
+cache folder that the next build empties.
+
+To see which applies to a running instance, list its mapped files (Process Explorer's DLL view, or
+`VirtualQueryEx` with `GetMappedFileName`). An exposed instance has a *data* view of its exe, and a
+protected one maps `NotepadRedo.dll` from `%TEMP%\.net`.
+
 ## Windows, tabs and documents
 
 - **`MainWindow`** — shell: menu, toolbar, status bar and a `TabControl` of documents. Multiple

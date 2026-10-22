@@ -28,7 +28,48 @@
   least when a watcher event arrives with an unchanged stamp (an event is evidence of a write). The
   price is reading the whole file on each such event, our own saves included.
 
+### The self-contained release still reads its code from the exe while it runs
+- **Where:** `NotepadRedo.csproj`: `IncludeAllContentForSelfExtract` is set only when not
+  self-contained.
+- **Consequence:** the GitHub release, run from a network share, has the exposure the
+  framework-dependent build no longer has. If the exe is replaced on the share while another
+  computer runs it, after a dropped connection has closed that computer's handle, the instance reads
+  parts of the new build. Its runtime is safe (the exe is marked run-from-swap), but its managed
+  code, the framework's included, is mapped from the bundle.
+- **Proper fix (deferred):** extracting everything would cost every release user about 160 MB of
+  `%TEMP%` per version, for a setup few of them have. Candidates: ReadyToRun-compile the app, if
+  .NET then copies R2R images out of the bundle at load rather than mapping them (unverified); or,
+  for an exe found on a network drive only, run from a local copy and repair what that breaks
+  (pins, the `.txt` registration). See "A running instance reads nothing from its exe" in
+  `design.md`.
+
 ## Bugs
+
+### "Show a diff and merge…" did nothing in an instance run from a network drive (fixed 2026-10-22, 1.0.30)
+- **Symptom:** in the "changed on disk" prompt, choosing "Show a diff and merge…" closed the prompt
+  and nothing else happened. It worked in some instances and not in others.
+- **Root cause:** the instance ran `D:\utils\NotepadRedo.exe` on a computer where `D:` is a share
+  of the computer that builds it. It started on 1.0.28, and while it ran, the exe was overwritten
+  with 1.0.29. A single-file build maps its IL straight out of the exe and reads each page when it
+  is first needed. So the merge viewer's constructor, never run in that process before, was read
+  from the new build at the old build's offsets: `BadImageFormatException: Bad IL range`, four
+  times in `crash.log` from 2026-10-21 on. The UI-thread handler logs and swallows exceptions, so
+  nothing visible happened. Instances started after the overwrite worked, hence "sometimes".
+  - Evidence: the failing stacks name `OpenMerge(String)`, a 1.0.28 signature. That process held a
+    *data* view of the exe on the share (the bundle). And Windows reported the 1.0.29-sized file as
+    version 1.0.28, from the running process's stale image.
+  - A share refuses to overwrite an exe while a client's handle on it is open (checked over
+    `\\localhost`). The overwrite is possible only once a dropped connection (a sleep, a blip) has
+    closed that handle. The client then reopens the file by name for its next page.
+- **Fix:** nothing is read from the exe after startup. The app's assembly is extracted and loaded
+  from `%TEMP%\.net`, and the exe is marked run-from-swap. See "A running instance reads nothing
+  from its exe" in `design.md`.
+- **Verified:** by the files an instance maps. 1.0.29 run over SMB holds a data view of its exe;
+  1.0.30 maps `NotepadRedo.dll` from `%TEMP%\.net` and has none. The merge viewer opens in 1.0.30
+  run over SMB, framework-dependent and self-contained. Not reproduced end to end: making a
+  server close a client's handle needs admin rights. The reporter's own instance reproduced it live.
+- **Still exposed:** the self-contained release (tech debt above), and any instance started before
+  1.0.30, until it is restarted.
 
 ### "Reload from disk" loaded an older version, not the latest (fixed 2026-10-20, 1.0.29)
 - **Symptom:** on a mapped network drive, the "changed on disk" prompt appeared after the file was

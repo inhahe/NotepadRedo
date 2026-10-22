@@ -23,6 +23,12 @@
          native libraries at startup so single-file WPF actually runs. -->
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
 
+    <!-- A running instance must not read its exe after startup (see "A running instance reads
+         nothing from its exe" in design.md). This loads the app's own assembly from an extracted copy under
+         %TEMP%\.net\NotepadRedo\, not out of the bundle as code is first needed. Framework-dependent
+         builds only: a self-contained bundle would extract the whole runtime, ~160 MB per version. -->
+    <IncludeAllContentForSelfExtract Condition="'$(SelfContained)' != 'true'">true</IncludeAllContentForSelfExtract>
+
     <!-- The test projects under tests\ are built on their own; without this the default globs would
          compile their sources, and their generated obj\ files, into the app as well. -->
     <DefaultItemExcludes>$(DefaultItemExcludes);tests\**</DefaultItemExcludes>
@@ -34,5 +40,41 @@
     <Using Remove="System.Windows.Forms" />
     <Using Remove="System.Drawing" />
   </ItemGroup>
+
+  <!-- Marks the published exe IMAGE_FILE_NET_RUN_FROM_SWAP and IMAGE_FILE_REMOVABLE_RUN_FROM_SWAP:
+       started from a network drive or removable media, Windows copies the whole image into the
+       paging file at load, rather than paging it in from the file whenever it needs a page. -->
+  <UsingTask TaskName="SetRunFromSwap" TaskFactory="RoslynCodeTaskFactory"
+             AssemblyFile="$(MSBuildToolsPath)\Microsoft.Build.Tasks.Core.dll">
+    <ParameterGroup>
+      <Exe ParameterType="System.String" Required="true" />
+    </ParameterGroup>
+    <Task>
+      <Code Type="Fragment" Language="cs"><![CDATA[
+        using (var f = System.IO.File.Open(Exe, System.IO.FileMode.Open, System.IO.FileAccess.ReadWrite))
+        {
+            var r = new System.IO.BinaryReader(f);
+            f.Position = 0x3C;                          // IMAGE_DOS_HEADER.e_lfanew
+            long pe = r.ReadInt32();
+            f.Position = pe;
+            if (r.ReadUInt32() != 0x00004550)           // "PE\0\0"
+            {
+                Log.LogError(Exe + " is not a PE image.");
+                return false;
+            }
+            long at = pe + 4 + 18;                      // IMAGE_FILE_HEADER.Characteristics
+            f.Position = at;
+            ushort flags = r.ReadUInt16();
+            flags |= 0x0400 | 0x0800;                   // REMOVABLE_RUN_FROM_SWAP | NET_RUN_FROM_SWAP
+            f.Position = at;
+            f.Write(new[] { (byte)flags, (byte)(flags >> 8) }, 0, 2);
+        }
+      ]]></Code>
+    </Task>
+  </UsingTask>
+
+  <Target Name="MarkRunFromSwap" AfterTargets="GenerateSingleFileBundle" Condition="'$(PublishSingleFile)' == 'true'">
+    <SetRunFromSwap Exe="$(PublishedSingleFilePath)" />
+  </Target>
 
 </Project>
