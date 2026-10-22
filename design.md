@@ -389,14 +389,17 @@ trades width between that pane and the editor; the other panes keep theirs.
   layout squeeze it too, springing it back from where it was let go. So what you see when you let go
   is what is remembered.
 - **A press that doesn't move the divider remembers nothing.** In a squeezed window, storing what
-  shows would forget the real widths for every window, on a click.
+  shows would forget the real widths for every window, on a click. "Moved" is `_dragMoved`, set by
+  the cursor (`DragSplitterTo`), not a comparison of the column's width with its width at the press:
+  a pane opened from the keyboard under a held press re-lays the columns out with no move at all.
 - The drag itself (`DraggedPaneWidth`) moves the pane's width by how far the cursor has moved since
   the press, measured against the view (a stable ancestor), so grabbing the divider off-centre doesn't
   make it jump. It is capped so the editor keeps its minimum. Mouse capture lives in the mouse-down
   handler, not in `BeginSplitterDrag`: taking capture raises a synthetic `MouseMove`, and with no
   real button held — as in a test — the handler would end the drag on the spot. A drag is never left
-  on: no capture, no drag; a move with the button up ends it, over any divider; and a press ends
-  any drag still on before starting its own.
+  on: no capture, no drag; a move with the button up ends it, over any divider; and a press drops
+  any drag still on, unsaved, before starting its own (its end went missing, and the columns may
+  have been re-laid out since).
 
 ### The view stays put when the editor is re-laid out
 
@@ -452,7 +455,10 @@ through `settings.json`. Two calls carry a change to what the windows show:
 
 - **`MainWindow.ChangeSettings(change)`** is how anything in this instance changes an option — every
   Options-menu handler, the history pane's toggles, a divider drag. It snapshots the settings
-  (`AppSettings.Snapshot`), applies the change, saves, and calls `ApplySettings`.
+  (`AppSettings.Snapshot`), re-reads the file (`Reload`, so a change another instance saved since
+  isn't written over), applies the change, saves, and calls `ApplySettings` once for both. Not once
+  after the re-read as well: that would re-sync the menus before `change` runs, and a handler's
+  `change` reads its own menu item's check mark.
 - **`MainWindow.ApplySettings(before)`** re-checks every window's menus and applies to every document
   in every window whatever differs from `before`. It is the one place that knows how each setting
   shows in a document, so a new one that does is added there, and to `SyncOptionMenus` if it has a
@@ -462,9 +468,6 @@ through `settings.json`. Two calls carry a change to what the windows show:
 Before, each handler did its own fan-out, and they disagreed: Word Wrap re-wrapped only its own
 window's documents, and a change from another instance reached only the menus.
 
-`ApplySettings` applies only differences, so a call that changes nothing does nothing to the
-documents. The history pane's ✕ relies on that: see "The history tree".
-
 ## The history tree
 
 Whether the pane shows is one process-wide, persisted preference (`AppSettings.ShowTree`), not a
@@ -472,8 +475,8 @@ per-document state like the search pane's. That is why its ✕ calls `MainWindow
 the same switch as the toolbar toggle and View → Show History Tree: a per-document hide would leave
 the toolbar lit for a pane that isn't showing. The one per-document exception is a pane revealed
 only to pick an ambiguous redo branch (`RevealTreeTemporarily`), which the preference also closes
-when it changes. Its ✕ finds the preference already off, so turning it off changes nothing
-(`ApplySettings` applies only differences), and the ✕ then closes its own document's pane.
+when it changes. The preference is already off for such a pane, so its ✕ closes it in that
+document alone.
 
 Every node stores one `TextEdit` — a single contiguous splice (`Pos`, `OldText`, `NewText`) from its
 parent's text to its own — and `UndoTree.Materialize` rebuilds any node's text by replaying splices
@@ -922,7 +925,7 @@ set, so a scratch folder can never receive the user's real data.
 
 | File | Owner | Contents |
 |---|---|---|
-| `settings.json` | `AppSettings` | All options. `Reload()` re-reads on window activation so instances stay in sync, taking only the settings the file holds: one an older build wrote lacks those added since, whose defaults would otherwise undo them. It finds them by reflection, so a new setting needs no code there. Settings this build doesn't know (a newer build's) are kept in `Unknown` and written back, so saving here doesn't delete them. Gated by a `FileSystemWatcher` dirty flag, so the usual activation costs no I/O (see below). |
+| `settings.json` | `AppSettings` | All options. `Reload()` re-reads on window activation so instances stay in sync, taking only the settings the file holds: one an older build wrote lacks those added since, whose defaults would otherwise undo them. It finds them through the serializer's own metadata (the settings' names in the file), so a new setting needs no code there. Settings this build doesn't know (a newer build's) are kept in `Unknown` and written back, so saving here doesn't delete them; a file without them (an older build's) doesn't make this build forget them either. Gated by a `FileSystemWatcher` dirty flag, so the usual activation costs no I/O (see below). |
 | `session.json` | `SessionStore` | Paths of open *saved* files, for session restore. |
 | `recent.json` | `RecentFiles` | Up to 15 most-recently-opened paths for File → Open Recent. Re-read before each write so concurrent instances merge instead of clobbering; raises `Changed` so open windows rebuild their submenu. **`Changed` may be raised on a background thread** — handlers that touch UI must marshal to the dispatcher. |
 | `recovery\` | `EditorView` | Crash-recovery snapshots — this is where *unsaved* and untitled work lives, including for titled documents. |

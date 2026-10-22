@@ -3,10 +3,10 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
     <Application.Resources>
         <ResourceDictionary>
-            <!-- Base palette so every DynamicResource "Theme.*" key resolves. The plain
-                 NotepadRedo.exe uses these (its original colours); the stylised variant exes
-                 merge an overriding palette + Controls.xaml at startup (see App.xaml.cs).
-                 Shared.xaml holds the styles every build uses. -->
+            <!-- Base palette so every DynamicResource "Theme.*" key resolves. At startup
+                 ApplyThemeFromExeName (App.xaml.cs) merges a palette over it, plus Controls.xaml:
+                 the one the exe's name picks, or Fluent for any other name, the plain
+                 NotepadRedo.exe included. Shared.xaml holds the styles every build uses. -->
             <ResourceDictionary.MergedDictionaries>
                 <ResourceDictionary Source="Themes/Palette.Base.xaml"/>
                 <ResourceDictionary Source="Themes/Shared.xaml"/>

@@ -414,6 +414,18 @@ internal static class Program
             ExpectWidths(squeezed, "after a click on a divider in a narrow view");
             ExpectRemembered(new double[] { 300, 310, 200 }, "after a click on a divider in a narrow view");
 
+            // Nor does a press held while a pane opens from the keyboard, squeezing the others.
+            view.ToggleSearch();
+            await Settle();
+            x = DividerMiddle(view.TreeSplitter);
+            Expect(view.BeginSplitterDrag(view.TreeSplitter, x), "the history pane's divider can't be dragged");
+            view.ToggleSearch();
+            await Settle();
+            view.EndSplitterDrag();
+            ExpectRemembered(new double[] { 300, 310, 200 }, "after a press held while the search pane opened");
+            ExpectWidths(squeezed, "after the search pane opened under a press");
+            x = DividerMiddle(view.TreeSplitter);
+
             // A drag there remembers what every open pane shows, so nothing springs back.
             Expect(view.BeginSplitterDrag(view.TreeSplitter, x), "the history pane's divider can't be dragged");
             view.DragSplitterTo(x + 10);
@@ -489,6 +501,15 @@ internal static class Program
             s.Save();
             string saved = File.ReadAllText(SettingsFile);
             Expect(saved.Contains("\"FromANewerBuild\": 7"), $"saving dropped a setting this build doesn't know:\n{saved}");
+
+            // The older build saves again, dropping the newer build's setting: still kept here.
+            File.WriteAllText(SettingsFile, "{ \"WordWrap\": true }");
+            await ReloadSettings();
+            Expect(s.WordWrap, "the setting the older build's second file holds wasn't taken");
+            s.Save();
+            saved = File.ReadAllText(SettingsFile);
+            Expect(saved.Contains("\"FromANewerBuild\": 7"),
+                $"a file without the newer build's setting made this build forget it:\n{saved}");
             Console.WriteLine($"ok   {Label}");
             return 0;
         }
@@ -502,6 +523,7 @@ internal static class Program
             s.TreePaneWidth = AppSettings.DefaultTreePaneWidth;
             s.WordWrap = true;
             s.Unknown = null;
+            s.Save();   // so the file holds what the next test starts from, should anything re-read it
         }
     }
 
@@ -515,6 +537,9 @@ internal static class Program
             return 0;
         var s = AppSettings.Current;
         (s.WordWrap, s.ShowTree, s.FontSize, s.TreePaneWidth) = (true, true, 11, 300);
+        // The file the same, so a window activated as it opens re-reads nothing new: what follows
+        // must be what changes the documents.
+        s.Save();
         try
         {
             var windows = new[] { OpenEditorWindow(), OpenEditorWindow() };
@@ -535,8 +560,10 @@ internal static class Program
                 Expect(views[i].TreeColumn.Width.Value == 222, $"{which}'s history pane is {views[i].TreeColumn.Width}, not 222");
             }
 
-            // Wrap turned back on from the first window's menu.
-            MainWindow.ChangeSettings(n => n.WordWrap = true);
+            // Wrap turned back on from the first window's menu: its own handler, as a click runs it.
+            windows[0].WordWrapItem.IsChecked = true;
+            windows[0].WordWrapItem.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
+            Expect(views[0].Editor.TextWrapping == TextWrapping.Wrap, "View > Word Wrap left wrap off in its own window");
             Expect(views[1].Editor.TextWrapping == TextWrapping.Wrap, "turning wrap on in one window left it off in the other");
             Expect(windows[1].WordWrapItem.IsChecked, "turning wrap on in one window left the other's menu unchecked");
 

@@ -1025,6 +1025,11 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
     /// <summary>The dragged pane's width, and the cursor's X in this view, when the drag began.</summary>
     private double _dragStartWidth, _dragStartX;
 
+    /// <summary>Whether the cursor, at its last move, held the dragged pane at a width other than
+    /// the one it began with. Only then does the drag change anything: the column's own width can
+    /// also change under a press that never moves (a pane opened from the keyboard re-lays it out).</summary>
+    private bool _dragMoved;
+
     /// <summary>The room the open panes share: this view's width less the editor's minimum and the
     /// open panes' dividers. Infinite while the view has no width yet (a background tab, or one
     /// not yet shown), so it isn't squeezed against a width it will never have.</summary>
@@ -1095,14 +1100,15 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
     /// </summary>
     private void Splitter_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
-        // A press means any drag still on lost its button-up somewhere: it is over.
-        EndSplitterDrag();
+        // A press means any drag still on lost its button-up somewhere: drop it, unsaved, since the
+        // columns may have been re-laid out since its last move.
+        EndSplitterDrag(keep: false);
         if (sender is not Border splitter || !BeginSplitterDrag(splitter, e.GetPosition(this).X))
             return;
         // Without the mouse, the button-up could land anywhere and never end the drag.
         if (!splitter.CaptureMouse())
         {
-            EndSplitterDrag();
+            EndSplitterDrag(keep: false);
             return;
         }
         splitter.LostMouseCapture += Splitter_LostMouseCapture;
@@ -1130,8 +1136,9 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
         if (pane is null || !pane.IsOpen || _draggingPane is not null)
             return false;
         _draggingPane = pane;
-        _dragStartWidth = pane.Column.Width.Value;   // what LayOutPanes gave it, as EndSplitterDrag compares
+        _dragStartWidth = pane.Column.Width.Value;
         _dragStartX = cursorX;
+        _dragMoved = false;
         return true;
     }
 
@@ -1148,8 +1155,9 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
             return;
         }
         double others = _panes.Where(p => p.IsOpen && !ReferenceEquals(p, pane)).Sum(p => p.Column.ActualWidth);
-        pane.Column.Width = new GridLength(DraggedPaneWidth(_dragStartWidth, _dragStartX, cursorX,
-            pane.Min, PaneRoom() - others));
+        double width = DraggedPaneWidth(_dragStartWidth, _dragStartX, cursorX, pane.Min, PaneRoom() - others);
+        pane.Column.Width = new GridLength(width);
+        _dragMoved = width != _dragStartWidth;
     }
 
     private void Splitter_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
@@ -1162,9 +1170,10 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
 
     private void Splitter_LostMouseCapture(object sender, MouseEventArgs e) => EndSplitterDrag();
 
-    /// <summary>End a divider drag and let go of the mouse, however the drag was interrupted, and
-    /// remember the widths it left.</summary>
-    internal void EndSplitterDrag()
+    /// <summary>End a divider drag and let go of the mouse, however the drag was interrupted.</summary>
+    /// <param name="keep">Remember the widths the drag left, if it moved the divider. False drops a
+    /// drag whose end went missing.</param>
+    internal void EndSplitterDrag(bool keep = true)
     {
         if (_draggingPane is not { } pane)
             return;
@@ -1175,12 +1184,12 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
 
         // A click that didn't move the divider changes nothing — not even in a window too narrow for
         // the remembered widths, where storing what shows would forget them.
-        // Column.Width, not ActualWidth: the last move's width may not have been laid out yet.
-        if (!pane.IsOpen || pane.Column.Width.Value == _dragStartWidth)
+        if (!keep || !_dragMoved || !pane.IsOpen)
             return;
         // Every open pane's width, not just the dragged one's: in a window too narrow for the old
         // widths the others are showing narrower than remembered, and remembering only the dragged
         // pane would make the next layout squeeze it too, springing it back from where it was let go.
+        // Column.Width, not ActualWidth: the last move's width may not have been laid out yet.
         var open = _panes.Where(p => p.IsOpen).ToArray();
         MainWindow.ChangeSettings(_ =>
         {
@@ -1191,13 +1200,14 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
 
     /// <summary>The pane's own close button is a third way to turn the history-tree preference off,
     /// beside the toolbar toggle and View → Show History Tree, so the three can never disagree about
-    /// whether the tree is showing. A pane revealed only to pick a redo branch is closed too: the
-    /// preference is already off then, so turning it off changes nothing, and this document closes
-    /// its own.</summary>
+    /// whether the tree is showing. A pane revealed only to pick a redo branch, with the preference
+    /// already off, is closed in this document alone.</summary>
     private void TreeClose_Click(object sender, RoutedEventArgs e)
     {
-        MainWindow.SetTreePreference(false);
-        ApplyTreeVisible(false);
+        if (AppSettings.Current.ShowTree)
+            MainWindow.SetTreePreference(false);
+        else
+            ApplyTreeVisible(false);
         Editor.Focus();   // the button that had focus has just been collapsed
     }
 

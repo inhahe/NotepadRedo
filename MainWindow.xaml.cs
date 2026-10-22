@@ -1044,6 +1044,11 @@ public partial class MainWindow : Window
     {
         var s = AppSettings.Current;
         var before = s.Snapshot();
+        // A change another instance saved since this one last read the file (with this window already
+        // in front, no activation re-read it): taken first, or saving would write over it. Applied
+        // with ours, below — not before `change`, which may read a menu item's check mark that
+        // re-syncing the menus would put back.
+        s.Reload();
         change(s);
         s.Save();
         ApplySettings(before);

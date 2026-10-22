@@ -1,7 +1,7 @@
 using System.IO;
-using System.Reflection;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Text.Json.Serialization.Metadata;
 
 namespace NotepadRedo;
 
@@ -120,12 +120,13 @@ public sealed class AppSettings
     [JsonExtensionData]
     public Dictionary<string, JsonElement>? Unknown { get; set; }
 
-    /// <summary>Every setting the file stores by name: the public read-write properties, less
-    /// <see cref="Unknown"/>.</summary>
-    private static readonly PropertyInfo[] SettingProperties = typeof(AppSettings)
-        .GetProperties(BindingFlags.Public | BindingFlags.Instance)
-        .Where(p => p.CanRead && p.CanWrite && p.GetCustomAttribute<JsonExtensionDataAttribute>() is null)
-        .ToArray();
+    /// <summary>Every setting the file stores, keyed by its name there, as the serializer sees them
+    /// (so a renamed or ignored property can't disagree with <see cref="Save"/>). Not
+    /// <see cref="Unknown"/>, whose entries are the file's other keys.</summary>
+    private static readonly Dictionary<string, JsonPropertyInfo> SettingProperties = JsonSerializerOptions.Default
+        .GetTypeInfo(typeof(AppSettings)).Properties
+        .Where(p => !p.IsExtensionData && p.Set is not null)
+        .ToDictionary(p => p.Name);
 
     /// <summary>A copy of the settings as they are now, to tell afterwards what a change changed.
     /// Shallow, and that is enough: every setting is a value or a string, and <see cref="Unknown"/>
@@ -201,18 +202,27 @@ public sealed class AppSettings
         {
             if (!File.Exists(FilePath))
                 return null;
-            string json = File.ReadAllText(FilePath);
-            var fresh = JsonSerializer.Deserialize<AppSettings>(json);
-            if (fresh is null)
+            var file = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(File.ReadAllText(FilePath));
+            if (file is null)
                 return null;
-            using var file = JsonDocument.Parse(json);
+
+            // Only what the file holds. A file an older build wrote lacks the settings added since,
+            // and one that predates a newer build's lacks that build's: either way, keep ours rather
+            // than take defaults or forget them. Everything is converted before anything is set, so
+            // a value that doesn't convert leaves the settings as they were.
+            var known = new List<(JsonPropertyInfo Setting, object? Value)>();
+            var unknown = new Dictionary<string, JsonElement>(Unknown ?? new());
+            foreach (var (key, value) in file)
+            {
+                if (SettingProperties.TryGetValue(key, out var setting))
+                    known.Add((setting, value.Deserialize(setting.PropertyType)));
+                else
+                    unknown[key] = value;
+            }
             var before = Snapshot();
-            // Only the settings the file holds. One written by an older build lacks those added
-            // since, and taking their defaults would undo them here.
-            foreach (var p in SettingProperties)
-                if (file.RootElement.TryGetProperty(p.Name, out _))
-                    p.SetValue(this, p.GetValue(fresh));
-            Unknown = fresh.Unknown;
+            foreach (var (setting, value) in known)
+                setting.Set!(this, value);
+            Unknown = unknown.Count > 0 ? unknown : null;
             return before;
         }
         catch { return null; /* best-effort */ }
