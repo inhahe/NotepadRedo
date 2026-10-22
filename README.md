@@ -4,6 +4,8 @@ A fast, lightweight Notepad-style text editor for Windows with one standout feat
 
 Built with WPF on .NET 8.
 
+![NotepadRedo with several tabs open, and the history tree and search panes beside the document](screenshot.png)
+
 ---
 
 ## Features
