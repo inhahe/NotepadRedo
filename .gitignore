@@ -3,6 +3,7 @@ obj/
 publish/
 release/
 *.exe
+*.exe.old-*
 *.pdb
 
 # Local-only. We publish straight from this directory now instead of copying an

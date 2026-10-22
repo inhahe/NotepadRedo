@@ -164,7 +164,7 @@ build.bat
 
 `build.bat` first signals every running instance to close (prompting you to save each unsaved document) and **waits** until they have all exited. Then it publishes a single-file `NotepadRedo.exe` that uses the installed .NET 8 runtime, and copies it into place. If you cancel a save prompt the redeploy aborts, leaving that instance untouched.
 
-That signal reaches only the instances on the computer running `build.bat`. An instance on another computer, started from the exe over a network drive, keeps running the build it started with and picks up the new one when it is restarted. Replacing the exe under it is safe from 1.0.30 on: a running instance reads nothing from its exe after startup. (Before, it read its code from the exe as it went, so a rebuild could leave it with half of each version. "Show a diff and merge…" then did nothing at all, and other commands could fail the same way.)
+That signal reaches only the instances on the computer running `build.bat`. An instance on another computer, started from the exe over a network drive, keeps running the build it started with and picks up the new one when it is restarted. To get past it, `build.bat` moves the old exe aside rather than overwriting it (a share refuses to overwrite a file another computer has open, but lets it be renamed), and deletes the old copy once nothing holds it. Replacing the exe under a running instance is safe from 1.0.30 on: it reads nothing from its exe after startup. (Before, it read its code from the exe as it went, so an exe replaced after a dropped connection could leave it with half of each version. "Show a diff and merge…" then did nothing at all, and other commands could fail the same way.)
 
 ### Tests
 

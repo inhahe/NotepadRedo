@@ -15,7 +15,7 @@ A launch is not necessarily a new editor. `App.OnStartup` decides, in order:
 2. **Theme.** A palette is chosen from the executable's own filename (`-Graphite`, `-Sunset`, else
    Fluent), so one build can ship under several names.
 3. **Signalling modes.** `--quit`, `--quit-save`, `--quit-prompt` sweep every *other* instance over
-   IPC and exit without showing a window. `build.bat` uses these before overwriting the exe;
+   IPC and exit without showing a window. `build.bat` uses these before replacing the exe;
    `--quit-prompt` returns exit code 2 if the user cancelled.
 4. **Path resolution.** Every non-flag argument is made absolute *here*, while the process still has
    the launching working directory. A relative name handed to a sibling over IPC would otherwise
@@ -40,17 +40,20 @@ document verbs use a bounded timeout so a wedged sibling can't hang a launch.
 
 The exe can be replaced while an instance runs it. On the development setup, one computer runs
 `D:\utils\NotepadRedo.exe` over a mapped share of another, and a build on that other computer
-overwrites it. `build.bat`'s quit sweep can't prevent this: IPC reaches only the instances on the
-computer running it.
+replaces it. `build.bat`'s quit sweep can't stop that, since IPC reaches only the instances on the
+computer running it, and the deploy doesn't wait for them. A share refuses to overwrite a file a
+client has open, but lets it be renamed. So `build.bat` moves the old exe aside, copies the new one
+in, and deletes the old copy once nothing holds it.
 
 Windows doesn't load a program all at once. It maps the exe and reads each page when it is first
 touched, and may later discard a page and read it again. A single-file .NET build carries the app's
 own assembly inside the exe, and .NET maps that assembly's IL straight out of the bundle, so a
 method's IL is read from the exe the first time it runs. Locally the file can't change meanwhile:
-Windows refuses to write to a running exe. Over SMB the server enforces that only while the client's
-handle is open. When a computer sleeps or the connection drops, the server closes the handle, the
-exe can be overwritten, and the client reopens it by name to read its next page. The instance then
-reads parts of the new build as if they were the old one. In the reported case, the merge viewer's
+Windows refuses to write to a running exe. Over SMB a client goes on reading the file it opened,
+renamed or deleted, but only while its handle stays open. When a computer sleeps or the connection
+drops, the server closes the handle, and the client reopens the exe by name to read its next page.
+By then that name may hold a new build, and the instance reads parts of it as if they were the old
+one. (A closed handle is also what let an overwrite through, before `build.bat` moved files aside.) In the reported case, the merge viewer's
 constructor, never run before in that process, raised `BadImageFormatException: Bad IL range`, and
 "Show a diff and merge…" did nothing.
 

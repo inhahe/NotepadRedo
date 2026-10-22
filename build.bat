@@ -54,19 +54,20 @@ if errorlevel 1 (
     exit /b 1
 )
 
-echo Copying NotepadRedo.exe to script directory...
-copy /y "%~dp0publish\NotepadRedo.exe" "%~dp0NotepadRedo.exe" >nul
-if errorlevel 1 (
-    echo.
-    echo Copy FAILED.
-    exit /b 1
-)
-
-copy /y "%~dp0publish\NotepadRedo.exe" "d:\utils\NotepadRedo.exe" >nul
-if errorlevel 1 (
-    echo.
-    echo Copy FAILED.
-    exit /b 1
+REM Put the new build in each place. The exe there is moved aside rather than overwritten: the quit
+REM sweep above reaches only this computer, and another computer may be running that exe over the
+REM network. A share refuses to overwrite a file a client has open, but lets it be renamed, and the
+REM instance keeps the file it opened. The old copies are deleted wherever nothing holds them.
+echo Copying NotepadRedo.exe into place...
+for %%d in ("%~dp0NotepadRedo.exe" "d:\utils\NotepadRedo.exe") do (
+    if exist "%%~d" move /y "%%~d" "%%~d.old-%RANDOM%%RANDOM%" >nul
+    copy /y "%~dp0publish\NotepadRedo.exe" "%%~d" >nul
+    if errorlevel 1 (
+        echo.
+        echo Copy to %%~d FAILED.
+        exit /b 1
+    )
+    for %%f in ("%%~d.old-*") do del /q "%%~f" >nul 2>&1
 )
 
 REM Remove the stale pre-rename exe from both deploy locations so it can't be launched by an old

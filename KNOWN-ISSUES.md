@@ -66,6 +66,10 @@
   from `%TEMP%\.net`, and the exe is marked run-from-swap. Load failures that remain possible now
   produce a restart notice instead of silence. See "A running instance reads nothing from its exe"
   in `design.md`.
+- **Also:** `build.bat` failed with a bare "Copy FAILED" whenever another computer was running the
+  exe with its connection intact, because the share refuses that overwrite. It now moves the old
+  exe aside (a rename is allowed), copies the new one in, and deletes the old copy where nothing
+  holds it. Tested against an exe that an instance was running over `\\localhost`.
 - **Verified:** by the files an instance maps. 1.0.29 run over SMB holds a data view of its exe;
   1.0.30 maps `NotepadRedo.dll` from `%TEMP%\.net` and has none. The merge viewer opens in 1.0.30
   run over SMB, framework-dependent and self-contained. The notice was shown for an injected `Bad IL
