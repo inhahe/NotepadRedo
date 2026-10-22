@@ -61,9 +61,11 @@ public partial class MainWindow : Window
         SizeChanged += (_, e) => { if (e.WidthChanged) UpdateChrome(); };
         Activated += (_, _) =>
         {
-            // Re-read settings from disk so changes made by other instances are picked up
-            // as soon as this window gets focus.
-            AppSettings.Current.Reload();
+            // Re-read settings from disk so changes made by other instances are picked up as soon as
+            // this window gets focus — by every window, since the next one activated finds nothing
+            // new to read.
+            if (AppSettings.Current.Reload() is { } before)
+                ApplyReloadedSettings(before);
             SyncOptionMenus();
             // Another instance may have opened files while we were in the background. Kick off a
             // background re-scan; it raises RecentFiles.Changed if anything actually moved. Nothing
@@ -1066,6 +1068,65 @@ public partial class MainWindow : Window
             foreach (var v in mw.AllViews())
                 v.ApplyTreeVisible(show);
         }
+    }
+
+    /// <summary>Persist the side panes' widths, just changed by dragging a divider in one document,
+    /// and give every open document the same.</summary>
+    internal static void RememberPaneWidths()
+    {
+        AppSettings.Current.Save();
+        foreach (var v in AllOpenViews())
+            v.LayOutPanes();
+    }
+
+    /// <summary>Bring every window and open document in line with settings another instance saved:
+    /// whatever <see cref="AppSettings.Reload"/> found changed from <paramref name="before"/>.
+    /// Called on activation, so it does no I/O itself (see design.md, "Never touch the filesystem on
+    /// the activation path"): watching and locking the file, which reach the document's file, are
+    /// posted to run after activation is over.</summary>
+    private static void ApplyReloadedSettings(AppSettings before)
+    {
+        var s = AppSettings.Current;
+        bool fontChanged = s.FontFamily != before.FontFamily || s.FontSize != before.FontSize
+                           || s.FontBold != before.FontBold || s.FontItalic != before.FontItalic;
+        bool panesChanged = s.TreePaneWidth != before.TreePaneWidth || s.SearchPaneWidth != before.SearchPaneWidth
+                            || s.ReplacePaneWidth != before.ReplacePaneWidth;
+        foreach (var mw in ShownWindows())
+        {
+            mw.SyncOptionMenus();
+            foreach (var v in mw.AllViews())
+            {
+                if (s.WordWrap != before.WordWrap)
+                    v.ApplyWordWrap(s.WordWrap);
+                if (s.ShowTree != before.ShowTree)
+                    v.ApplyTreeVisible(s.ShowTree);
+                if (s.PreviewFitToWidth != before.PreviewFitToWidth)
+                    v.ApplyPreviewFit(s.PreviewFitToWidth);
+                if (s.HistoryBranchesOnly != before.HistoryBranchesOnly)
+                    v.ApplyHistoryMode(s.HistoryBranchesOnly);
+                if (s.AutosaveSeconds != before.AutosaveSeconds)
+                    v.ApplyAutosaveInterval(s.AutosaveSeconds);
+                if (fontChanged)
+                    v.ApplyFont(s.FontFamily, s.FontSize, s.FontBold, s.FontItalic);
+                if (panesChanged)
+                    v.LayOutPanes();
+            }
+        }
+
+        bool watchChanged = s.WatchExternalChanges != before.WatchExternalChanges;
+        bool lockChanged = s.LockFileWhileOpen != before.LockFileWhileOpen;
+        if (watchChanged || lockChanged)
+            Application.Current.Dispatcher.BeginInvoke(DispatcherPriority.Background, () =>
+            {
+                // Enumerated now, not when posted: a tab closed in between must not start watching.
+                foreach (var v in AllOpenViews())
+                {
+                    if (watchChanged)
+                        v.ApplyWatchSetting();
+                    if (lockChanged)
+                        v.ApplyLockSetting();
+                }
+            });
     }
 
     // ===================== Menu: Options =====================

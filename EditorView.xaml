@@ -7,12 +7,17 @@
         <local:IndentMarginConverter x:Key="IndentMargin"/>
     </UserControl.Resources>
     <Grid>
+        <!-- The editor, then each side pane behind the divider that sizes it. The panes' widths are
+             set in code (LayOutPanes): 0 while a pane is closed, otherwise its remembered width,
+             narrowed when the window can't fit it beside the editor's minimum. -->
         <Grid.ColumnDefinitions>
-            <ColumnDefinition Width="*" MinWidth="200"/>
+            <ColumnDefinition x:Name="EditorColumn" Width="*" MinWidth="200"/>
             <ColumnDefinition Width="Auto"/>
-            <ColumnDefinition x:Name="TreeColumn" Width="340" MinWidth="80"/>
-            <ColumnDefinition x:Name="SearchColumn" Width="0" MinWidth="0"/>
-            <ColumnDefinition x:Name="ReplaceColumn" Width="0" MinWidth="0"/>
+            <ColumnDefinition x:Name="TreeColumn" Width="0"/>
+            <ColumnDefinition Width="Auto"/>
+            <ColumnDefinition x:Name="SearchColumn" Width="0"/>
+            <ColumnDefinition Width="Auto"/>
+            <ColumnDefinition x:Name="ReplaceColumn" Width="0"/>
         </Grid.ColumnDefinitions>
 
         <!-- IsInactiveSelectionHighlightEnabled: keep the selection visible when the *window* is
@@ -36,11 +41,24 @@
                  TextChanged="Editor_TextChanged"
                  SelectionChanged="Editor_SelectionChanged"/>
 
-        <!-- Manual splitter: a bare GridSplitter would not resize the fixed tree column in this
+        <!-- Manual dividers: a bare GridSplitter would not resize these fixed-width columns in this
              layout, and a Thumb stops firing once it repositions under the cursor. So we capture
-             the mouse ourselves and drive TreeColumn.Width from the cursor's position relative to
-             this control (a stable ancestor), which never "sticks". -->
-        <Border x:Name="Splitter" Grid.Column="1" Width="6"
+             the mouse ourselves and drive the pane's width from the cursor's position relative to
+             this control (a stable ancestor), which never "sticks". Each divider sits on the left
+             edge of the pane it sizes; the editor gives or takes the difference. -->
+        <Border x:Name="TreeSplitter" Grid.Column="1" Width="6" Visibility="Collapsed"
+                HorizontalAlignment="Stretch" VerticalAlignment="Stretch"
+                Background="{DynamicResource Theme.Splitter}" Cursor="SizeWE"
+                MouseLeftButtonDown="Splitter_MouseLeftButtonDown"
+                MouseMove="Splitter_MouseMove"
+                MouseLeftButtonUp="Splitter_MouseLeftButtonUp"/>
+        <Border x:Name="SearchSplitter" Grid.Column="3" Width="6" Visibility="Collapsed"
+                HorizontalAlignment="Stretch" VerticalAlignment="Stretch"
+                Background="{DynamicResource Theme.Splitter}" Cursor="SizeWE"
+                MouseLeftButtonDown="Splitter_MouseLeftButtonDown"
+                MouseMove="Splitter_MouseMove"
+                MouseLeftButtonUp="Splitter_MouseLeftButtonUp"/>
+        <Border x:Name="ReplaceSplitter" Grid.Column="5" Width="6" Visibility="Collapsed"
                 HorizontalAlignment="Stretch" VerticalAlignment="Stretch"
                 Background="{DynamicResource Theme.Splitter}" Cursor="SizeWE"
                 MouseLeftButtonDown="Splitter_MouseLeftButtonDown"
@@ -160,7 +178,7 @@
              with the surrounding window as the container Tab does nothing at all from in here.
              Making the pane its own container both fixes that and gives the right behaviour for a
              tool pane — Tab walks round its own fields, and Esc is how you leave. -->
-        <DockPanel x:Name="SearchPanel" Grid.Column="3" Margin="4" Visibility="Collapsed"
+        <DockPanel x:Name="SearchPanel" Grid.Column="4" Margin="4" Visibility="Collapsed"
                    FocusManager.IsFocusScope="True"
                    KeyboardNavigation.TabNavigation="Cycle"
                    PreviewKeyDown="SearchPanel_PreviewKeyDown">
@@ -300,7 +318,7 @@
              while the search pane is still listing occurrences. IsFocusScope for the same reason as
              the search pane: the editor keeps its selection *active* while you work in here, so the
              match about to be replaced stays visibly highlighted. -->
-        <DockPanel x:Name="ReplacePanel" Grid.Column="4" Margin="4" Visibility="Collapsed"
+        <DockPanel x:Name="ReplacePanel" Grid.Column="6" Margin="4" Visibility="Collapsed"
                    FocusManager.IsFocusScope="True"
                    KeyboardNavigation.TabNavigation="Cycle"
                    PreviewKeyDown="ReplacePanel_PreviewKeyDown">

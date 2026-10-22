@@ -54,6 +54,15 @@ public sealed class AppSettings
     /// </summary>
     public bool HistoryBranchesOnly { get; set; } = true;
 
+    /// <summary>Widths, in device-independent pixels, the history, search and replace panes take
+    /// when the window has room for them — the widths the user last dragged them to. A window too
+    /// narrow for them shows them narrower without changing these (see
+    /// <see cref="EditorView.FitPaneWidths"/>).</summary>
+    public double TreePaneWidth { get; set; } = DefaultTreePaneWidth;
+    public double SearchPaneWidth { get; set; } = DefaultSearchPaneWidth;
+    public double ReplacePaneWidth { get; set; } = DefaultReplacePaneWidth;
+    public const double DefaultTreePaneWidth = 340, DefaultSearchPaneWidth = 320, DefaultReplacePaneWidth = 320;
+
     /// <summary>What the window's X (close) button does.</summary>
     public CloseButtonBehavior CloseButton { get; set; } = CloseButtonBehavior.Close;
 
@@ -162,17 +171,22 @@ public sealed class AppSettings
     /// instances. Called when a window is activated (brought to the foreground), so it does nothing
     /// at all unless the watcher saw the file change — the common case is a plain flag read.
     /// </summary>
-    public void Reload()
+    /// <returns>The settings as they were before, when the file was read, so the caller can apply
+    /// whatever another instance changed; null when nothing was read. Our own <see cref="Save"/>
+    /// also makes the next call read the file, so a non-null result can still mean no change.</returns>
+    public AppSettings? Reload()
     {
         if (Watcher is not null && Interlocked.Exchange(ref _dirty, 0) == 0)
-            return;
+            return null;
         try
         {
             if (!File.Exists(FilePath))
-                return;
+                return null;
             var fresh = JsonSerializer.Deserialize<AppSettings>(File.ReadAllText(FilePath));
             if (fresh is null)
-                return;
+                return null;
+            // Every property is a value or a string, so a shallow copy is a full one.
+            var before = (AppSettings)MemberwiseClone();
             AutosaveSeconds    = fresh.AutosaveSeconds;
             OpenInNewInstance   = fresh.OpenInNewInstance;
             WordWrap            = fresh.WordWrap;
@@ -192,8 +206,12 @@ public sealed class AppSettings
             UndoBreakOnPaste    = fresh.UndoBreakOnPaste;
             UndoPerCharacter    = fresh.UndoPerCharacter;
             UndoCoalesceSeconds = fresh.UndoCoalesceSeconds;
+            TreePaneWidth       = fresh.TreePaneWidth;
+            SearchPaneWidth     = fresh.SearchPaneWidth;
+            ReplacePaneWidth    = fresh.ReplacePaneWidth;
+            return before;
         }
-        catch { /* best-effort */ }
+        catch { return null; /* best-effort */ }
     }
 
     public void Save()

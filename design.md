@@ -365,6 +365,36 @@ put back by hand — both were latent in the search pane long before the replace
   `ContentPresenter.RecognizesAccessKey` **defaults to `False`**, so `"Replace _all"` rendered the
   underscore literally and `Alt+A` did nothing. Fixed on the template, so it holds for every button.
 
+### Side panes and their widths
+
+The history, search and replace panes sit right of the editor, in that order, each in a fixed-width
+grid column with a divider of its own on its left edge (`EditorView.xaml`: editor, then
+divider + pane three times). The editor's column is the only star column, so dragging any divider
+trades width between that pane and the editor; the other panes keep theirs.
+
+- **The widths are process-wide preferences** (`AppSettings.TreePaneWidth` / `SearchPaneWidth` /
+  `ReplacePaneWidth`), not per document: a pane is the same width in every tab and window, and keeps
+  it across restarts. A drag ends in `EndSplitterDrag`, which stores them and calls
+  `MainWindow.RememberPaneWidths` to save and re-lay-out every open document; other instances pick
+  them up on activation (see "Never touch the filesystem on the activation path").
+- **`LayOutPanes` is the one place that sizes the columns** — on opening or closing a pane, on a
+  width change of the view, on `Loaded` (a background tab is out of the visual tree, so it was laid
+  out without a width), and when the preferences change. A closed pane's column is 0 and its divider
+  is collapsed.
+- **A window too narrow for the remembered widths squeezes the panes without forgetting them**
+  (`FitPaneWidths`): each keeps its minimum and they share the rest in proportion to how far each
+  wants to be above it. Widening the window gives them back. The editor's own `MinWidth` (200) is
+  what they are squeezed against.
+- **A drag remembers every open pane's width, not just the dragged one's.** In a squeezed window the
+  others are showing narrower than remembered; storing only the dragged pane would make the next
+  layout squeeze it too, springing it back from where it was let go. So what you see when you let go
+  is what is remembered.
+- The drag itself (`DraggedPaneWidth`) moves the pane's width by the cursor's distance from the
+  divider's middle, both measured against the view (a stable ancestor), and is capped so the editor
+  keeps its minimum. Mouse capture lives in the mouse-down handler, not in `BeginSplitterDrag`:
+  taking capture raises a synthetic `MouseMove`, and with no real button held — as in a test — the
+  handler would end the drag on the spot.
+
 ### The view stays put when the editor is re-laid out
 
 A `ScrollViewer` keeps its offset in **pixels**. With word wrap on, how many visual rows the text
@@ -572,9 +602,8 @@ the pane says "Invalid regular expression: …" rather than "Invalid pattern".
 
 ### Its own column
 
-The replace pane is a **fifth grid column**, not a second tenant of the search column, so both panes
-can be open at once. Everything that measures the chrome beside the editor (`Splitter_MouseMove`)
-sums both columns' widths.
+The replace pane has a **grid column of its own**, not a share of the search column, so both panes
+can be open at once. Its width is sized like the others' (see "Side panes and their widths").
 
 ### The selection scope is captured, not read live
 
@@ -812,6 +841,11 @@ does, while locally a watcher outlives its folder. The data folder is pointed at
 through `NOTEPADREDO_DATA_DIR` (see Persistence), so a run never reads the user's settings or leaves
 anything in their recovery folder.
 
+Being the only C# test project, it also holds checks unrelated to external changes: unit checks
+(`[unit]`) of pure rules such as `FitPaneWidths` and the sweep of old copies, and a `[layout]` test
+of the side panes in a real view, which drives a drag through `BeginSplitterDrag` /
+`DragSplitterTo` / `EndSplitterDrag` because a real mouse can't be had.
+
 ## The merge viewer's two panes are levelled, not merely paired
 
 The two documents are built row for row — a diff op contributes one paragraph to each side, with a
@@ -902,6 +936,12 @@ So, the rule: **the `Activated` handler does no I/O.**
   saw a change. If the watcher can't be created, or reports an error, the flag is forced on and we
   fall back to re-reading every time — stale settings would be worse than the old cost, and
   `settings.json` is always local anyway.
+- When it did read, `Reload()` returns the settings as they were, and
+  `MainWindow.ApplyReloadedSettings` applies whatever changed to every window and open document — not
+  just this window's: the next window activated finds nothing new to read. Watching and locking the
+  file reach the document's own path, so they are posted to run after activation rather than done in
+  it. Before this, another instance's change reached only the menus' check marks, which then
+  disagreed with what the documents were doing.
 
 ## The .txt registration
 

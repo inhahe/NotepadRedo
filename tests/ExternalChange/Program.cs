@@ -107,12 +107,14 @@ internal static class Program
         Environment.SetEnvironmentVariable(AppPaths.OverrideVariable, data);
 
         string filter = args.FirstOrDefault(a => a.StartsWith("--filter="))?["--filter=".Length..] ?? "";
-        int failures = CheckLoadFailureClassifier(filter) + CheckRegistrationRule(filter) + CheckSweepRule(filter);
+        int failures = CheckLoadFailureClassifier(filter) + CheckRegistrationRule(filter) + CheckSweepRule(filter)
+                       + CheckPaneArithmetic(filter);
         var app = new Application { ShutdownMode = ShutdownMode.OnExplicitShutdown };
         app.Dispatcher.InvokeAsync(async () =>
         {
             try
             {
+                failures += await CheckPaneLayout(filter);
                 foreach (var loc in Locations(args.Contains("--share")))
                 {
                     // Asked for and not to be had: a pass that tests nothing must not pass quietly.
@@ -262,6 +264,168 @@ internal static class Program
             }
         }
         return failed;
+    }
+
+    /// <summary>How the side panes share the room beside the editor (<see cref="EditorView.FitPaneWidths"/>)
+    /// and follow a dragged divider (<see cref="EditorView.DraggedPaneWidth"/>). Not about external
+    /// changes either. Returns the number of failed cases.</summary>
+    private static int CheckPaneArithmetic(string filter)
+    {
+        (double, double)[] treeAndSearch = { (340, 80), (320, 180) };
+        var fits = new (string Name, double Room, (double, double)[] Panes, double[] Expected)[]
+        {
+            ("all fit", 1000, treeAndSearch, new double[] { 340, 320 }),
+            ("they fit exactly", 660, treeAndSearch, new double[] { 340, 320 }),
+            // 260 of minimums leaves 240 to share; the panes want 260 and 140 above theirs: 60% each.
+            ("squeezed, each keeps its minimum and gets the same share of what it wants above it",
+                500, treeAndSearch, new double[] { 80 + 156, 180 + 84 }),
+            ("squeezed, whole pixels that don't overflow", 501, treeAndSearch, new double[] { 80 + 156, 180 + 84 }),
+            ("no room even for the minimums", 100, treeAndSearch, new double[] { 80, 180 }),
+            ("all at their minimums, no room", 200, new (double, double)[] { (80, 80), (180, 180) }, new double[] { 80, 180 }),
+            ("a preference below the minimum counts as the minimum", 1000, new (double, double)[] { (50, 80) }, new double[] { 80 }),
+            ("no width yet", double.PositiveInfinity, treeAndSearch, new double[] { 340, 320 }),
+            ("nothing open", 100, Array.Empty<(double, double)>(), Array.Empty<double>()),
+        };
+        var drags = new (string Name, double Width, double Middle, double Cursor, double Min, double Max, double Expected)[]
+        {
+            ("the pane grows as the cursor goes left", 300, 500, 450, 80, 1000, 350),
+            ("and shrinks as it goes right", 300, 500, 600, 80, 1000, 200),
+            ("no narrower than its minimum", 300, 500, 900, 80, 1000, 80),
+            ("no wider than the editor can give up", 300, 500, 0, 80, 640.7, 640),
+            ("its minimum, when even that doesn't fit", 300, 500, 450, 80, 40, 80),
+            ("whole pixels", 300, 500.4, 450, 80, 1000, 350),
+        };
+        int failed = 0;
+        foreach (var (name, room, panes, expected) in fits)
+            failed += Case($"[unit] EditorView.FitPaneWidths: {name}",
+                EditorView.FitPaneWidths(room, panes), expected);
+        foreach (var (name, width, middle, cursor, min, max, expected) in drags)
+            failed += Case($"[unit] EditorView.DraggedPaneWidth: {name}",
+                new[] { EditorView.DraggedPaneWidth(width, middle, cursor, min, max) }, new[] { expected });
+        return failed;
+
+        int Case(string label, double[] actual, double[] expected)
+        {
+            if (!label.Contains(filter, StringComparison.OrdinalIgnoreCase))
+                return 0;
+            if (actual.SequenceEqual(expected))
+            {
+                Console.WriteLine($"ok   {label}");
+                return 0;
+            }
+            Console.WriteLine($"FAIL {label}\n     expected [{string.Join(", ", expected)}], got [{string.Join(", ", actual)}]");
+            return 1;
+        }
+    }
+
+    /// <summary>The side panes in a real view: remembered widths, squeezed by a narrow window and given
+    /// back by a wide one, a dragged divider, and what a drag leaves remembered. Returns 1 on failure.</summary>
+    private static async Task<int> CheckPaneLayout(string filter)
+    {
+        const string Label = "[layout] The side panes take their remembered widths and keep them through a drag";
+        if (!Label.Contains(filter, StringComparison.OrdinalIgnoreCase))
+            return 0;
+        var s = AppSettings.Current;
+        s.ShowTree = true;
+        (s.TreePaneWidth, s.SearchPaneWidth, s.ReplacePaneWidth) = (300, 250, 260);
+        var (view, host) = Host();
+        var panes = new[] { view.TreeColumn, view.SearchColumn, view.ReplaceColumn };
+        double[] Widths() => panes.Select(c => c.ActualWidth).ToArray();
+        string Described(double[] w) => "[" + string.Join(", ", w) + "]";
+        void ExpectWidths(double[] expected, string when) =>
+            Expect(Widths().SequenceEqual(expected), $"{when}, the panes are {Described(Widths())}, not {Described(expected)}");
+        async Task Resize(double width)
+        {
+            host.Width = width;
+            await Settle();
+        }
+        async Task Settle()
+        {
+            host.UpdateLayout();
+            await System.Windows.Threading.Dispatcher.Yield(System.Windows.Threading.DispatcherPriority.ContextIdle);
+            host.UpdateLayout();
+        }
+        try
+        {
+            await Resize(1600);
+            view.OpenSearch();
+            view.OpenReplace();
+            await Settle();
+            ExpectWidths(new double[] { 300, 250, 260 }, "opened in a wide window");
+            Expect(view.SearchSplitter.IsVisible && view.ReplaceSplitter.IsVisible, "an open pane has no divider");
+
+            await Resize(900);
+            double room = view.ActualWidth - view.EditorColumn.MinWidth - 3 * view.TreeSplitter.ActualWidth;
+            double[] squeezed = Widths();
+            Expect(squeezed.Sum() <= room && squeezed.Sum() > room - 3,
+                $"in a narrow window, panes {Described(squeezed)} don't fill the {room} beside the editor's minimum");
+            Expect(squeezed[0] < 300 && squeezed[1] < 250 && squeezed[2] < 260 && squeezed[0] >= 80
+                   && squeezed[1] >= 180 && squeezed[2] >= 200, $"in a narrow window, the panes are {Described(squeezed)}");
+            Expect((s.TreePaneWidth, s.SearchPaneWidth, s.ReplacePaneWidth) == (300, 250, 260),
+                "a narrow window changed the remembered widths");
+
+            await Resize(1600);
+            ExpectWidths(new double[] { 300, 250, 260 }, "back in a wide window");
+
+            // Drag the search pane's divider 60 px left, in two moves.
+            double middle = view.SearchSplitter.TranslatePoint(new Point(view.SearchSplitter.ActualWidth / 2, 0), view).X;
+            Expect(view.BeginSplitterDrag(view.SearchSplitter), "the search pane's divider can't be dragged");
+            view.DragSplitterTo(middle - 30);
+            await Settle();
+            view.DragSplitterTo(middle - 60);
+            await Settle();
+            view.EndSplitterDrag();
+            await Settle();
+            ExpectWidths(new double[] { 300, 310, 260 }, "after dragging the search pane's divider 60 px left");
+            Expect((s.TreePaneWidth, s.SearchPaneWidth, s.ReplacePaneWidth) == (300, 310, 260),
+                $"after the drag, the remembered widths are {(s.TreePaneWidth, s.SearchPaneWidth, s.ReplacePaneWidth)}");
+
+            // Dragging right past the minimum stops at it.
+            Expect(view.BeginSplitterDrag(view.ReplaceSplitter), "the replace pane's divider can't be dragged");
+            view.DragSplitterTo(view.ActualWidth);
+            await Settle();
+            view.EndSplitterDrag();
+            await Settle();
+            ExpectWidths(new double[] { 300, 310, 200 }, "after dragging the replace pane's divider to the far right");
+
+            // A drag in a narrow window remembers what every open pane shows, so nothing springs back.
+            await Resize(900);
+            squeezed = Widths();
+            Expect(view.BeginSplitterDrag(view.TreeSplitter), "the history pane's divider can't be dragged");
+            middle = view.TreeSplitter.TranslatePoint(new Point(view.TreeSplitter.ActualWidth / 2, 0), view).X;
+            view.DragSplitterTo(middle);
+            view.EndSplitterDrag();
+            view.LayOutPanes();   // as MainWindow.RememberPaneWidths does for every open document
+            await Settle();
+            ExpectWidths(squeezed, "after a drag in a narrow window");
+            Expect(new[] { s.TreePaneWidth, s.SearchPaneWidth, s.ReplacePaneWidth }.SequenceEqual(squeezed),
+                "a drag in a narrow window didn't remember the widths it left");
+
+            // A closed pane takes no room and has no divider; a usable width is put back for a broken one.
+            await Resize(1600);
+            view.ToggleSearch();
+            s.TreePaneWidth = -5;
+            view.LayOutPanes();
+            await Settle();
+            Expect(view.SearchColumn.ActualWidth == 0 && !view.SearchSplitter.IsVisible, "the closed search pane still shows");
+            Expect(view.TreeColumn.ActualWidth == AppSettings.DefaultTreePaneWidth,
+                $"a remembered width of -5 gave the history pane {view.TreeColumn.ActualWidth}");
+
+            Console.WriteLine($"ok   {Label}");
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"FAIL {Label}\n     {(ex is TestFailure ? ex.Message : ex.ToString())}");
+            return 1;
+        }
+        finally
+        {
+            view.Dispose();
+            host.Close();
+            (s.TreePaneWidth, s.SearchPaneWidth, s.ReplacePaneWidth) = (AppSettings.DefaultTreePaneWidth,
+                AppSettings.DefaultSearchPaneWidth, AppSettings.DefaultReplacePaneWidth);
+        }
     }
 
     /// <summary>The settings every test starts from (in memory only): the other program must be able
