@@ -43,7 +43,26 @@
 
 ## Bugs
 
-### Options changed elsewhere reached the menus but not the documents (fixed 2026-10-22, after 1.0.32)
+### build.bat ran fragments of its own comments as commands (fixed 2026-10-22, 1.0.33)
+- **Symptom:** run to deploy 1.0.33, build.bat failed at once with errors like
+  `'mpatible' is not recognized as an internal or external command`, before closing or building
+  anything.
+- **Root cause:** the file had LF-only line endings and four em dashes in `REM` lines. cmd.exe reads
+  a batch file by byte offset, line by line: a multibyte UTF-8 character throws that reading off
+  (under code page 65001 especially), and with LF-only endings a `goto` can land mid-line. Either
+  makes it resume in the middle of a later line. The global rules already said batch files must be
+  ASCII; nothing enforced it, and an edit that morning had brought the dashes in.
+- **Fix:** `build.bat` and `associate-txt.bat` are ASCII with CRLF endings. `.gitattributes` checks
+  every `.bat` and `.cmd` out with CRLF, and a `[unit]` check in `tests/ExternalChange` fails if a
+  tracked batch file's working copy has an LF-only line or a non-ASCII byte, since an editor can
+  rewrite one after checkout.
+- **Found with it, in the same review:** run by its UNC path, build.bat couldn't change into its own
+  folder (cmd refuses a UNC current directory), yet went on to close every running NotepadRedo and
+  only then failed to build. It now stops first. And it aborted only on the quit sweep's exit code 2
+  (a cancelled save prompt), so a quit that crashed was taken for success; it now aborts on any
+  non-zero code.
+
+### Options changed elsewhere reached the menus but not the documents (fixed 2026-10-22, 1.0.33)
 - **Symptom:** a setting changed in another running instance — word wrap, the history tree, the
   font, and so on — showed as changed in this instance's menus once its window was activated, but
   its open documents carried on as before, so the check marks and the documents disagreed. Within

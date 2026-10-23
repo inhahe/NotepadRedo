@@ -108,7 +108,7 @@ internal static class Program
 
         string filter = args.FirstOrDefault(a => a.StartsWith("--filter="))?["--filter=".Length..] ?? "";
         int failures = CheckLoadFailureClassifier(filter) + CheckRegistrationRule(filter) + CheckSweepRule(filter)
-                       + CheckPaneArithmetic(filter);
+                       + CheckPaneArithmetic(filter) + CheckBatchFiles(filter);
         var app = new Application { ShutdownMode = ShutdownMode.OnExplicitShutdown };
         // What App.xaml gives the real app, which editor windows need.
         foreach (string dictionary in new[] { "Themes/Palette.Base.xaml", "Themes/Shared.xaml" })
@@ -273,6 +273,54 @@ internal static class Program
         return failed;
     }
 
+    /// <summary>The repository's batch files are plain ASCII with CRLF line endings. cmd.exe misreads
+    /// a file with LF-only lines around its labels, and a multibyte character throws its reading off
+    /// for the rest of the file; either made build.bat run fragments of its comments as commands.
+    /// .gitattributes checks them out with CRLF, so this looks at the working copies, which an editor
+    /// can rewrite after checkout. Returns the number of failed cases.</summary>
+    private static int CheckBatchFiles(string filter)
+    {
+        const string Label = "[unit] The batch files are ASCII, with CRLF line endings";
+        if (!Label.Contains(filter, StringComparison.OrdinalIgnoreCase))
+            return 0;
+        string? root = AppContext.BaseDirectory;
+        while (root is not null && !File.Exists(Path.Combine(root, "NotepadRedo.csproj")))
+            root = Path.GetDirectoryName(root.TrimEnd(Path.DirectorySeparatorChar));
+        string[] files = Array.Empty<string>();
+        if (root is not null)
+        {
+            var git = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("git", "ls-files -z -- *.bat *.cmd")
+            {
+                WorkingDirectory = root, RedirectStandardOutput = true, UseShellExecute = false,
+            })!;
+            string listed = git.StandardOutput.ReadToEnd();
+            git.WaitForExit();
+            if (git.ExitCode == 0)
+                files = listed.Split('\0', StringSplitOptions.RemoveEmptyEntries);
+        }
+        if (files.Length == 0)
+        {
+            Console.WriteLine($"FAIL {Label}\n     couldn't list the repository's batch files (from {AppContext.BaseDirectory})");
+            return 1;
+        }
+        var bad = new List<string>();
+        foreach (string file in files)
+        {
+            byte[] bytes = File.ReadAllBytes(Path.Combine(root!, file));
+            int bareLf = bytes.Where((b, i) => b == '\n' && (i == 0 || bytes[i - 1] != '\r')).Count();
+            int nonAscii = bytes.Count(b => b > 127);
+            if (bareLf > 0 || nonAscii > 0)
+                bad.Add($"{file}: {bareLf} line(s) ending in LF alone, {nonAscii} non-ASCII byte(s)");
+        }
+        if (bad.Count == 0)
+        {
+            Console.WriteLine($"ok   {Label} ({string.Join(", ", files)})");
+            return 0;
+        }
+        Console.WriteLine($"FAIL {Label}\n     {string.Join("\n     ", bad)}");
+        return 1;
+    }
+
     /// <summary>How the side panes share the room beside the editor (<see cref="EditorView.FitPaneWidths"/>)
     /// and follow a dragged divider (<see cref="EditorView.DraggedPaneWidth"/>). Not about external
     /// changes either. Returns the number of failed cases.</summary>
@@ -335,6 +383,7 @@ internal static class Program
         if (!Label.Contains(filter, StringComparison.OrdinalIgnoreCase))
             return 0;
         var s = AppSettings.Current;
+        var saved = s.Snapshot();   // put back afterwards, so the tests after this one start as they would alone
         s.ShowTree = true;
         (s.TreePaneWidth, s.SearchPaneWidth, s.ReplacePaneWidth) = (300, 250, 260);
         var (view, host) = Host();
@@ -370,15 +419,16 @@ internal static class Program
                 "an open pane has no divider");
 
             await Resize(880);
-            // Each divider is what the mouse finds over it (nothing in front of it, and a background to
-            // hit), and it shows the resize pointer there. Checked at this width because the window is
-            // 900 wide: past its edge the mouse finds nothing at all.
+            // Each divider is what the mouse finds over it, as the window's input hit test finds it
+            // (nothing in front of it, a background to hit, enabled), and it is set to show the resize
+            // pointer. Checked at this width because the window is 900 wide: past its edge the mouse
+            // finds nothing at all.
             foreach (var divider in new[] { view.TreeSplitter, view.SearchSplitter, view.ReplaceSplitter })
             {
-                var hit = System.Windows.Media.VisualTreeHelper.HitTest(view,
-                    new Point(DividerMiddle(divider), view.ActualHeight / 2))?.VisualHit;
+                var over = view.TranslatePoint(new Point(DividerMiddle(divider), view.ActualHeight / 2), host);
+                var hit = host.InputHitTest(over);
                 Expect(ReferenceEquals(hit, divider), $"the mouse over the {divider.Name} finds {hit?.GetType().Name ?? "nothing"}");
-                Expect(divider.Cursor == System.Windows.Input.Cursors.SizeWE, $"the {divider.Name} shows no resize pointer");
+                Expect(divider.Cursor == System.Windows.Input.Cursors.SizeWE, $"the {divider.Name} isn't set to show the resize pointer");
             }
             double room = view.ActualWidth - view.EditorColumn.MinWidth - 3 * view.TreeSplitter.ActualWidth;
             double[] squeezed = Widths();
@@ -468,8 +518,8 @@ internal static class Program
         {
             view.Dispose();
             host.Close();
-            (s.TreePaneWidth, s.SearchPaneWidth, s.ReplacePaneWidth) = (AppSettings.DefaultTreePaneWidth,
-                AppSettings.DefaultSearchPaneWidth, AppSettings.DefaultReplacePaneWidth);
+            (s.ShowTree, s.TreePaneWidth, s.SearchPaneWidth, s.ReplacePaneWidth) =
+                (saved.ShowTree, saved.TreePaneWidth, saved.SearchPaneWidth, saved.ReplacePaneWidth);
         }
     }
 

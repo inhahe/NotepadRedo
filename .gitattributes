@@ -1,3 +1,5 @@
 # cmd.exe misreads batch files with LF-only line endings (goto and labels land mid-line), so they
-# are always checked out with CRLF, whatever core.autocrlf says.
+# are always checked out with CRLF, whatever core.autocrlf says. This holds only at checkout: the
+# [unit] batch-file check in tests/ExternalChange catches a working copy rewritten since.
 *.bat text eol=crlf
+*.cmd text eol=crlf

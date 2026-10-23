@@ -1,6 +1,13 @@
 @echo off
 setlocal
-cd /d "%~dp0"
+REM Stop here if this folder can't be made current - cmd can't, for a UNC path (\\server\share)
+REM - rather than go on to close every running NotepadRedo and only then fail to build.
+cd /d "%~dp0" || (
+    echo.
+    echo build.bat can't make its own folder the current one: cmd refuses UNC paths.
+    echo Run it through a drive letter instead. Nothing was closed or built.
+    exit /b 1
+)
 
 REM Refuse to redeploy while a pre-rename TreeNotepad.exe instance is still running. It listens on an
 REM incompatible pipe name, so the --quit-prompt sweep below can't reach it, and it would keep running
@@ -33,13 +40,14 @@ if not defined QUITEXE goto :afterquit
 echo Closing any running NotepadRedo (you will be prompted to save each unsaved document)...
 REM Ask every running instance to close interactively: each prompts to save its unsaved work
 REM (Yes/No/Cancel). This call BLOCKS until the user has answered every prompt and each instance
-REM has actually exited, so we never overwrite the exe out from under a live process. Exit code 2
-REM means the user cancelled a save prompt (an instance is still open) - abort rather than kill it.
+REM has actually exited, so we never overwrite the exe out from under a live process. It exits 0
+REM when they have, and 2 when the user cancelled a save prompt (an instance is still open). Any
+REM other code is a failure of the quit itself, so instances may still be running: abort either way.
 "%QUITEXE%" --quit-prompt
-if errorlevel 2 (
+if not "%errorlevel%"=="0" (
     echo.
-    echo Aborted: a save prompt was cancelled, so a running instance was left open.
-    echo Nothing was redeployed. Close NotepadRedo and re-run build.bat.
+    echo Aborted: closing the running NotepadRedo was cancelled or failed ^(exit code %errorlevel%^),
+    echo so an instance may still be open. Nothing was redeployed. Close NotepadRedo and re-run build.bat.
     exit /b 1
 )
 REM Let the OS release the executable file locks before overwriting.
@@ -82,5 +90,5 @@ if exist "%~dp0TreeNotepad.exe" del /q "%~dp0TreeNotepad.exe" >nul 2>&1
 if exist "d:\utils\TreeNotepad.exe" del /q "d:\utils\TreeNotepad.exe" >nul 2>&1
 
 echo.
-echo Done. NotepadRedo.exe is in "%~dp0 and d:\utils"
+echo Done. NotepadRedo.exe is in "%~dp0" and "d:\utils".
 endlocal
