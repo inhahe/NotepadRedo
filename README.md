@@ -4,7 +4,7 @@ A fast, lightweight Notepad-style text editor for Windows with one standout feat
 
 Built with WPF on .NET 8.
 
-![NotepadRedo editing a short poem among three rows of tabs. Beside it, the history tree keeps three versions of the poem, each on its own branch, and the search pane lists four matches for "the", the third selected and highlighted in the poem](screenshot.png)
+![NotepadRedo editing a short poem among three rows of tabs. Beside it, the history tree keeps three versions of the poem, each on its own branch, and the search pane lists four matches for "the", the third selected and highlighted in the poem](screenshot-2.png)
 
 ---
 
