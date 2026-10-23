@@ -370,6 +370,16 @@ internal static class Program
                 "an open pane has no divider");
 
             await Resize(880);
+            // Each divider is what the mouse finds over it (nothing in front of it, and a background to
+            // hit), and it shows the resize pointer there. Checked at this width because the window is
+            // 900 wide: past its edge the mouse finds nothing at all.
+            foreach (var divider in new[] { view.TreeSplitter, view.SearchSplitter, view.ReplaceSplitter })
+            {
+                var hit = System.Windows.Media.VisualTreeHelper.HitTest(view,
+                    new Point(DividerMiddle(divider), view.ActualHeight / 2))?.VisualHit;
+                Expect(ReferenceEquals(hit, divider), $"the mouse over the {divider.Name} finds {hit?.GetType().Name ?? "nothing"}");
+                Expect(divider.Cursor == System.Windows.Input.Cursors.SizeWE, $"the {divider.Name} shows no resize pointer");
+            }
             double room = view.ActualWidth - view.EditorColumn.MinWidth - 3 * view.TreeSplitter.ActualWidth;
             double[] squeezed = Widths();
             Expect(squeezed.Sum() <= room && squeezed.Sum() > room - 3,
