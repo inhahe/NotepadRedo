@@ -1187,7 +1187,7 @@ public partial class MainWindow : Window
         if (dlg.ShowDialog() != true)
             return false;
         if (double.TryParse(box.Text.Trim(), NumberStyles.Float, CultureInfo.CurrentCulture, out double v)
-            && v >= 0 && v <= 3600)
+            && v > 0 && v <= 3600)   // 0 would be per-character mode, which has its own option
         {
             seconds = v;
             return true;

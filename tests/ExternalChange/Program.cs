@@ -121,7 +121,7 @@ internal static class Program
             try
             {
                 failures += await CheckPaneLayout(filter) + await CheckReloadTakesOnlyWhatTheFileHolds(filter)
-                            + await CheckUndoGrouping(filter) + await CheckReplaceIsItsOwnUndoStep(filter);
+                            + await CheckUndoGrouping(filter);
                 foreach (var loc in Locations(args.Contains("--share")))
                 {
                     // Asked for and not to be had: a pass that tests nothing must not pass quietly.
@@ -588,127 +588,153 @@ internal static class Program
         }
     }
 
-    /// <summary>How typing is grouped into undo steps by the pause setting (Options → Undo grouping).
-    /// The pause is measured between keystrokes, so how long the typing after it goes on doesn't
-    /// count, and a window shorter than the commit delay still splits where it should. Not about
-    /// external changes either. Returns the number of failed cases.</summary>
+    /// <summary>How typing is grouped into undo steps (Options → Undo grouping): by the pauses between
+    /// keystrokes, however long the typing after a pause goes on; with Replace All a step of its own;
+    /// and with a save keeping the version it saved. Not about external changes either. Returns the
+    /// number of failed cases.</summary>
     private static async Task<int> CheckUndoGrouping(string filter)
     {
-        // Each keystroke waits the given number of ms after the one before it. Real time, so the
-        // margins are kept well clear of the windows being tested.
-        var cases = new (string Label, double WindowSeconds, (int Wait, string Text)[] Keys, int Steps)[]
+        // Keystrokes are (ms to wait before it, text), "\b" being a Backspace. Real time, so the
+        // waits are kept well clear of the windows being tested.
+        var cases = new (string Label, double WindowSeconds, Func<EditorView, string, Task> Body)[]
         {
             ("[undo] A pause shorter than the window keeps one step, however long the typing after it goes on",
-                1, new[] { (0, "a"), (700, "b"), (300, "c"), (300, "d") }, 1),
+                1, (v, _) => ExpectSteps(v, 1, (0, "a"), (700, "b"), (300, "c"), (300, "d"))),
+            ("[undo] Pauses shorter than the window, one after another, keep one step",
+                1, (v, _) => ExpectSteps(v, 1, (0, "a"), (700, "b"), (700, "c"))),
+            ("[undo] A character typed and deleted again counts as typing",
+                1, (v, _) => ExpectSteps(v, 1, (0, "a"), (600, "x"), (100, "\b"), (600, "b"))),
             ("[undo] A pause longer than the window starts a new step",
-                1, new[] { (0, "a"), (1500, "b") }, 2),
+                1, (v, _) => ExpectSteps(v, 2, (0, "a"), (1500, "b"))),
             ("[undo] A window shorter than the commit delay still splits at a pause longer than it",
-                0.3, new[] { (0, "a"), (420, "b") }, 2),
+                0.3, (v, _) => ExpectSteps(v, 2, (0, "a"), (420, "b"))),
+            // A long window from here on, so everything happens inside one typing pause.
+            ("[undo] Typing not yet committed when Replace All runs stays a step of its own",
+                8, async (v, _) =>
+                {
+                    TypeAtEnd(v, "cat cat");
+                    ReplaceAll(v, "cat", "dog");
+                    await Task.Delay(700);
+                    ExpectUndos(v, "cat cat", "");
+                }),
+            ("[undo] Typing straight after Replace All is a step of its own",
+                8, async (v, _) =>
+                {
+                    TypeAtEnd(v, "cat cat");
+                    await Task.Delay(700);   // committed
+                    ReplaceAll(v, "cat", "dog");
+                    TypeAtEnd(v, "!");
+                    await Task.Delay(700);
+                    ExpectUndos(v, "dog dog", "cat cat", "");
+                }),
+            ("[undo] Typing straight after a save leaves the saved version in the history",
+                8, async (v, dir) =>
+                {
+                    string path = Path.Combine(dir, "saved.txt");
+                    File.WriteAllText(path, "base");
+                    v.LoadFile(path);
+                    TypeAtEnd(v, "abc");
+                    await Task.Delay(700);   // committed
+                    Expect(v.Save(saveAs: false), "the save failed");
+                    TypeAtEnd(v, "d");
+                    await Task.Delay(700);
+                    ExpectUndos(v, "baseabc", "base");
+                }),
         };
-        var s = AppSettings.Current;
-        double savedWindow = s.UndoCoalesceSeconds;
         int failed = 0;
-        foreach (var (label, window, keys, steps) in cases)
-        {
-            if (!label.Contains(filter, StringComparison.OrdinalIgnoreCase))
-                continue;
-            s.UndoCoalesceSeconds = window;
-            var (view, host) = Host();
-            try
-            {
-                foreach (var (wait, text) in keys)
-                {
-                    if (wait > 0)
-                        await Task.Delay(wait);
-                    view.Editor.Select(view.Editor.Text.Length, 0);
-                    view.Editor.SelectedText = text;   // raises TextChanged, as a keystroke does
-                }
-                await Task.Delay(800);   // past the commit delay, so the last keystroke is committed too
-                string typed = view.Editor.Text;
-                int undone = 0;
-                while (view.Editor.Text.Length > 0 && undone < 10)
-                {
-                    view.Undo();
-                    undone++;
-                }
-                Expect(undone == steps, $"typing {Show(typed)} made {undone} undo step(s), not {steps}");
-                Console.WriteLine($"ok   {label}");
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"FAIL {label}\n     {(ex is TestFailure ? ex.Message : ex.ToString())}");
-                failed++;
-            }
-            finally
-            {
-                view.Dispose();
-                host.Close();
-                s.UndoCoalesceSeconds = savedWindow;
-            }
-        }
+        foreach (var (label, window, body) in cases)
+            if (label.Contains(filter, StringComparison.OrdinalIgnoreCase))
+                failed += await RunUndoCase(label, window, body);
         return failed;
     }
 
-    /// <summary>A Replace All is one undo step of its own: typing still waiting to be committed when it
-    /// runs isn't folded into it, and neither is typing straight after it. Returns the number of
-    /// failed cases.</summary>
-    private static async Task<int> CheckReplaceIsItsOwnUndoStep(string filter)
+    /// <summary>Run one undo case in a fresh editor with the pause window set to
+    /// <paramref name="windowSeconds"/>. The body gets the editor and a scratch folder of its own.
+    /// Returns 1 on failure.</summary>
+    private static async Task<int> RunUndoCase(string label, double windowSeconds, Func<EditorView, string, Task> body)
     {
-        // Text the replace leaves, then the texts successive undos should reach. A long window, so
-        // everything here happens inside one typing pause.
-        var cases = new (string Label, bool WaitBeforeReplace, string? TypeAfter, string[] Undos)[]
-        {
-            ("[undo] Typing not yet committed when Replace All runs stays a step of its own",
-                false, null, new[] { "cat cat", "" }),
-            ("[undo] Typing straight after Replace All is a step of its own",
-                true, "!", new[] { "dog dog", "cat cat", "" }),
-        };
         var s = AppSettings.Current;
         double savedWindow = s.UndoCoalesceSeconds;
-        int failed = 0;
-        foreach (var (label, waitBeforeReplace, typeAfter, undos) in cases)
+        s.UndoCoalesceSeconds = windowSeconds;
+        string dir = Path.Combine(Path.GetTempPath(), "nr-undo-" + Guid.NewGuid().ToString("N")[..8]);
+        Directory.CreateDirectory(dir);
+        var (view, host) = Host();
+        try
         {
-            if (!label.Contains(filter, StringComparison.OrdinalIgnoreCase))
-                continue;
-            s.UndoCoalesceSeconds = 8;
-            var (view, host) = Host();
-            try
-            {
-                view.Editor.SelectedText = "cat cat";
-                if (waitBeforeReplace)
-                    await Task.Delay(700);   // committed, but still inside the pause window
-                view.OpenReplace();
-                view.ReplaceFindBox.Text = "cat";
-                view.ReplaceWithBox.Text = "dog";
-                view.ReplaceAllButton.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
-                Expect(view.Editor.Text == "dog dog", $"Replace All left {Show(view.Editor.Text)}");
-                if (typeAfter is not null)
-                {
-                    view.Editor.Select(view.Editor.Text.Length, 0);
-                    view.Editor.SelectedText = typeAfter;
-                }
-                await Task.Delay(700);
-                foreach (string expected in undos)
-                {
-                    view.Undo();
-                    Expect(view.Editor.Text == expected,
-                        $"an undo reached {Show(view.Editor.Text)}, not {Show(expected)}");
-                }
-                Console.WriteLine($"ok   {label}");
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"FAIL {label}\n     {(ex is TestFailure ? ex.Message : ex.ToString())}");
-                failed++;
-            }
-            finally
-            {
-                view.Dispose();
-                host.Close();
-                s.UndoCoalesceSeconds = savedWindow;
-            }
+            await body(view, dir);
+            Console.WriteLine($"ok   {label}");
+            return 0;
         }
-        return failed;
+        catch (Exception ex)
+        {
+            Console.WriteLine($"FAIL {label}\n     {(ex is TestFailure ? ex.Message : ex.ToString())}");
+            return 1;
+        }
+        finally
+        {
+            view.Dispose();   // before the folder goes: a loaded document watches it
+            host.Close();
+            s.UndoCoalesceSeconds = savedWindow;
+            try { Directory.Delete(dir, recursive: true); } catch { }
+        }
+    }
+
+    /// <summary>Type at the end of the text, raising TextChanged as a keystroke does. "\b" deletes the
+    /// last character, as Backspace would.</summary>
+    private static void TypeAtEnd(EditorView v, string text)
+    {
+        var editor = v.Editor;
+        if (text == "\b")
+        {
+            editor.Select(editor.Text.Length - 1, 1);
+            editor.SelectedText = "";
+            return;
+        }
+        editor.Select(editor.Text.Length, 0);
+        editor.SelectedText = text;
+    }
+
+    /// <summary>Type <paramref name="keys"/> (each after its wait in ms), then check that they made
+    /// <paramref name="steps"/> undo steps.</summary>
+    private static async Task ExpectSteps(EditorView v, int steps, params (int Wait, string Text)[] keys)
+    {
+        foreach (var (wait, text) in keys)
+        {
+            if (wait > 0)
+                await Task.Delay(wait);
+            TypeAtEnd(v, text);
+        }
+        await Task.Delay(800);   // past the commit delay, so the last keystroke is committed too
+        string typed = v.Editor.Text;
+        int undone = 0;
+        while (v.Editor.Text.Length > 0 && undone < 10)
+        {
+            v.Undo();
+            undone++;
+        }
+        Expect(undone == steps, $"typing {Show(typed)} made {undone} undo step(s), not {steps}");
+    }
+
+    /// <summary>Replace every <paramref name="find"/> with <paramref name="with"/> through the replace
+    /// pane's own button.</summary>
+    private static void ReplaceAll(EditorView v, string find, string with)
+    {
+        string before = v.Editor.Text;
+        v.OpenReplace();
+        v.ReplaceFindBox.Text = find;
+        v.ReplaceWithBox.Text = with;
+        v.ReplaceAllButton.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+        Expect(v.Editor.Text == before.Replace(find, with), $"Replace All left {Show(v.Editor.Text)}");
+    }
+
+    /// <summary>Undo once per entry of <paramref name="texts"/>, checking the text each undo reaches.</summary>
+    private static void ExpectUndos(EditorView v, params string[] texts)
+    {
+        foreach (string expected in texts)
+        {
+            v.Undo();
+            Expect(v.Editor.Text == expected, $"an undo reached {Show(v.Editor.Text)}, not {Show(expected)}");
+        }
     }
 
     /// <summary>A setting changed reaches the documents in every window: one another instance saved

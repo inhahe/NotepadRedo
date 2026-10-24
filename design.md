@@ -513,27 +513,38 @@ paragraph and typing again inside the window produced a node whose single splice
 first place to the second: one `Ctrl+Z` undid both, and the "what changed" selection would have swept
 up all the untouched text between them.
 
-The check can only see edits once they are committed, and commits are debounced by half a second —
-type, press `Ctrl+End`, type again quickly, and the *pending* diff already spans both places. So
+The check can only see edits once they are committed, and commits wait for the typing to stop (up
+to half a second; see below) — type, press `Ctrl+End`, type again quickly, and the *pending* diff
+already spans both places. So
 `FlushTypingBeforeCaretMove` commits pending typing the moment a click or navigation key is about to
 move the caret. It does not end the burst: stepping back over a typo and carrying on is still one
 step, because the correction touches the text just typed.
 
 ### The typing pause is measured between keystrokes
 
-The coalescing window (Options → Undo grouping, "after a typing pause of…") is compared against the
-gap from the **last keystroke folded into the burst** to the **first keystroke of the typing now being
-committed** (`_burstLastKeystroke`, `_pendingSince`). It used to be compared against the time between
-two *commits*, and a commit lands a debounce after the last keystroke — so that interval included
-however long the user went on typing after the pause. With a long window this hid; with a one-second
-window, a 0.6-second pause followed by half a second of typing split the step.
+The coalescing window (Options → Undo grouping, "after a typing pause of…", one second by default) is
+compared against the gap between **one keystroke and the next**, and the decision is made the moment
+the second one lands: `Editor_TextChanged` ends the burst when the gap is longer than the window, so
+the commit that follows opens a new node. `_lastKeystrokeMs` is the only state, read from
+`Environment.TickCount64`, which can't jump at a daylight-saving change or a clock correction the way
+`DateTime.Now` can. Every edit counts, including a character typed and deleted again, whose batch
+commits nothing.
 
-The commit debounce is never longer than the window (`Math.Clamp(window, 1, DebounceMs)`): a pause can
-only start a new step if the typing before it has been committed by the time the next keystroke
-arrives, so with a 0.3-second window and a 0.5-second debounce, pauses between the two would merge.
+Measuring between *commits* instead is the tempting mistake: a commit lands a debounce after the last
+keystroke, so the interval between two also counts however long the user went on typing after the
+pause, and a short window then splits steps at pauses well under it.
 
-`tests/ExternalChange` checks all three: a pause under the window followed by a long run of typing is
-one step, a pause over it is two, and a window shorter than the debounce still splits.
+For the decision to be right, the typing before a long pause has to be committed by the time the
+keystroke after it lands. So the commit debounce is **half the window**, at most half a second
+(`DebounceInterval`), which leaves the timer slack to fire late on a busy UI thread.
+
+Only typing joins a burst or opens one (`_typedSinceCommit`): text set in code, such as a Replace All
+or the merge viewer's result, commits as a step of its own and leaves no burst open. A save closes the
+burst too — left open, the next keystroke would be folded into the node holding what was saved, and the
+saved version would exist nowhere in the tree. So does the file coming to hold exactly the editor's
+text (`Adopt`), which also makes the document saved.
+
+`tests/ExternalChange` has an `[undo]` check for each of these rules.
 
 ## How a term becomes matches
 
@@ -676,9 +687,9 @@ a `BringIntoView(caret)` at `DispatcherPriority.Background`; Replace Next queues
 the *following* match after that, which lands later in the queue and therefore wins, as it should.
 
 The node holds the replacement and nothing else. `SetEditorText` commits typing still waiting on the
-debounce *before* it swaps the text, or that typing would land in the same node; and it leaves no
-typing burst open afterwards, or a keystroke straight after a Replace All, inside the pause window and
-touching the replaced region, would be folded into it. Either way one `Ctrl+Z` used to take back the
+debounce *before* it swaps the text, or that typing would land in the same node; and since only typing
+opens a burst, the replacement's commit leaves none open, so a keystroke straight after a Replace All,
+inside the pause window and touching the replaced region, is not folded into it. Either way one `Ctrl+Z` used to take back the
 user's typing and the whole replace together. `tests/ExternalChange` has an `[undo]` check for each.
 The merge viewer's result goes through the same function and gets the same treatment.
 

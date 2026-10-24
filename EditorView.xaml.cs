@@ -36,27 +36,29 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
     private string? _currentPath;
     private string _savedText = "";        // text as last saved/opened, for the dirty flag
 
+    /// <summary>The longest the commit of typed text waits for the typing to stop.</summary>
     private const int DebounceMs = 500;
 
     /// <summary>The typing pause, in milliseconds, after which the next edit starts a new undo step
     /// (Options → Undo grouping).</summary>
     private static double CoalesceWindowMs => AppSettings.Current.UndoCoalesceSeconds * 1000.0;
 
+    /// <summary>How long after the last keystroke typed text is committed: half the pause window, at
+    /// most <see cref="DebounceMs"/>. A pause only starts a new step if the typing before it is
+    /// committed by the time the next keystroke lands, and half the window leaves the timer that much
+    /// slack to fire late.</summary>
+    private static TimeSpan DebounceInterval =>
+        TimeSpan.FromMilliseconds(Math.Clamp(CoalesceWindowMs / 2, 1, DebounceMs));
+
     // ----- Typing-burst coalescing -----
     // Consecutive edits within one continuous typing session are folded into a single history node
-    // rather than creating one node per 500ms debounce tick (which used to bury the tree under
-    // dozens of near-identical entries). A burst is broken by navigating/undo/redo, by pressing
-    // Enter or pasting (when enabled), or by an idle gap longer than the configured coalesce window
-    // — each of those starts a fresh checkpoint node. Per-character mode disables coalescing.
-    //
-    // The idle gap is measured between *keystrokes*: from the last edit folded into the burst to the
-    // first edit of the typing being committed now. Commit times won't do — a commit lands a debounce
-    // after the last keystroke, so the gap between two commits includes however long the user went on
-    // typing after the pause, and a short window then splits steps at pauses well under it.
+    // rather than creating one node per debounce tick (which used to bury the tree under dozens of
+    // near-identical entries). A burst is broken by navigating/undo/redo, by saving, by pressing
+    // Enter or pasting (when enabled), or by a pause between keystrokes longer than the configured
+    // window — each of those starts a fresh checkpoint node. Per-character mode disables coalescing.
     private UndoNode? _typingNode;         // the leaf node the current burst is being folded into
-    private DateTime _lastKeystroke;       // the user's most recent edit
-    private DateTime? _pendingSince;       // the first edit not yet committed; null when none is
-    private DateTime _burstLastKeystroke;  // the last edit folded into _typingNode
+    private long _lastKeystrokeMs;         // Environment.TickCount64 at the user's most recent edit
+    private bool _typedSinceCommit;        // the user has edited the text since the last commit
 
     // ----- Autosave / crash recovery (per document) -----
     private readonly DispatcherTimer _autosave = new();
@@ -169,7 +171,7 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
         // A background tab's view is out of the visual tree, so it was laid out without a width.
         Loaded += (_, _) => LayOutPanes();
 
-        _debounce = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(DebounceMs) };
+        _debounce = new DispatcherTimer { Interval = DebounceInterval };
         _debounce.Tick += Debounce_Tick;
 
         // Isolate pastes as their own undo step when the user has that enabled.
@@ -428,9 +430,18 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
     {
         if (_suppressTextChange)
             return;
-        var now = DateTime.Now;
-        _pendingSince ??= now;
-        _lastKeystroke = now;
+
+        // A pause between keystrokes longer than the window ends the burst, so the edit that just
+        // landed opens a new step. The typing before the pause is committed by then: the debounce is
+        // at most half the window. Keystroke to keystroke, on a clock that can't jump — not commit to
+        // commit, since a commit lands a debounce after the last keystroke and the interval between
+        // two would also count however long the user went on typing after the pause.
+        long now = Environment.TickCount64;
+        if (now - _lastKeystrokeMs > CoalesceWindowMs)
+            _typingNode = null;
+        _lastKeystrokeMs = now;
+        _typedSinceCommit = true;
+
         if (AppSettings.Current.UndoPerCharacter)
         {
             // Every keystroke is its own undo step — commit right away instead of debouncing.
@@ -439,10 +450,10 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
             RaiseAll();
             return;
         }
-        // The commit must come no later than the pause window: a pause can only start a new step if
-        // the typing before it has been committed by the time the next keystroke arrives.
-        _debounce.Interval = TimeSpan.FromMilliseconds(Math.Clamp(CoalesceWindowMs, 1, DebounceMs));
         _debounce.Stop();
+        var interval = DebounceInterval;
+        if (_debounce.Interval != interval)
+            _debounce.Interval = interval;   // only when the window changed: each set re-arms a Win32 timer
         _debounce.Start();
         RaiseAll();
 
@@ -470,25 +481,22 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
         _navigating = true;
         try
         {
-            // Taken now, whatever happens below: the typing being committed is no longer pending.
-            DateTime? typedSince = _pendingSince;
-            _pendingSince = null;
+            bool typed = _typedSinceCommit;
+            _typedSinceCommit = false;
 
             if (Editor.Text == _currentText)
                 return;   // nothing changed since the last commit
 
-            // Fold this edit into the current burst's node when it's still the open typing leaf and
-            // the pause before it was short; otherwise start a fresh checkpoint node. Per-character
-            // mode never coalesces (every edit is its own node).
-            bool canCoalesce = !AppSettings.Current.UndoPerCharacter
-                               && ReferenceEquals(_tree.Current, _typingNode)
-                               && typedSince is { } started
-                               && (started - _burstLastKeystroke).TotalMilliseconds <= CoalesceWindowMs;
+            // Only typing joins a burst, or opens one: a commit of text set in code (a Replace All,
+            // the merge viewer's result) is a step of its own, and so is whatever is typed after it.
+            // Per-character mode never coalesces (every edit is its own node).
+            bool canCoalesce = typed
+                               && !AppSettings.Current.UndoPerCharacter
+                               && ReferenceEquals(_tree.Current, _typingNode);
 
             if (canCoalesce && _tree.Coalesce(_currentText, Editor.Text, Editor.CaretIndex))
             {
                 _currentText = Editor.Text;
-                _burstLastKeystroke = _lastKeystroke;
                 RaiseAll();
                 return;
             }
@@ -497,8 +505,7 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
             if (node is not null)
             {
                 _currentText = Editor.Text;
-                _typingNode = node;
-                _burstLastKeystroke = _lastKeystroke;
+                _typingNode = typed ? node : null;
                 RebuildHistoryRows();   // a node was added — reflect the new shape in the list
                 SetCurrent(node);
                 RaiseAll();
@@ -799,6 +806,9 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
             var written = WriteTextToFile(path, Editor.Text);
             _currentPath = path;
             _savedText = Editor.Text;
+            // The node holding what was just saved must stay as it is: left open, the burst would
+            // fold the next keystroke into it, and the saved version would exist nowhere in the tree.
+            _typingNode = null;
             _savedLineEnding = _lineEnding;
             _lastAutosave = null;
             DeleteRecovery();
@@ -1635,7 +1645,11 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
         _diskStamp = disk.Stamp;
         _unanswered = null;
         if (Editor.Text != _savedText && disk.Text == LineEndings.ToEditor(Editor.Text))
+        {
             _savedText = Editor.Text;
+            CommitPending();      // as Save does: the saved text becomes a node of its own, kept as is
+            _typingNode = null;
+        }
         RaiseAll();   // the dirty state or the line-ending indicator may have changed
     }
 
@@ -2036,8 +2050,9 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
     {
         // Typing still waiting on the debounce is a step of its own: commit it before the text is
         // swapped, or it lands in the same node as the replacement and one Ctrl+Z takes back both.
+        // (The replacement's own commit then neither joins that burst nor opens one: see
+        // CommitPending.)
         CommitPending();
-        _typingNode = null;
 
         _suppressTextChange = true;
         Editor.Text = text;
@@ -2045,10 +2060,6 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
         Editor.Select(at, Math.Clamp(selLen, 0, text.Length - at));
         _suppressTextChange = false;
         CommitPending();
-
-        // Nor is the replacement typing, so it opens no burst: the next keystroke starts a step of
-        // its own instead of being folded into the replacement's.
-        _typingNode = null;
     }
 
     /// <summary>Write a snapshot next to the original file with a timestamped suffix; report where.</summary>
