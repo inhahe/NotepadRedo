@@ -2034,13 +2034,21 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
     /// selection is set *before* the commit so the history node records the right caret position.</param>
     private void SetEditorText(string text, int? caret = null, int selLen = 0)
     {
+        // Typing still waiting on the debounce is a step of its own: commit it before the text is
+        // swapped, or it lands in the same node as the replacement and one Ctrl+Z takes back both.
+        CommitPending();
+        _typingNode = null;
+
         _suppressTextChange = true;
         Editor.Text = text;
         int at = Math.Clamp(caret ?? Editor.CaretIndex, 0, text.Length);
         Editor.Select(at, Math.Clamp(selLen, 0, text.Length - at));
         _suppressTextChange = false;
-        _typingNode = null;
         CommitPending();
+
+        // Nor is the replacement typing, so it opens no burst: the next keystroke starts a step of
+        // its own instead of being folded into the replacement's.
+        _typingNode = null;
     }
 
     /// <summary>Write a snapshot next to the original file with a timestamped suffix; report where.</summary>

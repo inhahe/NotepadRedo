@@ -121,7 +121,7 @@ internal static class Program
             try
             {
                 failures += await CheckPaneLayout(filter) + await CheckReloadTakesOnlyWhatTheFileHolds(filter)
-                            + await CheckUndoGrouping(filter);
+                            + await CheckUndoGrouping(filter) + await CheckReplaceIsItsOwnUndoStep(filter);
                 foreach (var loc in Locations(args.Contains("--share")))
                 {
                     // Asked for and not to be had: a pass that tests nothing must not pass quietly.
@@ -632,6 +632,68 @@ internal static class Program
                     undone++;
                 }
                 Expect(undone == steps, $"typing {Show(typed)} made {undone} undo step(s), not {steps}");
+                Console.WriteLine($"ok   {label}");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"FAIL {label}\n     {(ex is TestFailure ? ex.Message : ex.ToString())}");
+                failed++;
+            }
+            finally
+            {
+                view.Dispose();
+                host.Close();
+                s.UndoCoalesceSeconds = savedWindow;
+            }
+        }
+        return failed;
+    }
+
+    /// <summary>A Replace All is one undo step of its own: typing still waiting to be committed when it
+    /// runs isn't folded into it, and neither is typing straight after it. Returns the number of
+    /// failed cases.</summary>
+    private static async Task<int> CheckReplaceIsItsOwnUndoStep(string filter)
+    {
+        // Text the replace leaves, then the texts successive undos should reach. A long window, so
+        // everything here happens inside one typing pause.
+        var cases = new (string Label, bool WaitBeforeReplace, string? TypeAfter, string[] Undos)[]
+        {
+            ("[undo] Typing not yet committed when Replace All runs stays a step of its own",
+                false, null, new[] { "cat cat", "" }),
+            ("[undo] Typing straight after Replace All is a step of its own",
+                true, "!", new[] { "dog dog", "cat cat", "" }),
+        };
+        var s = AppSettings.Current;
+        double savedWindow = s.UndoCoalesceSeconds;
+        int failed = 0;
+        foreach (var (label, waitBeforeReplace, typeAfter, undos) in cases)
+        {
+            if (!label.Contains(filter, StringComparison.OrdinalIgnoreCase))
+                continue;
+            s.UndoCoalesceSeconds = 8;
+            var (view, host) = Host();
+            try
+            {
+                view.Editor.SelectedText = "cat cat";
+                if (waitBeforeReplace)
+                    await Task.Delay(700);   // committed, but still inside the pause window
+                view.OpenReplace();
+                view.ReplaceFindBox.Text = "cat";
+                view.ReplaceWithBox.Text = "dog";
+                view.ReplaceAllButton.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+                Expect(view.Editor.Text == "dog dog", $"Replace All left {Show(view.Editor.Text)}");
+                if (typeAfter is not null)
+                {
+                    view.Editor.Select(view.Editor.Text.Length, 0);
+                    view.Editor.SelectedText = typeAfter;
+                }
+                await Task.Delay(700);
+                foreach (string expected in undos)
+                {
+                    view.Undo();
+                    Expect(view.Editor.Text == expected,
+                        $"an undo reached {Show(view.Editor.Text)}, not {Show(expected)}");
+                }
                 Console.WriteLine($"ok   {label}");
             }
             catch (Exception ex)

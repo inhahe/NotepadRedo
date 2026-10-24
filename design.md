@@ -675,6 +675,13 @@ position). Assigning `Editor.Text` also scrolls the view to the top, so `ApplyRe
 a `BringIntoView(caret)` at `DispatcherPriority.Background`; Replace Next queues its own scroll to
 the *following* match after that, which lands later in the queue and therefore wins, as it should.
 
+The node holds the replacement and nothing else. `SetEditorText` commits typing still waiting on the
+debounce *before* it swaps the text, or that typing would land in the same node; and it leaves no
+typing burst open afterwards, or a keystroke straight after a Replace All, inside the pause window and
+touching the replaced region, would be folded into it. Either way one `Ctrl+Z` used to take back the
+user's typing and the whole replace together. `tests/ExternalChange` has an `[undo]` check for each.
+The merge viewer's result goes through the same function and gets the same treatment.
+
 ### Highlight, then replace
 
 Replace Next is a two-press cycle by design: it replaces only the match that is **currently
@@ -894,8 +901,8 @@ width rather than its window's, which Windows keeps within the screen. `[setting
 harness merges `Themes/Palette.Base.xaml` and `Themes/Shared.xaml` into its `Application` for them,
 as `App.xaml` does, since running `App` would start the real app. That test runs last: the app ends
 when its last editor window closes. `[undo]` tests type into a real view with real delays between
-keystrokes and count the undo steps that result (see "The typing pause is measured between
-keystrokes").
+keystrokes, some running a Replace All among them, and check the undo steps that result (see "The
+typing pause is measured between keystrokes" and "One undo node per replace").
 
 ## The merge viewer's two panes are levelled, not merely paired
 
