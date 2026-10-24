@@ -120,7 +120,8 @@ internal static class Program
         {
             try
             {
-                failures += await CheckPaneLayout(filter) + await CheckReloadTakesOnlyWhatTheFileHolds(filter);
+                failures += await CheckPaneLayout(filter) + await CheckReloadTakesOnlyWhatTheFileHolds(filter)
+                            + await CheckUndoGrouping(filter);
                 foreach (var loc in Locations(args.Contains("--share")))
                 {
                     // Asked for and not to be had: a pass that tests nothing must not pass quietly.
@@ -585,6 +586,67 @@ internal static class Program
             s.Unknown = null;
             s.Save();   // so the file holds what the next test starts from, should anything re-read it
         }
+    }
+
+    /// <summary>How typing is grouped into undo steps by the pause setting (Options → Undo grouping).
+    /// The pause is measured between keystrokes, so how long the typing after it goes on doesn't
+    /// count, and a window shorter than the commit delay still splits where it should. Not about
+    /// external changes either. Returns the number of failed cases.</summary>
+    private static async Task<int> CheckUndoGrouping(string filter)
+    {
+        // Each keystroke waits the given number of ms after the one before it. Real time, so the
+        // margins are kept well clear of the windows being tested.
+        var cases = new (string Label, double WindowSeconds, (int Wait, string Text)[] Keys, int Steps)[]
+        {
+            ("[undo] A pause shorter than the window keeps one step, however long the typing after it goes on",
+                1, new[] { (0, "a"), (700, "b"), (300, "c"), (300, "d") }, 1),
+            ("[undo] A pause longer than the window starts a new step",
+                1, new[] { (0, "a"), (1500, "b") }, 2),
+            ("[undo] A window shorter than the commit delay still splits at a pause longer than it",
+                0.3, new[] { (0, "a"), (420, "b") }, 2),
+        };
+        var s = AppSettings.Current;
+        double savedWindow = s.UndoCoalesceSeconds;
+        int failed = 0;
+        foreach (var (label, window, keys, steps) in cases)
+        {
+            if (!label.Contains(filter, StringComparison.OrdinalIgnoreCase))
+                continue;
+            s.UndoCoalesceSeconds = window;
+            var (view, host) = Host();
+            try
+            {
+                foreach (var (wait, text) in keys)
+                {
+                    if (wait > 0)
+                        await Task.Delay(wait);
+                    view.Editor.Select(view.Editor.Text.Length, 0);
+                    view.Editor.SelectedText = text;   // raises TextChanged, as a keystroke does
+                }
+                await Task.Delay(800);   // past the commit delay, so the last keystroke is committed too
+                string typed = view.Editor.Text;
+                int undone = 0;
+                while (view.Editor.Text.Length > 0 && undone < 10)
+                {
+                    view.Undo();
+                    undone++;
+                }
+                Expect(undone == steps, $"typing {Show(typed)} made {undone} undo step(s), not {steps}");
+                Console.WriteLine($"ok   {label}");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"FAIL {label}\n     {(ex is TestFailure ? ex.Message : ex.ToString())}");
+                failed++;
+            }
+            finally
+            {
+                view.Dispose();
+                host.Close();
+                s.UndoCoalesceSeconds = savedWindow;
+            }
+        }
+        return failed;
     }
 
     /// <summary>A setting changed reaches the documents in every window: one another instance saved

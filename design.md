@@ -519,6 +519,22 @@ type, press `Ctrl+End`, type again quickly, and the *pending* diff already spans
 move the caret. It does not end the burst: stepping back over a typo and carrying on is still one
 step, because the correction touches the text just typed.
 
+### The typing pause is measured between keystrokes
+
+The coalescing window (Options → Undo grouping, "after a typing pause of…") is compared against the
+gap from the **last keystroke folded into the burst** to the **first keystroke of the typing now being
+committed** (`_burstLastKeystroke`, `_pendingSince`). It used to be compared against the time between
+two *commits*, and a commit lands a debounce after the last keystroke — so that interval included
+however long the user went on typing after the pause. With a long window this hid; with a one-second
+window, a 0.6-second pause followed by half a second of typing split the step.
+
+The commit debounce is never longer than the window (`Math.Clamp(window, 1, DebounceMs)`): a pause can
+only start a new step if the typing before it has been committed by the time the next keystroke
+arrives, so with a 0.3-second window and a 0.5-second debounce, pauses between the two would merge.
+
+`tests/ExternalChange` checks all three: a pause under the window followed by a long run of typing is
+one step, a pause over it is two, and a window shorter than the debounce still splits.
+
 ## How a term becomes matches
 
 Both panes offer the same three matching options — **case sensitive**, **match whole word only**,
@@ -877,7 +893,9 @@ width rather than its window's, which Windows keeps within the screen. `[setting
 `Reload` takes from a file, and that a change reaches the documents in two real `MainWindow`s; the
 harness merges `Themes/Palette.Base.xaml` and `Themes/Shared.xaml` into its `Application` for them,
 as `App.xaml` does, since running `App` would start the real app. That test runs last: the app ends
-when its last editor window closes.
+when its last editor window closes. `[undo]` tests type into a real view with real delays between
+keystrokes and count the undo steps that result (see "The typing pause is measured between
+keystrokes").
 
 ## The merge viewer's two panes are levelled, not merely paired
 

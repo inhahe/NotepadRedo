@@ -38,14 +38,25 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
 
     private const int DebounceMs = 500;
 
+    /// <summary>The typing pause, in milliseconds, after which the next edit starts a new undo step
+    /// (Options → Undo grouping).</summary>
+    private static double CoalesceWindowMs => AppSettings.Current.UndoCoalesceSeconds * 1000.0;
+
     // ----- Typing-burst coalescing -----
     // Consecutive edits within one continuous typing session are folded into a single history node
     // rather than creating one node per 500ms debounce tick (which used to bury the tree under
     // dozens of near-identical entries). A burst is broken by navigating/undo/redo, by pressing
     // Enter or pasting (when enabled), or by an idle gap longer than the configured coalesce window
     // — each of those starts a fresh checkpoint node. Per-character mode disables coalescing.
+    //
+    // The idle gap is measured between *keystrokes*: from the last edit folded into the burst to the
+    // first edit of the typing being committed now. Commit times won't do — a commit lands a debounce
+    // after the last keystroke, so the gap between two commits includes however long the user went on
+    // typing after the pause, and a short window then splits steps at pauses well under it.
     private UndoNode? _typingNode;         // the leaf node the current burst is being folded into
-    private DateTime _lastEditTime;        // when the last edit was committed/coalesced
+    private DateTime _lastKeystroke;       // the user's most recent edit
+    private DateTime? _pendingSince;       // the first edit not yet committed; null when none is
+    private DateTime _burstLastKeystroke;  // the last edit folded into _typingNode
 
     // ----- Autosave / crash recovery (per document) -----
     private readonly DispatcherTimer _autosave = new();
@@ -417,6 +428,9 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
     {
         if (_suppressTextChange)
             return;
+        var now = DateTime.Now;
+        _pendingSince ??= now;
+        _lastKeystroke = now;
         if (AppSettings.Current.UndoPerCharacter)
         {
             // Every keystroke is its own undo step — commit right away instead of debouncing.
@@ -425,6 +439,9 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
             RaiseAll();
             return;
         }
+        // The commit must come no later than the pause window: a pause can only start a new step if
+        // the typing before it has been committed by the time the next keystroke arrives.
+        _debounce.Interval = TimeSpan.FromMilliseconds(Math.Clamp(CoalesceWindowMs, 1, DebounceMs));
         _debounce.Stop();
         _debounce.Start();
         RaiseAll();
@@ -453,21 +470,25 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
         _navigating = true;
         try
         {
+            // Taken now, whatever happens below: the typing being committed is no longer pending.
+            DateTime? typedSince = _pendingSince;
+            _pendingSince = null;
+
             if (Editor.Text == _currentText)
                 return;   // nothing changed since the last commit
 
             // Fold this edit into the current burst's node when it's still the open typing leaf and
-            // the pause was short; otherwise start a fresh checkpoint node. Per-character mode never
-            // coalesces (every edit is its own node).
-            double windowMs = AppSettings.Current.UndoCoalesceSeconds * 1000.0;
+            // the pause before it was short; otherwise start a fresh checkpoint node. Per-character
+            // mode never coalesces (every edit is its own node).
             bool canCoalesce = !AppSettings.Current.UndoPerCharacter
                                && ReferenceEquals(_tree.Current, _typingNode)
-                               && (DateTime.Now - _lastEditTime).TotalMilliseconds <= windowMs;
+                               && typedSince is { } started
+                               && (started - _burstLastKeystroke).TotalMilliseconds <= CoalesceWindowMs;
 
             if (canCoalesce && _tree.Coalesce(_currentText, Editor.Text, Editor.CaretIndex))
             {
                 _currentText = Editor.Text;
-                _lastEditTime = DateTime.Now;
+                _burstLastKeystroke = _lastKeystroke;
                 RaiseAll();
                 return;
             }
@@ -477,7 +498,7 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
             {
                 _currentText = Editor.Text;
                 _typingNode = node;
-                _lastEditTime = DateTime.Now;
+                _burstLastKeystroke = _lastKeystroke;
                 RebuildHistoryRows();   // a node was added — reflect the new shape in the list
                 SetCurrent(node);
                 RaiseAll();
