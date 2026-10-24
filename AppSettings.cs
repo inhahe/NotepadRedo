@@ -113,7 +113,7 @@ public sealed class AppSettings
 
     /// <summary>How long a typing pause (in seconds) can be before the next edit starts a fresh
     /// undo step. Consecutive edits closer together than this are folded into one node.</summary>
-    public double UndoCoalesceSeconds { get; set; } = 4;
+    public double UndoCoalesceSeconds { get; set; } = 1;
 
     /// <summary>Settings this build doesn't know, read from a file a newer build wrote. Kept and
     /// written back, so saving here doesn't delete them.</summary>
