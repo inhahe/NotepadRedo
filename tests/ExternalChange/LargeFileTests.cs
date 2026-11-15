@@ -48,6 +48,9 @@ internal static class LargeFileTests
             failed += Case(filter, "Replace All gives what replacing in the whole text gives", CheckReplaceAll);
             failed += Case(filter, "Lines appended to the file are indexed without reading it again", CheckAppend);
             failed += Case(filter, "A file another program is writing can't be locked, and is copied instead", CheckLockAndCopy);
+            failed += Case(filter, "Replace All keeps a lone CR inside a line", CheckReplaceKeepsLoneCr);
+            failed += Case(filter, "Changing the line ending rewrites only the breaks, bad bytes and all", CheckConvertKeepsBytes);
+            failed += Case(filter, "A job that fails at once throws its own exception", CheckProgressFailsFast);
         }
         finally
         {
@@ -77,6 +80,9 @@ internal static class LargeFileTests
         yield return Text("UTF-16 BE", "α\nβ\n𝄞", new UnicodeEncoding(true, true), true, new[] { "α", "β", "𝄞" });
         yield return Text("UTF-32", "x\ny", new UTF32Encoding(false, true), true, new[] { "x", "y" });
         yield return ("invalid UTF-8", new byte[] { (byte)'a', 0xFF, (byte)'\n', 0xC3 }, new[] { "a\uFFFD", "\uFFFD" });
+        // An odd byte count: the scan once re-read the last chunk forever, waiting for a whole unit.
+        yield return ("UTF-16 with a stray last byte", new byte[] { 0xFF, 0xFE, (byte)'a', 0, (byte)'\n', 0, (byte)'b', 0, (byte)'c' },
+            new[] { "a", "b\uFFFD" });
     }
 
     private static string Write(byte[] bytes)
@@ -89,6 +95,13 @@ internal static class LargeFileTests
     private static SourceFile OpenIndexed(string path, bool lockFile = false)
     {
         var src = SourceFile.Open(path, lockFile);
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        while (!src.Complete)
+        {
+            if (sw.Elapsed.TotalSeconds > 10)
+                throw new TimeoutException("the index never finished");
+            Thread.Sleep(5);
+        }
         src.WaitForIndex();
         if (src.IndexError is not null)
             throw src.IndexError;
@@ -513,7 +526,20 @@ internal static class LargeFileTests
             return "after text was added to the last line: " + bad2;
         src.RememberTail();
         File.WriteAllText(path, "rewritten entirely, and longer than before\n");
-        return src.TryExtend() ? "a rewrite was taken for an append" : null;
+        if (src.TryExtend())
+            return "a rewrite was taken for an append";
+
+        // Rewritten in place at the same size: not an append, and not a file to lock as indexed.
+        string same = Write(Encoding.UTF8.GetBytes("ERROR one\nERROR two\n"));
+        using var src2 = OpenIndexed(same);
+        src2.RememberTail();
+        var stamp = File.GetLastWriteTimeUtc(same);
+        using (var fs = new FileStream(same, FileMode.Open, FileAccess.Write, FileShare.ReadWrite | FileShare.Delete))
+            fs.Write(Encoding.UTF8.GetBytes("Error"));
+        File.SetLastWriteTimeUtc(same, stamp.AddSeconds(5));
+        if (src2.TryExtend())
+            return "a rewrite at the same size was taken for no change";
+        return src2.TryLock() == LockResult.Changed ? null : "a file rewritten at the same size was locked as if it were what was indexed";
     }
 
     private static string? CheckLockAndCopy()
@@ -522,17 +548,50 @@ internal static class LargeFileTests
         using var src = OpenIndexed(path);
         using (var writer = new FileStream(path, FileMode.Open, FileAccess.Write, FileShare.ReadWrite | FileShare.Delete))
         {
-            if (src.TryLock())
+            if (src.TryLock() != LockResult.InUse)
                 return "locked a file another program has open for writing";
             src.SwitchToCopy(Path.Combine(Dir, "copy.src"), null, CancellationToken.None);
             writer.SetLength(0);   // the other program empties the file
         }
         if (src.LineText(1) != "b")
             return "the copy doesn't read as the file did";
-        if (!src.TryLock())
+        if (src.TryLock() != LockResult.Locked)
             return "a source reading from its copy reports it can't be locked";
         src.Dispose();
         return File.Exists(Path.Combine(Dir, "copy.src")) ? "the copy was left behind" : null;
+    }
+
+    private static string? CheckReplaceKeepsLoneCr()
+    {
+        using var src = OpenIndexed(Write(Encoding.UTF8.GetBytes("progress 10%\rprogress 20% ERROR\nnext\n")));
+        using var doc = new LargeDocument(src);
+        var view = new PieceView(doc.Snapshot());
+        var (start, count, pieces, _) = LargeSearch.ReplaceAll(view, "ERROR", "WARN", new MatchOptions(CaseSensitive: true), null, CancellationToken.None);
+        doc.ReplaceLines(start, count, pieces!, default, default);
+        return Compare(LogicalLines(doc), new[] { "progress 10%\rprogress 20% WARN", "next", "" });
+    }
+
+    private static string? CheckConvertKeepsBytes()
+    {
+        var bytes = new byte[] { (byte)'c', (byte)'a', (byte)'f', 0xE9, (byte)'\n', (byte)'x', 0xFF, (byte)'\n' };
+        using var src = OpenIndexed(Write(bytes));
+        using var doc = new LargeDocument(src);
+        var ms = new MemoryStream();
+        doc.WriteTo(ms, LineEndingStyle.Crlf, convertEndings: true, new LongList(), new LongList(), null, CancellationToken.None);
+        var expected = new byte[] { (byte)'c', (byte)'a', (byte)'f', 0xE9, 13, 10, (byte)'x', 0xFF, 13, 10 };
+        return ms.ToArray().AsSpan().SequenceEqual(expected) ? null
+            : $"wrote [{BitConverter.ToString(ms.ToArray())}], expected [{BitConverter.ToString(expected)}]";
+    }
+
+    private static string? CheckProgressFailsFast()
+    {
+        try
+        {
+            ProgressDialog.Run(null, "t", "m", (_, _) => throw new ArgumentException("bad pattern"), cancellable: false);
+            return "no exception";
+        }
+        catch (ArgumentException) { return null; }
+        catch (Exception ex) { return $"threw {ex.GetType().Name}, not the job's ArgumentException"; }
     }
 
     // ===================== The view =====================
@@ -664,6 +723,9 @@ internal static class LargeFileTests
                     failure = "the recovered document isn't marked unsaved";
                 back.Release();
 
+                // Edits made on a private copy (another program writing the file) are recovered too.
+                failure ??= await RecoverFromCopy(dir, views);
+
                 // The file changes before the next launch: the snapshot's references are void.
                 File.AppendAllText(path, "more\n");
                 try
@@ -685,6 +747,77 @@ internal static class LargeFileTests
         }
         Console.WriteLine(failure is null ? $"ok   {Label}" : $"FAIL {Label}: {failure}");
         return failure is null ? 0 : 1;
+    }
+
+    /// <summary>After the caret moves, typing that follows a pause longer than the undo window is a
+    /// step of its own (the "no keystroke" marker once overflowed into "just now").</summary>
+    public static async Task<int> CheckTypingAfterCaretMove(string filter)
+    {
+        const string Label = "[large] Typing after a caret move and a long pause is its own undo step";
+        if (!Label.Contains(filter, StringComparison.OrdinalIgnoreCase))
+            return 0;
+        string dir = Path.Combine(Path.GetTempPath(), "nr-largeundo-" + Guid.NewGuid().ToString("N")[..8]);
+        Directory.CreateDirectory(dir);
+        string path = Path.Combine(dir, "u.txt");
+        File.WriteAllText(path, "one\ntwo\n");
+        string? failure = null;
+        var view = new LargeFileView();
+        try
+        {
+            view.LoadFile(path);
+            var area = (LargeTextArea)view.FindName("Area");
+            area.Document!.Source.WaitForIndex();
+            await Task.Delay(400);
+            area.Select(new TextPos(0, 3), new TextPos(0, 3));
+            area.InsertText("A", typing: true);
+            area.Select(new TextPos(0, 0), new TextPos(0, 0));   // Home: the caret moves within the line
+            area.Select(new TextPos(0, 4), new TextPos(0, 4));
+            await Task.Delay(TimeSpan.FromSeconds(AppSettings.Current.UndoCoalesceSeconds + 0.5));
+            area.InsertText("B", typing: true);
+            view.Undo();
+            string line = area.Document.GetLine(0);
+            if (line != "oneA")
+                failure = $"one undo left \"{line}\", expected \"oneA\"";
+        }
+        catch (Exception ex) { failure = ex.ToString(); }
+        finally
+        {
+            try { view.Dispose(); } catch { }
+            try { Directory.Delete(dir, recursive: true); } catch { }
+        }
+        Console.WriteLine(failure is null ? $"ok   {Label}" : $"FAIL {Label}: {failure}");
+        return failure is null ? 0 : 1;
+    }
+
+    private static async Task<string?> RecoverFromCopy(string dir, List<LargeFileView> views)
+    {
+        string path = Path.Combine(dir, "written.log");
+        File.WriteAllText(path, string.Concat(Enumerable.Range(0, 3000).Select(i => $"entry {i}\n")));
+        using var writer = new FileStream(path, FileMode.Open, FileAccess.Write, FileShare.ReadWrite | FileShare.Delete);
+        var view = new LargeFileView();
+        views.Add(view);
+        view.LoadFile(path);
+        var area = (LargeTextArea)view.FindName("Area");
+        area.Document!.Source.WaitForIndex();
+        await Task.Delay(400);
+        area.Select(new TextPos(100, 0), new TextPos(100, 5));
+        area.InsertText("ENTRY", typing: true);
+        if (area.Document.Source.CopyPath is null)
+            return "editing a file another program is writing didn't switch to a private copy";
+        string expected = AllText(area.Document);
+        view.FlushRecovery();
+        view.Release();
+        var snap = LargeFileView.ScanRecoveries().SingleOrDefault(s => s.Path == path);
+        if (snap is null)
+            return "no snapshot of the edits made on a private copy";
+        if (!File.Exists(snap.SourcePath))
+            return "the private copy the snapshot refers to was deleted";
+        var back = new LargeFileView();
+        views.Add(back);
+        try { back.LoadRecovered(snap); }
+        catch (Exception ex) { return "edits made on a private copy couldn't be recovered: " + ex.Message; }
+        var backArea = (LargeTextArea)back.FindName("Area");
+        return AllText(backArea.Document!) == expected ? null : "the edits recovered from a private copy aren't the ones made";
     }
 
     /// <summary>Time the large-file operations on a real file (--bench=path): not a pass/fail test.</summary>

@@ -51,15 +51,6 @@ internal sealed class LongList
         Volatile.Write(ref _count, n + 1);
     }
 
-    /// <summary>Forget every entry from <paramref name="count"/> on. Writer only, and only while no
-    /// reader can be looking at the entries removed.</summary>
-    public void TruncateTo(long count)
-    {
-        if (count < 0 || count > _count)
-            throw new ArgumentOutOfRangeException(nameof(count));
-        Volatile.Write(ref _count, count);
-    }
-
     /// <summary>The number of entries below <paramref name="count"/> that are less than
     /// <paramref name="value"/>, for a list kept in ascending order.</summary>
     public long CountBelow(long value, long count)
@@ -122,14 +113,6 @@ internal sealed class TextCodec
         return new() { Encoding = new UTF8Encoding(false), BomLength = 0, Unit = 1, BigEndian = false };
     }
 
-    /// <summary>The bytes of one ASCII character in this encoding.</summary>
-    public byte[] Bytes(char c)
-    {
-        var b = new byte[Unit];
-        b[BigEndian ? Unit - 1 : 0] = (byte)c;
-        return b;
-    }
-
     /// <summary>Whether the code unit at <paramref name="at"/> in <paramref name="data"/> is the
     /// ASCII character <paramref name="c"/>.</summary>
     public bool UnitIs(ReadOnlySpan<byte> data, int at, char c)
@@ -164,6 +147,17 @@ internal sealed class TextCodec
                 return at % Unit == 0;
         }
     }
+}
+
+/// <summary>What <see cref="SourceFile.TryLock"/> found.</summary>
+internal enum LockResult
+{
+    /// <summary>Locked (or reading a private copy, which nobody else writes).</summary>
+    Locked,
+    /// <summary>Another program has the file open for writing.</summary>
+    InUse,
+    /// <summary>The file no longer holds the bytes indexed.</summary>
+    Changed,
 }
 
 /// <summary>Identity and version of a file, read through a handle.</summary>
@@ -204,6 +198,13 @@ internal sealed class SourceFile : IDisposable
     public FileStamp Stamp { get; private set; }
     /// <summary>Whether the handle denies other writers.</summary>
     public bool Locked { get; private set; }
+    /// <summary>
+    /// Set when a save has replaced the file under its name. This handle still reads the old file,
+    /// which no name refers to any more, so nobody can open it to change it: it needs no lock (and
+    /// locking by name would lock the new file instead).
+    /// </summary>
+    public bool Replaced { get; set; }
+
     /// <summary>Set when the file read is a private copy rather than <see cref="Path"/> itself.</summary>
     public string? CopyPath { get; private set; }
 
@@ -305,33 +306,50 @@ internal sealed class SourceFile : IDisposable
 
     /// <summary>
     /// Stop other programs writing to the file, so that the lines an edit refers to stay what they
-    /// are. Returns false when that isn't possible, because a program already has it open for
-    /// writing (a log being written, say).
+    /// are. <see cref="LockResult.InUse"/> when a program already has it open for writing (a log
+    /// being written, say); <see cref="LockResult.Changed"/> when the bytes indexed are no longer
+    /// what the file holds, so the index must be rebuilt before anything refers to it.
     /// </summary>
-    public bool TryLock()
+    public LockResult TryLock()
     {
-        if (Locked || CopyPath is not null)
-            return true;
+        if (Locked || CopyPath is not null || Replaced)
+            return LockResult.Locked;
+        if (!StillIndexed())
+            return LockResult.Changed;
         SafeFileHandle locked;
         try { locked = OpenHandle(Path, lockFile: true); }
-        catch (IOException) { return false; }
-        catch (UnauthorizedAccessException) { return false; }
-        if (StampOf(locked) is var s && (s.FileId != Stamp.FileId || s.Volume != Stamp.Volume
-                                         || s.Length < IndexedLength))
+        catch (IOException) { return LockResult.InUse; }
+        catch (UnauthorizedAccessException) { return LockResult.InUse; }
+        var s = StampOf(locked);
+        // The name may now hold another file; and a write could have landed between the check above
+        // and the lock, so the check is made again once nobody else can write.
+        if (s.FileId != Stamp.FileId || s.Volume != Stamp.Volume || !StillIndexed(s))
         {
-            locked.Dispose();   // the name now holds another file, or a shorter one: not ours to lock
-            return false;
+            locked.Dispose();
+            return LockResult.Changed;
         }
         SwapHandle(locked);
         Locked = true;
-        return true;
+        return LockResult.Locked;
+    }
+
+    /// <summary>
+    /// Whether the file still holds the bytes indexed: unchanged since its stamp, or only appended
+    /// to (the last bytes indexed are still there). A rewrite in place, even at the same size, is not.
+    /// </summary>
+    public bool StillIndexed(FileStamp? now = null)
+    {
+        var s = now ?? StampOf(CurrentHandle());
+        if (s.Length == Stamp.Length && s.LastWriteUtc == Stamp.LastWriteUtc)
+            return true;
+        return s.Length >= IndexedLength && TailMatches();
     }
 
     /// <summary>Let other programs write again (the document no longer refers to these lines, or the
     /// user turned locking off while nothing does).</summary>
     public void Unlock()
     {
-        if (!Locked || CopyPath is not null)
+        if (!Locked || CopyPath is not null || Replaced)
             return;
         try
         {
@@ -347,10 +365,13 @@ internal sealed class SourceFile : IDisposable
     /// must refer to its lines. Only the bytes indexed are copied, so a program that is appending
     /// to the file meanwhile doesn't disturb it. Runs on the calling thread.
     /// </summary>
+    /// <exception cref="InvalidOperationException">The file no longer holds the bytes indexed.</exception>
     public void SwitchToCopy(string copyPath, IProgress<double>? progress, CancellationToken ct)
     {
         if (CopyPath is not null)
             return;
+        if (!StillIndexed())
+            throw new InvalidOperationException("The file was changed by another program.");
         long length = IndexedLength;
         var buffer = new byte[ReadChunk];
         using (var output = new FileStream(copyPath, FileMode.Create, FileAccess.Write, FileShare.None))
@@ -367,9 +388,18 @@ internal sealed class SourceFile : IDisposable
                 progress?.Report((double)pos / Math.Max(1, length));
             }
         }
+        // Copied while a program could still write: if it rewrote what was indexed meanwhile, the
+        // copy holds a mixture, so the copy is checked against the original's end once more.
+        if (!StillIndexed())
+        {
+            try { File.Delete(copyPath); } catch { }
+            throw new InvalidOperationException("The file was changed by another program while it was being copied.");
+        }
         var copy = File.OpenHandle(copyPath, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete);
         SwapHandle(copy);
         CopyPath = copyPath;
+        // From now on the stamp is the copy's: it is what a recovery snapshot refers to.
+        Stamp = StampOf(copy);
     }
 
     private void SwapHandle(SafeFileHandle handle)
@@ -433,11 +463,13 @@ internal sealed class SourceFile : IDisposable
                 int want = (int)Math.Min(chunk, fileLength - chunkStart);
                 chunk = ReadChunk;
                 int got = Read(chunkStart, buffer.AsSpan(0, want));
-                if (got <= 0)
-                    break;
                 got -= got % unit;
-                var data = new ReadOnlySpan<byte>(buffer, 0, got);
                 long chunkEnd = chunkStart + got;
+                // Nothing new read: the file ends in part of a code unit (a UTF-16 file of odd
+                // length), or it became shorter while it was read. Either way the scan is over.
+                if (chunkEnd <= pos)
+                    break;
+                var data = new ReadOnlySpan<byte>(buffer, 0, got);
 
                 if (!decidedMode)
                 {
@@ -481,7 +513,16 @@ internal sealed class SourceFile : IDisposable
                 pos = chunkEnd;
                 Volatile.Write(ref _length, chunkEnd);
             }
-            Volatile.Write(ref _length, Math.Max(Volatile.Read(ref _length), Math.Min(pos, fileLength)));
+            if (pos < fileLength)
+            {
+                // Stopped short. Bytes that make up no whole code unit still belong to the last line
+                // (they are saved as they are); a file that shrank under the scan can't be trusted.
+                long actual = RandomAccess.GetLength(CurrentHandle());
+                if (actual < fileLength)
+                    throw new IOException("The file became shorter while it was being read.");
+                pos = fileLength;
+            }
+            Volatile.Write(ref _length, pos);
             _complete = true;
         }
         catch (OperationCanceledException) { }
@@ -529,11 +570,13 @@ internal sealed class SourceFile : IDisposable
         if (!_complete || IndexError is not null || CopyPath is not null)
             return false;
         long old = IndexedLength;
-        long now = RandomAccess.GetLength(CurrentHandle());
+        var stamp = StampOf(CurrentHandle());
+        long now = stamp.Length;
         if (now < old)
             return false;
+        // An append always makes the file longer: written to at the same length is a rewrite.
         if (now == old)
-            return true;
+            return stamp.LastWriteUtc == Stamp.LastWriteUtc;
         if (!TailMatches())
             return false;
         _extendFloor = _starts.Count;
@@ -734,8 +777,6 @@ internal sealed class SourceFile : IDisposable
 
     /// <summary>Whether <paramref name="s"/> names the same file as this one was opened on.</summary>
     public bool SameFile(FileStamp s) => s.FileId == Stamp.FileId && s.Volume == Stamp.Volume;
-
-    public void RefreshStamp() => Stamp = StampOf(CurrentHandle());
 
     /// <summary>
     /// A source read from a private copy <paramref name="copyPath"/> of <paramref name="originalPath"/>

@@ -952,9 +952,12 @@ Everything for it is in `LargeText/`:
 - **`LargeSearch`: search and replace by block.** Lines are taken about a megabyte at a time (a
   run of unedited lines is decoded in one call), joined with `\n`, and searched with
   `SearchEngine.Occurrences`, so the options mean what they mean in the full editor. A block ends
-  at a real line break, so only a regex spanning more lines than a block holds can miss. Replace
-  All runs `ReplaceEngine.Find` per block and builds new lines only for lines that change, keeping
-  the rest as the pieces they were, then applies everything as one undo step. Both run on a frozen
+  at a real line break, so a match within a line is never missed; a regex match spanning a break
+  is, where that break falls between two blocks (KNOWN-ISSUES). Searching backwards reads blocks
+  of 4096 lines ending at the caret. Replace All runs `ReplaceEngine.Find` per block and builds new
+  lines only for lines that change, keeping the rest as the pieces they were, then applies
+  everything as one undo step. The new lines break where the block had a line break and where a
+  replacement has one, never at a lone CR inside a line. Both run on a frozen
   snapshot of the piece list (`PieceView`) on the thread pool; results are dropped if the document
   changed meanwhile.
 - **`LargeTextArea`: the view.** Draws only the lines in view with WPF's `TextFormatter`, caching
@@ -966,18 +969,29 @@ Everything for it is in `LargeText/`:
 
 A piece that refers to a source's lines is only right while the file's bytes are. So:
 
-- **Before the first edit** (`Area_BeforeEdit`) the file is locked against other writers
+- **Before the first edit** (`EnsureProtected`) the file is locked against other writers
   (`SourceFile.TryLock` reopens it sharing read and delete only; delete, so that a save can rename
   over it). If a program already has it open for writing (a log being written), it can't be
   locked, and the document switches to a **private copy** of the bytes indexed so far, made in
-  `recovery\large\<id>.src` with a progress window, before the edit happens. A program appending
+  `recovery\large\` with a progress window, before the edit happens. A program appending
   meanwhile doesn't matter: only the indexed bytes are copied, and appends don't change them.
+  Either way the file is first checked to still hold what was indexed (`StillIndexed`: the same
+  stamp, or longer with the last 4 KB indexed unchanged); one rewritten since, even at the same
+  size, is read again instead, and the edit is dropped with a message.
+- **Undo and redo protect too** (`MoveInHistory`): undoing past a save brings back lines of a file
+  that was reopened unlocked, or left at its old path by Save As (which unlocks it). A file a save
+  replaced needs nothing: its handle reads the old file, which no name reaches (`Replaced`). If a
+  source can't be protected, the move is taken back.
+- **Long jobs hold off the checks** (`Busy`): a save, the private copy and Replace All show a
+  progress window that pumps messages, and a file check run meanwhile could extend or reload the
+  very source the job reads.
 - **Without unsaved edits the document follows the file.** It is polled by name once a second (a
   share may send no change notifications, and only a probe by name sees a file replaced by a
   rename). Bytes appended are indexed from where the scan stopped, after checking the last 4 KB
   indexed still match (`TryExtend`); anything else is a rewrite and the file is read again.
-  "Follow end of file" keeps the last line in view as lines arrive, like `tail -f`. A check begun
-  before a save or reload is dropped (`_fileGeneration`): it may have seen the file mid-replace.
+  "Follow end of file" keeps the last line in view as lines arrive, like `tail -f`. The same
+  length with a new write time is a rewrite, not an append. A check begun before a save, reload
+  or other long job is dropped (`_fileGeneration`): it may have seen the file mid-replace.
 - **With unsaved edits**, a change on disk is only noted in the banner, and saving asks before
   writing over it.
 
@@ -986,7 +1000,7 @@ A piece that refers to a source's lines is only right while the file's bytes are
 `LargeDocument.WriteTo` streams the document to a temporary file beside the target: unedited runs
 are copied as raw bytes, breaks and all (a mixed-ending file stays mixed), and typed lines are
 encoded with the document's line ending. Choosing another ending under Format → Line endings
-rewrites every break. Fix-ups at the edges: the source's last line, which had no break, gets one
+rewrites every break, and only the breaks: each line's bytes are still copied as they are. Fix-ups at the edges: the source's last line, which had no break, gets one
 when something now follows it, and the document's last line gets none. The temporary file then
 replaces the target (`File.Replace`, which keeps its attributes and permissions; an overwriting
 rename where that fails). The file written needs no scan: `WriteTo` records each line's offset as
@@ -1001,8 +1015,12 @@ the job takes more than 300 ms.
 A crash snapshot (`recovery\large\<id>.json`, written on the autosave timer from a snapshot of
 the pieces, on the thread pool) records the source's identity (size, write time, file id) and the
 pieces in order, as line ranges of the source or as the lines typed. It is the size of the edits,
-not of the file. Recovering opens the source, refuses if its identity changed (the references
-would point at other text), and replays the pieces as one undoable edit. A tab dragged to another
+not of the file. For a document on a private copy, the source is the copy, and its stamp the
+copy's. Recovering opens the source, refuses if its identity changed (the references would point
+at other text: the snapshot is then deleted), and replays the pieces as one undoable edit. A
+source that can't be opened or protected now (a share offline, a writer that can't be copied
+around) keeps the snapshot for the next launch. A window released without a snapshot (nothing
+unsaved) deletes its private copies. A tab dragged to another
 process carries only the path, and only without unsaved edits: the edits refer to lines this
 process has open.
 
@@ -1062,7 +1080,7 @@ set, so a scratch folder can never receive the user's real data.
 | `session.json` | `SessionStore` | Paths of open *saved* files, for session restore. |
 | `recent.json` | `RecentFiles` | Up to 15 most-recently-opened paths for File → Open Recent. Re-read before each write so concurrent instances merge instead of clobbering; raises `Changed` so open windows rebuild their submenu. **`Changed` may be raised on a background thread** — handlers that touch UI must marshal to the dispatcher. |
 | `recovery\` | `EditorView` | Crash-recovery snapshots — this is where *unsaved* and untitled work lives, including for titled documents. |
-| `recovery\large\` | `LargeFileView` | Crash snapshots of large files (pieces referring to the file's lines), and private copies of files being written by another program (`<id>.src`). |
+| `recovery\large\` | `LargeFileView` | Crash snapshots of large files (pieces referring to the file's lines), and private copies of files being written by another program (`<id>.<n>.src`). |
 | `history\` | `HistoryStore` | Optional persisted undo trees, keyed to the file's on-disk content; pruned after 90 days. |
 | `crash.log` | `CrashLog` | Every unhandled exception with a full traceback. |
 

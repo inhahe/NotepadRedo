@@ -53,8 +53,6 @@ internal sealed class Piece
         return new(null, 0, lines, offset, count, joined);
     }
 
-    public bool IsSource => Src is not null;
-
     /// <summary>Lines [<paramref name="from"/>, from + <paramref name="count"/>) of this piece.</summary>
     public Piece Slice(long from, long count)
     {
@@ -402,9 +400,6 @@ internal sealed class LargeDocument : IDisposable
         return r.After;
     }
 
-    /// <summary>Lines from the start of the undo step about to be undone or redone, for scrolling to it.</summary>
-    public long? NextUndoLine => CanUndo ? _history[_history.Count - _undone - 1].Start : null;
-
     private TextPos Clamp(TextPos p)
     {
         long line = Math.Clamp(p.Line, 0, Math.Max(0, LineCount - 1));
@@ -560,25 +555,48 @@ internal sealed class LargeDocument : IDisposable
                 continue;
             }
 
+            if (p.Src is { } cs)
+            {
+                // Every break rewritten: each line's own bytes, then the new break. The bytes are
+                // copied rather than decoded and encoded again, so nothing but the breaks changes
+                // (bytes that aren't valid in the encoding included).
+                for (long k = 0; k < p.Count;)
+                {
+                    ct.ThrowIfCancellationRequested();
+                    long first = p.Start + k;
+                    int n = cs.LinesWithin(first, (int)Math.Min(p.Count - k, int.MaxValue), buffer.Length);
+                    long from = cs.LineStart(first);
+                    int span = (int)(cs.LineEnd(first + n - 1) - from);
+                    var run = span <= buffer.Length ? buffer : new byte[span];   // one line longer than the buffer
+                    int got = cs.Read(from, run.AsSpan(0, span));
+                    if (got < span)
+                        throw new IOException($"{cs.Path} could not be read past byte {from + got:N0}.");
+                    for (int i = 0; i < n; i++, k++, line++)
+                    {
+                        long sl = first + i;
+                        var lb = run.AsSpan((int)(cs.LineStart(sl) - from), (int)(cs.LineEnd(sl) - cs.LineStart(sl)));
+                        int term = cs.TerminatorLength(sl, lb);
+                        starts.Add(pos);
+                        Put(lb[..^term]);
+                        written += lb.Length;
+                        if (cs.IsJoined(sl))
+                            joined.Add(line);
+                        else if (line + 1 < total)
+                            Put(newline);
+                    }
+                    progress?.Report((double)written / budget);
+                }
+                continue;
+            }
+
             for (long k = 0; k < p.Count; k++, line++)
             {
                 if ((k & 0xFFF) == 0)
                     ct.ThrowIfCancellationRequested();
                 starts.Add(pos);
-                string text;
-                bool isJoined;
-                if (p.Src is { } s)
-                {
-                    long sl = p.Start + k;
-                    text = _cache.TryGet(s, sl, out var cached) ? cached : s.LineText(sl);
-                    isJoined = s.IsJoined(sl);
-                }
-                else
-                {
-                    var el = p.Lines![p.Offset + (int)k];
-                    text = el.Text;
-                    isJoined = el.Joined;
-                }
+                var el = p.Lines![p.Offset + (int)k];
+                string text = el.Text;
+                bool isJoined = el.Joined;
                 var bytes = enc.GetBytes(text);
                 Put(bytes);
                 written += bytes.Length;
@@ -644,8 +662,12 @@ internal sealed class LargeDocument : IDisposable
             }
     }
 
-    /// <summary>Whether a source is still needed by the document or its history.</summary>
-    public IReadOnlyList<SourceFile> Sources => _sources;
+    /// <summary>The sources the document's lines are read from now (not those only its history keeps).</summary>
+    public IEnumerable<SourceFile> CurrentSources() =>
+        _pieces.Where(p => p.Src is not null).Select(p => p.Src!).Distinct();
+
+    /// <summary>The sources kept, besides <see cref="Source"/>, only for the undo history.</summary>
+    public IEnumerable<SourceFile> OlderSources() => _sources.Where(s => !ReferenceEquals(s, Source));
 
     public void MarkSaved()
     {

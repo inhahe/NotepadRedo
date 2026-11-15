@@ -98,8 +98,8 @@ internal sealed class PieceView
 /// lines are taken a block at a time and searched with <see cref="SearchEngine"/> and
 /// <see cref="ReplaceEngine"/>, the same code the ordinary editor uses, so an option means the same
 /// thing in both. A block is a run of whole lines joined with "\n" (so <c>^</c> and <c>$</c> work
-/// per line) and ends at a real line break, so no match is lost at a block boundary unless a regex
-/// spans more lines than a block holds.
+/// per line) and ends at a real line break, so a match within a line is never lost; one that spans
+/// a line break is missed where that break falls between two blocks (see KNOWN-ISSUES.md).
 /// </summary>
 internal static class LargeSearch
 {
@@ -131,9 +131,6 @@ internal static class LargeSearch
             return new TextPos(FirstLine + i, Math.Min(index - LineStarts[i], LineLength(i)));
         }
 
-        /// <summary>The position of the end of a match: a match that took a line's break ends at
-        /// the start of the next line.</summary>
-        public TextPos EndPosAt(int index) => PosAt(index);
     }
 
     /// <summary>Accumulates a block's text: lines separated by "\n", and a joined line by nothing.
@@ -144,6 +141,8 @@ internal static class LargeSearch
         private bool _pendingBreak;
 
         public int Length => _sb.Length;
+        /// <summary>The last line added is joined to the next.</summary>
+        public bool LastJoined => !_pendingBreak && block.LineStarts.Count > 0;
 
         public void Add(ReadOnlySpan<char> line, bool joined)
         {
@@ -159,17 +158,21 @@ internal static class LargeSearch
     }
 
     /// <summary>Build the block of lines starting at <paramref name="first"/>.</summary>
-    internal static Block ReadBlock(PieceView view, long first, int maxChars = BlockChars)
+    /// <param name="endLine">Read no line at or past this one.</param>
+    internal static Block ReadBlock(PieceView view, long first, int maxChars = BlockChars, long endLine = long.MaxValue)
     {
         var block = new Block { FirstLine = first };
         var builder = new BlockBuilder(block);
         long line = first;
         var text = new List<string>(ReadBatch);
         var joined = new List<bool>(ReadBatch);
-        while (line < view.LineCount && builder.Length < maxChars)
+        long end = Math.Min(endLine, view.LineCount);
+        // Full once past the size, but a run of joined segments may carry on to its real line break,
+        // up to four times the size.
+        while (line < end && (builder.Length < maxChars || builder.LastJoined && builder.Length < maxChars * 4L))
         {
             var (piece, offset) = view.PieceAt(line);
-            long left = piece.Count - offset;
+            long left = Math.Min(piece.Count - offset, end - line);
             // Lines on disk with no cut among them: decode the whole run of bytes at once.
             if (piece.Src is { } src && piece.JoinedCount == 0)
             {
@@ -266,7 +269,7 @@ internal static class LargeSearch
             foreach (var m in SearchEngine.Occurrences(block.Text, term, opt, allowOverlap: true))
             {
                 var s = block.PosAt(m.Start);
-                var e = block.EndPosAt(m.End);
+                var e = block.PosAt(m.End);
                 list.Add(new LargeMatch(s.Line, s.Col, e.Line, e.Col));
                 if (++found >= cap)
                 {
@@ -307,7 +310,7 @@ internal static class LargeSearch
                         continue;
                     if (wrapped && s >= from)
                         return null;
-                    var e = block.EndPosAt(m.End);
+                    var e = block.PosAt(m.End);
                     return new LargeMatch(s.Line, s.Col, e.Line, e.Col);
                 }
                 scanned += block.LineStarts.Count;
@@ -335,7 +338,7 @@ internal static class LargeSearch
             {
                 ct.ThrowIfCancellationRequested();
                 long start = Math.Max(0, end - Step);
-                var block = ReadBlock(view, start, int.MaxValue / 8);
+                var block = ReadBlock(view, start, int.MaxValue / 8, endLine: end);
                 LargeMatch? best = null;
                 foreach (var m in SearchEngine.Occurrences(block.Text, term, opt, allowOverlap: true))
                 {
@@ -346,7 +349,7 @@ internal static class LargeSearch
                         break;
                     if (wrapped && s <= from)
                         continue;
-                    var e = block.EndPosAt(m.End);
+                    var e = block.PosAt(m.End);
                     best = new LargeMatch(s.Line, s.Col, e.Line, e.Col);
                 }
                 if (best is not null)
@@ -405,12 +408,12 @@ internal static class LargeSearch
                 while (mi < matches.Count)
                 {
                     var s = block.PosAt(matches[mi].Start);
-                    var e = block.EndPosAt(matches[mi].End);
+                    var e = block.PosAt(matches[mi].End);
                     long runFirst = s.Line, runLast = e.Line;
                     int mj = mi + 1;
                     while (mj < matches.Count && block.PosAt(matches[mj].Start).Line <= runLast)
                     {
-                        runLast = Math.Max(runLast, block.EndPosAt(matches[mj].End).Line);
+                        runLast = Math.Max(runLast, block.PosAt(matches[mj].End).Line);
                         mj++;
                     }
                     if (firstChanged < 0)
@@ -425,16 +428,45 @@ internal static class LargeSearch
                     int i0 = (int)(runFirst - block.FirstLine), i1 = (int)(runLast - block.FirstLine);
                     int textStart = block.LineStarts[i0];
                     int textEnd = block.LineStarts[i1] + block.LineLength(i1);
-                    var sb = new StringBuilder();
+                    // The new lines. The original text breaks only where the block put a line break,
+                    // so a lone CR inside a line stays inside it; a replacement breaks at each of its
+                    // CRLF, LF and CR, as typed text does.
+                    var lines = new List<string>();
+                    var cur = new StringBuilder();
+                    void Original(int from, int to)
+                    {
+                        int pos = from;
+                        for (int k = i0 + 1; k <= i1; k++)
+                        {
+                            int sep = block.LineStarts[k] - 1;
+                            if (block.Joined[k - 1] || sep < from || sep >= to)
+                                continue;
+                            cur.Append(block.Text, pos, sep - pos);
+                            lines.Add(cur.ToString());
+                            cur.Clear();
+                            pos = sep + 1;
+                        }
+                        cur.Append(block.Text, pos, Math.Max(0, to - pos));
+                    }
+                    void Replacement(string text)
+                    {
+                        var parts = LargeDocument.SplitLines(text);
+                        cur.Append(parts[0]);
+                        for (int k = 1; k < parts.Count; k++)
+                        {
+                            lines.Add(cur.ToString());
+                            cur.Clear().Append(parts[k]);
+                        }
+                    }
                     int at = textStart;
                     for (int k = mi; k < mj; k++)
                     {
-                        sb.Append(block.Text, at, matches[k].Start - at);
-                        sb.Append(matches[k].Replacement);
+                        Original(at, matches[k].Start);
+                        Replacement(matches[k].Replacement);
                         at = matches[k].End;
                     }
-                    sb.Append(block.Text, at, Math.Max(0, textEnd - at));
-                    var lines = LargeDocument.SplitLines(sb.ToString());
+                    Original(at, textEnd);
+                    lines.Add(cur.ToString());
                     for (int k = 0; k < lines.Count; k++)
                         pending.Add(new ELine(lines[k], k == lines.Count - 1 && block.Joined[i1]));
                     replaced += mj - mi;

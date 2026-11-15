@@ -255,6 +255,16 @@ public partial class MainWindow : Window
         {
             var view = new LargeFileView();
             try { view.LoadRecovered(snap); }
+            catch (Exception ex) when (ex is not InvalidOperationException)
+            {
+                // The file can't be read or protected now (a share offline, say): keep the snapshot,
+                // which is offered again next time.
+                view.Release();
+                ThemedDialog.Show(this, $"Unsaved edits to {snap.Path} can't be recovered now, and will be offered again " +
+                    $"next time NotepadRedo starts.\n\n{ex.Message}",
+                    "NotepadRedo — Recover unsaved work", MessageBoxButton.OK, MessageBoxImage.Warning);
+                continue;
+            }
             catch (Exception ex)
             {
                 LargeFileView.DiscardRecovery(snap);

@@ -39,8 +39,9 @@ internal sealed class LargeTextArea : FrameworkElement
     private bool _selectingLines;
     private TextPos _lineSelectOrigin;
     private Point _lastMouse;
-    private long _lastKeystrokeMs = long.MinValue;
-    private long _cachedVersion = -1;
+    /// <summary>When the last keystroke that may still join the open undo step landed; null after
+    /// anything that ends that step (a caret move, a paste, undo).</summary>
+    private long? _lastKeystrokeMs;
 
     public LargeTextArea()
     {
@@ -187,6 +188,7 @@ internal sealed class LargeTextArea : FrameworkElement
         Anchor = _doc.ClampPos(anchor);
         Caret = _doc.ClampPos(caret);
         _desiredX = -1;
+        _lastKeystrokeMs = null;   // moved elsewhere (a search, go to line): typing starts a new step
         AfterCaretMove(scroll);
     }
 
@@ -406,12 +408,9 @@ internal sealed class LargeTextArea : FrameworkElement
         dc.DrawRectangle(Background, null, new Rect(size));
         if (_doc is null)
             return;
-        if (_cachedVersion != _doc.Version)
-        {
-            // Text strings decide reuse, so stale entries are harmless; dropping them bounds memory.
-            _cachedVersion = _doc.Version;
-            TrimCache();
-        }
+        // Laid-out lines are reused by their text, so stale entries are harmless; dropping those far
+        // from the view bounds the memory scrolling through a file would otherwise accumulate.
+        TrimCache();
 
         double gutter = GutterWidth;
         double ppd = PixelsPerDip;
@@ -582,7 +581,7 @@ internal sealed class LargeTextArea : FrameworkElement
         bool join = typing && !s.UndoPerCharacter && now - _lastKeystrokeMs <= s.UndoCoalesceSeconds * 1000;
         if (typing && s.UndoBreakOnEnter && (text == "\r\n" || text == "\n"))
             join = false;
-        _lastKeystrokeMs = typing ? now : long.MinValue;
+        _lastKeystrokeMs = typing ? now : null;
         var end = _doc!.Replace(SelectionStart, SelectionEnd, text, (Anchor, Caret), typing, join);
         Anchor = Caret = end;
         _desiredX = -1;
@@ -617,22 +616,29 @@ internal sealed class LargeTextArea : FrameworkElement
     /// <summary>Undo or redo moved the text: show the selection it restored.</summary>
     public void AfterHistoryMove((TextPos Anchor, TextPos Caret) sel)
     {
-        _lastKeystrokeMs = long.MinValue;
+        _lastKeystrokeMs = null;
         Anchor = _doc!.ClampPos(sel.Anchor);
         Caret = _doc.ClampPos(sel.Caret);
         _desiredX = -1;
         AfterEdit();
     }
 
-    public void Copy()
+    /// <summary>Copy the selection to the clipboard; false (having said why) when it couldn't be.</summary>
+    public bool Copy()
     {
         if (_doc is null || !HasSelection)
-            return;
-        try { Clipboard.SetText(_doc.GetText(SelectionStart, SelectionEnd)); }
-        catch (Exception ex) when (ex is System.Runtime.InteropServices.COMException or OutOfMemoryException)
+            return false;
+        try
+        {
+            Clipboard.SetText(_doc.GetText(SelectionStart, SelectionEnd));
+            return true;
+        }
+        catch (Exception ex) when (ex is System.Runtime.InteropServices.COMException or OutOfMemoryException
+                                       or ArgumentOutOfRangeException)
         {
             ThemedDialog.Show(Window.GetWindow(this), "The selection could not be copied: " + ex.Message,
                 "Copy failed", MessageBoxButton.OK, MessageBoxImage.Error);
+            return false;
         }
     }
 
@@ -640,12 +646,12 @@ internal sealed class LargeTextArea : FrameworkElement
     {
         if (!HasSelection)
             return;
-        Copy();
-        if (!CanEdit())
+        // Nothing is deleted that didn't reach the clipboard.
+        if (!Copy() || !CanEdit())
             return;
         var end = _doc!.Replace(SelectionStart, SelectionEnd, "", (Anchor, Caret));
         Anchor = Caret = end;
-        _lastKeystrokeMs = long.MinValue;
+        _lastKeystrokeMs = null;
         AfterEdit();
     }
 
@@ -657,7 +663,7 @@ internal sealed class LargeTextArea : FrameworkElement
         if (string.IsNullOrEmpty(text))
             return;
         InsertText(text, typing: !AppSettings.Current.UndoBreakOnPaste);
-        _lastKeystrokeMs = long.MinValue;
+        _lastKeystrokeMs = null;
     }
 
     public void SelectAll()
@@ -679,7 +685,7 @@ internal sealed class LargeTextArea : FrameworkElement
             return mi;
         }
         var cut = Item("Cu_t", "Ctrl+X", Cut);
-        var copy = Item("_Copy", "Ctrl+C", Copy);
+        var copy = Item("_Copy", "Ctrl+C", () => Copy());
         Item("_Paste", "Ctrl+V", Paste);
         menu.Items.Add(new Separator());
         Item("Select _All", "Ctrl+A", SelectAll);
@@ -761,7 +767,7 @@ internal sealed class LargeTextArea : FrameworkElement
             Anchor = p;
         if (!keepX)
             _desiredX = -1;
-        _lastKeystrokeMs = long.MinValue;
+        _lastKeystrokeMs = null;
         AfterCaretMove(scroll: true);
     }
 
@@ -889,7 +895,7 @@ internal sealed class LargeTextArea : FrameworkElement
         var pt = e.GetPosition(this);
         var pos = PositionAt(pt);
         bool shift = Keyboard.Modifiers.HasFlag(ModifierKeys.Shift);
-        _lastKeystrokeMs = long.MinValue;
+        _lastKeystrokeMs = null;
 
         if (pt.X < GutterWidth)
         {

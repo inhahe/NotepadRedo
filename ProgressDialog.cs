@@ -27,7 +27,9 @@ internal static class ProgressDialog
         var reporter = new Reporter(f => Volatile.Write(ref fraction, f));
         var task = Task.Run(() => work(reporter, cts.Token), cts.Token);
 
-        if (!task.Wait(Grace))
+        // Waits without throwing: a job that fails at once rethrows its own exception below, not
+        // one wrapped in an AggregateException.
+        if (!((IAsyncResult)task).AsyncWaitHandle.WaitOne(Grace))
         {
             var bar = new ProgressBar { Height = 16, Minimum = 0, Maximum = 1, Margin = new Thickness(0, 10, 0, 0) };
             var panel = new StackPanel { Margin = new Thickness(18) };

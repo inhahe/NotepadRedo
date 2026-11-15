@@ -52,7 +52,7 @@ public partial class LargeFileView : UserControl, IDocumentView
     private int _polling;
     /// <summary>Bumped by every save and reload, so a check of the file begun before one is dropped.</summary>
     private int _fileGeneration;
-    private bool _saving;
+    private int _busy;
 
     private CancellationTokenSource? _searchCts;
     private readonly ResultsSource _results;
@@ -114,11 +114,24 @@ public partial class LargeFileView : UserControl, IDocumentView
     public void LoadFile(string path)
     {
         _path = Path.GetFullPath(path);
-        var src = SourceFile.Open(_path, AppSettings.Current.LockFileWhileOpen);
+        var src = OpenSource(_path);
         src.WaitForFirstLines(500, TimeSpan.FromMilliseconds(200));
         Attach(new LargeDocument(src));
         _diskStamp = src.Stamp;
         StartWatching();
+    }
+
+    /// <summary>Open a file, locked when Options → Lock open files asks for it. A file another program
+    /// has open for writing can't be locked; it opens unlocked, as the full editor does, and an
+    /// edit then works on a private copy (see <see cref="Area_BeforeEdit"/>).</summary>
+    private static SourceFile OpenSource(string path)
+    {
+        if (AppSettings.Current.LockFileWhileOpen)
+        {
+            try { return SourceFile.Open(path, lockFile: true); }
+            catch (IOException) when (File.Exists(path)) { }
+        }
+        return SourceFile.Open(path, lockFile: false);
     }
 
     private void Attach(LargeDocument doc)
@@ -170,6 +183,12 @@ public partial class LargeFileView : UserControl, IDocumentView
                 _lineEnding = _savedLineEnding;
         }
         Area.IsReadOnly = false;
+        if (_pendingPlace is { } place)
+        {
+            _pendingPlace = null;
+            Area.Select(place.Caret, place.Caret, scroll: false);
+            Area.ScrollTo(place.TopLine);
+        }
         if (IsSearchOpen && _resultsVersion != _doc.Version)
             RunSearch();
         RaiseAll();
@@ -215,7 +234,7 @@ public partial class LargeFileView : UserControl, IDocumentView
             // it: the next one will tell.
             try
             {
-                if (!_saving && generation == _fileGeneration)
+                if (_busy == 0 && generation == _fileGeneration)
                     HandleProbe(probe, exists);
             }
             catch (Exception ex) { CrashLog.Log("Checking a large file for changes failed", ex); }
@@ -244,6 +263,8 @@ public partial class LargeFileView : UserControl, IDocumentView
             if (!_doc.HasEdits && src.SameFile(s) && s.Length >= src.IndexedLength && src.TryExtend())
             {
                 _diskStamp = s;
+                // No edits until the new lines are in: an edit's lock or copy needs a finished index.
+                Area.IsReadOnly = !src.Complete;
                 _indexTimer.Start();
                 return;
             }
@@ -261,7 +282,7 @@ public partial class LargeFileView : UserControl, IDocumentView
     private void Reload()
     {
         SourceFile fresh;
-        try { fresh = SourceFile.Open(_path, AppSettings.Current.LockFileWhileOpen); }
+        try { fresh = OpenSource(_path); }
         catch (Exception ex)
         {
             ShowNotice("The file changed on disk but couldn't be read again: " + ex.Message);
@@ -290,7 +311,10 @@ public partial class LargeFileView : UserControl, IDocumentView
     {
         var src = _doc.Source;
         if (AppSettings.Current.LockFileWhileOpen)
-            src.TryLock();
+        {
+            if (src.Complete && src.TryLock() == LockResult.Changed)
+                Reload();
+        }
         else if (!_doc.HasEdits)
             src.Unlock();   // while edits refer to its lines, the lock is what keeps them valid
     }
@@ -304,18 +328,44 @@ public partial class LargeFileView : UserControl, IDocumentView
     /// </summary>
     private void Area_BeforeEdit(object? sender, CancelEventArgs e)
     {
-        var src = _doc.Source;
-        if (src.Locked || src.CopyPath is not null || src.TryLock())
-            return;
+        if (!EnsureProtected(_doc.Source))
+            e.Cancel = true;
+    }
+
+    /// <summary>
+    /// Make sure the lines of <paramref name="src"/> can't change while the document refers to
+    /// them: lock it, or read from a private copy when another program is writing to it. False when
+    /// neither could be done, or the file had already changed, in which case (with no unsaved work)
+    /// it is read again and the caller's edit is dropped.
+    /// </summary>
+    private bool EnsureProtected(SourceFile src)
+    {
+        switch (src.TryLock())
+        {
+            case LockResult.Locked:
+                return true;
+            case LockResult.Changed:
+                // What is on screen is no longer the file: editing it would mix the two.
+                if (!IsDirty && ReferenceEquals(src, _doc.Source))
+                {
+                    Reload();
+                    ThemedDialog.Show(Window.GetWindow(this),
+                        $"Another program changed {Path.GetFileName(_path)}, so it has been read again. Make the edit again.",
+                        "NotepadRedo", MessageBoxButton.OK, MessageBoxImage.Information);
+                }
+                else
+                    ShowNotice("That file was changed by another program; the edit can't refer to it.");
+                return false;
+        }
         Directory.CreateDirectory(RecoveryDir);
-        string copy = Path.Combine(RecoveryDir, RecoveryId + ".src");
+        string copy = Path.Combine(RecoveryDir, RecoveryId + "." + Guid.NewGuid().ToString("N")[..8] + ".src");
         bool ok;
         try
         {
-            ok = ProgressDialog.Run(Window.GetWindow(this), "Copying the file",
-                $"Another program has {Path.GetFileName(_path)} open for writing. Before it is edited, " +
+            ok = Busy(() => ProgressDialog.Run(Window.GetWindow(this), "Copying the file",
+                $"Another program has {Path.GetFileName(src.Path)} open for writing. Before it is edited, " +
                 "NotepadRedo makes a private copy of it, so the lines you edit can't change underneath you.",
-                (p, ct) => src.SwitchToCopy(copy, p, ct), cancellable: true);
+                (p, ct) => src.SwitchToCopy(copy, p, ct), cancellable: true));
         }
         catch (Exception ex)
         {
@@ -325,13 +375,34 @@ public partial class LargeFileView : UserControl, IDocumentView
         }
         if (!ok)
         {
-            try { File.Delete(copy); } catch { }
-            e.Cancel = true;
-            return;
+            TryDelete(copy);
+            return false;
         }
         if (FollowCheck.IsChecked == true)
             FollowCheck.IsChecked = false;
         ShowNotice("Editing a private copy: another program is still writing to the file.");
+        return true;
+    }
+
+    /// <summary>
+    /// Undo or redo, then protect every source the document now refers to: an undo past a save
+    /// brings back lines of a file that wasn't protected (opened again unlocked after the save, or
+    /// left behind by Save As). If one can't be protected, the move is taken back.
+    /// </summary>
+    private void MoveInHistory(bool undo)
+    {
+        if (Area.IsReadOnly || !EnsureProtected(_doc.Source))
+            return;
+        if ((undo ? _doc.Undo() : _doc.Redo()) is not { } sel)
+            return;
+        foreach (var src in _doc.CurrentSources())
+            if (!EnsureProtected(src))
+            {
+                sel = (undo ? _doc.Redo() : _doc.Undo()) ?? sel;
+                break;
+            }
+        Area.AfterHistoryMove(sel);
+        FocusEditor();
     }
 
     private void OnEdited()
@@ -345,27 +416,9 @@ public partial class LargeFileView : UserControl, IDocumentView
         }
     }
 
-    public void Undo()
-    {
-        if (Area.IsReadOnly)
-            return;
-        if (_doc.Undo() is { } sel)
-        {
-            Area.AfterHistoryMove(sel);
-            FocusEditor();
-        }
-    }
+    public void Undo() => MoveInHistory(undo: true);
 
-    public void Redo()
-    {
-        if (Area.IsReadOnly)
-            return;
-        if (_doc.Redo() is { } sel)
-        {
-            Area.AfterHistoryMove(sel);
-            FocusEditor();
-        }
-    }
+    public void Redo() => MoveInHistory(undo: false);
 
     // ===================== Saving =====================
 
@@ -399,12 +452,23 @@ public partial class LargeFileView : UserControl, IDocumentView
         if (samePath && AppSettings.Current.WatchExternalChanges && !ConfirmOverwrite(owner, interactive))
             return false;
 
-        _saving = true;
+        return Busy(() => WriteAndAdopt(path, samePath, owner, interactive));
+    }
+
+    /// <summary>
+    /// Run a job that reads or replaces the source while a progress window may pump messages (a
+    /// save, the private copy, Replace All). Checks of the file are held off meanwhile, and one begun
+    /// before is dropped: it could extend or reload the very source the job is using, or have seen
+    /// the file halfway through being replaced.
+    /// </summary>
+    private T Busy<T>(Func<T> job)
+    {
+        _busy++;
         Interlocked.Increment(ref _fileGeneration);
-        try { return WriteAndAdopt(path, samePath, owner, interactive); }
+        try { return job(); }
         finally
         {
-            _saving = false;
+            _busy--;
             Interlocked.Increment(ref _fileGeneration);
         }
     }
@@ -467,6 +531,16 @@ public partial class LargeFileView : UserControl, IDocumentView
         }
         try { saved.RememberTail(); } catch { }
         _doc.AdoptSaved(saved);
+        // The files kept only for undo: one this save replaced reads the old file, which nothing
+        // can write to any more; one left at another path (Save As) needn't stay locked against
+        // other programs, and is protected again if undo brings its lines back.
+        foreach (var older in _doc.OlderSources())
+        {
+            if (older.CopyPath is null && string.Equals(older.Path, path, StringComparison.OrdinalIgnoreCase))
+                older.Replaced = true;
+            else
+                older.Unlock();
+        }
         _path = path;
         _savedLineEnding = _lineEnding;
         _diskStamp = saved.Stamp;
@@ -980,9 +1054,11 @@ public partial class LargeFileView : UserControl, IDocumentView
             if (cts.IsCancellationRequested || _disposed)
                 return;
             Flush();
-            _resultsVersion = version;
             if (t.IsFaulted)
             {
+                // What was listed before the failure is not every match: nothing may step through
+                // it as if it were.
+                _resultsVersion = -1;
                 var ex = t.Exception!.GetBaseException();
                 SearchStatus.Text = ex is RegexMatchTimeoutException
                     ? "The pattern took too long on a line; simplify it."
@@ -990,6 +1066,7 @@ public partial class LargeFileView : UserControl, IDocumentView
                     : "Search failed: " + ex.Message;
                 return;
             }
+            _resultsVersion = version;
             double secs = (DateTime.UtcNow - started).TotalSeconds;
             string count = _results.Count == 1 ? "1 match" : $"{_results.Count:N0} matches";
             SearchStatus.Text = t.Result
@@ -1205,8 +1282,8 @@ public partial class LargeFileView : UserControl, IDocumentView
         bool done;
         try
         {
-            done = ProgressDialog.Run(Window.GetWindow(this), "Replace All", $"Replacing “{find}”…",
-                (p, ct) => result = LargeSearch.ReplaceAll(view, find, replacement, opt, p, ct), cancellable: true);
+            done = Busy(() => ProgressDialog.Run(Window.GetWindow(this), "Replace All", $"Replacing “{find}”…",
+                (p, ct) => result = LargeSearch.ReplaceAll(view, find, replacement, opt, p, ct), cancellable: true));
         }
         catch (ArgumentException ex)
         {
@@ -1444,14 +1521,23 @@ public partial class LargeFileView : UserControl, IDocumentView
     /// version the snapshot refers to, and replay the pieces as one undoable edit.
     /// </summary>
     /// <exception cref="InvalidOperationException">The file has changed since, so the snapshot's
-    /// references to its lines no longer mean what they did.</exception>
+    /// references to its lines no longer mean what they did: the snapshot is useless.</exception>
+    /// <exception cref="IOException">The file can't be read or protected now; the snapshot may still
+    /// be recovered later.</exception>
     public void LoadRecovered(RecoveryData data)
     {
         RecoveryId = data.Id;
         _path = data.Path;
-        var src = data.SourceIsCopy
-            ? SourceFile.OpenCopy(data.SourcePath, data.Path)
-            : SourceFile.Open(data.SourcePath, lockFile: true);
+        SourceFile src;
+        if (data.SourceIsCopy)
+            src = SourceFile.OpenCopy(data.SourcePath, data.Path);
+        else
+        {
+            // Locked, whatever the setting says: the edits refer to its lines. A program that has it
+            // open for writing again (a log restarted) gets the private copy instead, below.
+            try { src = SourceFile.Open(data.SourcePath, lockFile: true); }
+            catch (IOException) when (File.Exists(data.SourcePath)) { src = SourceFile.Open(data.SourcePath, lockFile: false); }
+        }
         try
         {
             if (src.Stamp.Length != data.SrcLength || src.Stamp.LastWriteUtc != data.SrcWriteUtc
@@ -1460,7 +1546,7 @@ public partial class LargeFileView : UserControl, IDocumentView
                     $"{data.Path} has changed since the unsaved edits were made, so they can't be put back on it.");
             src.WaitForIndex();
             if (src.IndexError is not null)
-                throw new InvalidOperationException($"{data.SourcePath} couldn't be read: {src.IndexError.Message}");
+                throw new IOException($"{data.SourcePath} couldn't be read: {src.IndexError.Message}");
             var pieces = new List<Piece>();
             foreach (var p in data.Pieces)
             {
@@ -1482,6 +1568,9 @@ public partial class LargeFileView : UserControl, IDocumentView
             doc.ReplaceLines(0, doc.LineCount, pieces, (start, start), (start, start));
             _doc = doc;
             Area.Document = doc;
+            try { src.RememberTail(); } catch { }
+            if (!EnsureProtected(src))
+                throw new IOException($"{data.Path} is being written by another program and couldn't be copied.");
             _diskStamp = data.SourceIsCopy ? SourceFile.Probe(data.Path) ?? default : src.Stamp;
             _savedLineEnding = src.DetectedLineEnding;
             _lineEnding = data.LineEnding;
@@ -1489,7 +1578,6 @@ public partial class LargeFileView : UserControl, IDocumentView
             var caret = new TextPos(data.CaretLine, data.CaretCol);
             Area.Select(caret, caret, scroll: false);
             Area.ScrollTo(data.TopLine);
-            // The source was opened locked whatever the setting says: the edits refer to its lines.
             StartWatching();
             ShowNotice("Recovered unsaved edits from the previous session.");
             RaiseAll();
@@ -1522,16 +1610,14 @@ public partial class LargeFileView : UserControl, IDocumentView
     public void LoadTransferred(TransferData data)
     {
         LoadFile(data.Path);
-        var caret = new TextPos(data.CaretLine, data.CaretCol);
-        // The lines may not be indexed yet; the area clamps, and the scroll is applied once they are.
-        Dispatcher.BeginInvoke(DispatcherPriority.Background, () =>
-        {
-            _doc.Source.WaitForIndex();
+        // The lines may not be indexed yet: the place is taken up once they are (OnIndexComplete).
+        _pendingPlace = (new TextPos(data.CaretLine, data.CaretCol), data.TopLine);
+        if (_doc.Source.Complete)
             IndexTick();
-            Area.Select(caret, caret, scroll: false);
-            Area.ScrollTo(data.TopLine);
-        });
     }
+
+    /// <summary>Where a tab moved from another process was scrolled to, put back once indexed.</summary>
+    private (TextPos Caret, long TopLine)? _pendingPlace;
 
     // ===================== Lifetime =====================
 
@@ -1541,7 +1627,9 @@ public partial class LargeFileView : UserControl, IDocumentView
         DeleteRecovery();
     }
 
-    public void Release() => Release(keepCopy: true);
+    /// <summary>Keeps the recovery snapshot, and the private copies it refers to; with no snapshot
+    /// (nothing unsaved) there is nothing for a copy to be kept for.</summary>
+    public void Release() => Release(keepCopy: File.Exists(RecoveryPath));
 
     private void Release(bool keepCopy)
     {

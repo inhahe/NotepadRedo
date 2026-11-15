@@ -132,7 +132,8 @@ internal static class Program
                 }
                 failures += await CheckPaneLayout(filter) + await CheckReloadTakesOnlyWhatTheFileHolds(filter)
                             + await CheckUndoGrouping(filter) + await LargeFileTests.CheckView(filter)
-                            + await LargeFileTests.CheckRecovery(filter);
+                            + await LargeFileTests.CheckRecovery(filter)
+                            + await LargeFileTests.CheckTypingAfterCaretMove(filter);
                 foreach (var loc in Locations(args.Contains("--share")))
                 {
                     // Asked for and not to be had: a pass that tests nothing must not pass quietly.
