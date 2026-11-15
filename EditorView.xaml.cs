@@ -17,7 +17,7 @@ namespace NotepadRedo;
 /// state (undo tree, file path, dirty flag, autosave/recovery). One of these lives inside
 /// each tab, and the whole live control is moved between windows on tab tear-off / reattach.
 /// </summary>
-public partial class EditorView : UserControl, INotifyPropertyChanged
+public partial class EditorView : UserControl, IDocumentView
 {
     private UndoTree _tree = new();
     private readonly DispatcherTimer _debounce;
@@ -385,6 +385,8 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
         CommitPending();
         return new DocDto(_currentPath, _savedText, Editor.Text, _tree.Serialize());
     }
+
+    public string? SerializeForTransfer() => JsonSerializer.Serialize(SerializeDocument());
 
     /// <summary>Rebuild a document (moved here from another process) into this blank view.</summary>
     public void LoadTransferred(DocDto dto)
@@ -1074,7 +1076,7 @@ public partial class EditorView : UserControl, INotifyPropertyChanged
     /// them beside the editor's minimum. Runs when a pane opens or closes, when this view's width
     /// changes, and when the remembered widths change (<see cref="MainWindow.ApplySettings"/>). The
     /// one other writer of the columns' widths is a drag in progress (<see cref="DragSplitterTo"/>).</summary>
-    internal void LayOutPanes()
+    public void LayOutPanes()
     {
         var open = _panes.Where(p => p.IsOpen).ToArray();
         double[] widths = FitPaneWidths(PaneRoom(), open.Select(p => (p.Preferred, p.Min)).ToArray());

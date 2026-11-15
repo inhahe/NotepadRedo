@@ -107,8 +107,13 @@ internal static class Program
         Environment.SetEnvironmentVariable(AppPaths.OverrideVariable, data);
 
         string filter = args.FirstOrDefault(a => a.StartsWith("--filter="))?["--filter=".Length..] ?? "";
+        if (args.FirstOrDefault(a => a.StartsWith("--bench="))?["--bench=".Length..] is string bench)
+        {
+            LargeFileTests.Bench(bench);
+            return 0;
+        }
         int failures = CheckLoadFailureClassifier(filter) + CheckRegistrationRule(filter) + CheckSweepRule(filter)
-                       + CheckPaneArithmetic(filter) + CheckBatchFiles(filter);
+                       + CheckPaneArithmetic(filter) + CheckBatchFiles(filter) + LargeFileTests.CheckModel(filter);
         var app = new Application { ShutdownMode = ShutdownMode.OnExplicitShutdown };
         // What App.xaml gives the real app, which editor windows need.
         foreach (string dictionary in new[] { "Themes/Palette.Base.xaml", "Themes/Shared.xaml" })
@@ -120,8 +125,14 @@ internal static class Program
         {
             try
             {
+                if (args.FirstOrDefault(a => a.StartsWith("--benchfull="))?["--benchfull=".Length..] is string benchFull)
+                {
+                    await LargeFileTests.BenchFull(benchFull);
+                    return;
+                }
                 failures += await CheckPaneLayout(filter) + await CheckReloadTakesOnlyWhatTheFileHolds(filter)
-                            + await CheckUndoGrouping(filter);
+                            + await CheckUndoGrouping(filter) + await LargeFileTests.CheckView(filter)
+                            + await LargeFileTests.CheckRecovery(filter);
                 foreach (var loc in Locations(args.Contains("--share")))
                 {
                     // Asked for and not to be had: a pass that tests nothing must not pass quietly.
@@ -753,7 +764,7 @@ internal static class Program
         try
         {
             var windows = new[] { OpenEditorWindow(), OpenEditorWindow() };
-            var views = windows.Select(w => w.AllViews().Single()).ToArray();
+            var views = windows.Select(w => (EditorView)w.AllViews().Single()).ToArray();
             await System.Windows.Threading.Dispatcher.Yield(System.Windows.Threading.DispatcherPriority.ContextIdle);
 
             // Another instance turns wrap off, makes the font 16 pt and the history pane 222 wide.

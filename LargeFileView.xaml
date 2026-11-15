@@ -1,0 +1,150 @@
+<UserControl x:Class="NotepadRedo.LargeFileView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:lt="clr-namespace:NotepadRedo.LargeText">
+    <!-- A file too large for the full editor (see "Large files" in design.md): the banner, the text
+         with its own scroll bars, and a search pane below it whose results list every match. -->
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*" MinHeight="80"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition x:Name="SearchRow" Height="0"/>
+        </Grid.RowDefinitions>
+
+        <Border Grid.Row="0" Background="{DynamicResource Theme.PanelBg}"
+                BorderBrush="{DynamicResource Theme.PanelBorder}" BorderThickness="0,0,0,1" Padding="6,3">
+            <DockPanel LastChildFill="True">
+                <StackPanel Orientation="Horizontal" DockPanel.Dock="Right">
+                    <CheckBox x:Name="FollowCheck" Content="Follow end of file" VerticalAlignment="Center"
+                              Margin="12,0,0,0" Foreground="{DynamicResource Theme.TreePreviewFg}"
+                              ToolTip="Keep the last line in view as another program adds lines to the file, like tail -f. Lines are only followed while the document has no unsaved edits."
+                              Checked="Follow_Changed" Unchecked="Follow_Changed"/>
+                    <TextBlock Text="Go to line:" VerticalAlignment="Center" Margin="12,0,4,0"
+                               Foreground="{DynamicResource Theme.TreePreviewFg}"/>
+                    <TextBox x:Name="GoToBox" Width="90" VerticalAlignment="Center" Padding="3,1"
+                             Background="{DynamicResource Theme.EditorBg}"
+                             Foreground="{DynamicResource Theme.EditorFg}"
+                             CaretBrush="{DynamicResource Theme.EditorFg}"
+                             ToolTip="Type a line number and press Enter (Ctrl+G)"
+                             PreviewKeyDown="GoToBox_PreviewKeyDown"/>
+                </StackPanel>
+                <TextBlock x:Name="BannerText" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"
+                           Foreground="{DynamicResource Theme.TreeMetaFg}"/>
+            </DockPanel>
+        </Border>
+
+        <Grid Grid.Row="1">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="*"/>
+                <RowDefinition Height="Auto"/>
+            </Grid.RowDefinitions>
+            <lt:LargeTextArea x:Name="Area"
+                              Background="{DynamicResource Theme.EditorBg}"
+                              Foreground="{DynamicResource Theme.EditorFg}"
+                              GutterBackground="{DynamicResource Theme.PanelBg}"
+                              GutterForeground="{DynamicResource Theme.TreeMetaFg}"/>
+            <ScrollBar x:Name="VScroll" Grid.Column="1" Orientation="Vertical" SmallChange="1"
+                       Scroll="VScroll_Scroll"/>
+            <ScrollBar x:Name="HScroll" Grid.Row="1" Orientation="Horizontal"
+                       Scroll="HScroll_Scroll"/>
+        </Grid>
+
+        <GridSplitter x:Name="SearchSplitter" Grid.Row="2" Height="5" HorizontalAlignment="Stretch"
+                      ResizeDirection="Rows" ResizeBehavior="PreviousAndNext" Visibility="Collapsed"
+                      Background="{DynamicResource Theme.Splitter}" DragCompleted="SearchSplitter_DragCompleted"/>
+
+        <!-- A focus scope, so a match selected in the text keeps its highlight while you type here;
+             Tab cycles round the pane's own fields, as in the full editor's search pane. -->
+        <DockPanel x:Name="SearchPanel" Grid.Row="3" Visibility="Collapsed"
+                   Background="{DynamicResource Theme.PanelBg}"
+                   FocusManager.IsFocusScope="True"
+                   KeyboardNavigation.TabNavigation="Cycle"
+                   PreviewKeyDown="SearchPanel_PreviewKeyDown">
+            <StackPanel DockPanel.Dock="Top" Margin="6,4">
+                <DockPanel LastChildFill="True">
+                    <Button x:Name="SearchCloseButton" TabIndex="10" DockPanel.Dock="Right" Content="&#x2715;"
+                            Width="20" Height="20" Padding="0" Margin="6,0,0,0" ToolTip="Close search (Esc)"
+                            Click="SearchClose_Click"/>
+                    <Button TabIndex="7" DockPanel.Dock="Right" Content="_Next" Padding="8,1" Margin="4,0,0,0"
+                            ToolTip="Find next (F3, Enter)" Click="FindNextButton_Click"/>
+                    <Button TabIndex="6" DockPanel.Dock="Right" Content="_Previous" Padding="8,1" Margin="4,0,0,0"
+                            ToolTip="Find previous (Shift+F3, Shift+Enter)" Click="FindPrevButton_Click"/>
+                    <CheckBox x:Name="RegexCheck" TabIndex="5" DockPanel.Dock="Right" Content="Regular expression"
+                              VerticalAlignment="Center" Margin="10,0,0,0"
+                              Foreground="{DynamicResource Theme.TreePreviewFg}"
+                              ToolTip="Match the text as a .NET regular expression. ^ and $ mean start and end of a line."
+                              Checked="SearchOption_Changed" Unchecked="SearchOption_Changed"/>
+                    <CheckBox x:Name="WholeWordCheck" TabIndex="4" DockPanel.Dock="Right" Content="Whole word"
+                              VerticalAlignment="Center" Margin="10,0,0,0"
+                              Foreground="{DynamicResource Theme.TreePreviewFg}"
+                              Checked="SearchOption_Changed" Unchecked="SearchOption_Changed"/>
+                    <CheckBox x:Name="CaseSensitiveCheck" TabIndex="3" DockPanel.Dock="Right" Content="Case sensitive"
+                              VerticalAlignment="Center" Margin="10,0,0,0"
+                              Foreground="{DynamicResource Theme.TreePreviewFg}"
+                              Checked="SearchOption_Changed" Unchecked="SearchOption_Changed"/>
+                    <TextBlock Text="Find:" Width="80" VerticalAlignment="Center"
+                               Foreground="{DynamicResource Theme.TreePreviewFg}"/>
+                    <TextBox x:Name="SearchBox" TabIndex="1" Padding="4,2"
+                             Background="{DynamicResource Theme.EditorBg}"
+                             Foreground="{DynamicResource Theme.EditorFg}"
+                             CaretBrush="{DynamicResource Theme.EditorFg}"
+                             ToolTip="Text to find, matched exactly as typed. Every match is listed below."
+                             TextChanged="SearchBox_TextChanged"
+                             PreviewKeyDown="SearchBox_PreviewKeyDown"/>
+                </DockPanel>
+                <DockPanel x:Name="ReplaceRow" LastChildFill="True" Margin="0,4,0,0" Visibility="Collapsed">
+                    <Button TabIndex="9" DockPanel.Dock="Right" Content="Replace _all" Padding="8,1" Margin="4,0,0,0"
+                            ToolTip="Replace every match in the file as one undo step"
+                            Click="ReplaceAll_Click"/>
+                    <Button TabIndex="8" DockPanel.Dock="Right" Content="_Replace" Padding="8,1" Margin="4,0,0,0"
+                            ToolTip="Replace the selected match, then select the next one"
+                            Click="ReplaceNext_Click"/>
+                    <TextBlock Text="Replace with:" Width="80" VerticalAlignment="Center"
+                               Foreground="{DynamicResource Theme.TreePreviewFg}"/>
+                    <TextBox x:Name="ReplaceBox" TabIndex="2" Padding="4,2"
+                             Background="{DynamicResource Theme.EditorBg}"
+                             Foreground="{DynamicResource Theme.EditorFg}"
+                             CaretBrush="{DynamicResource Theme.EditorFg}"
+                             ToolTip="Replacement text. With regular expressions, $1 and ${name} insert groups."
+                             PreviewKeyDown="ReplaceBox_PreviewKeyDown"/>
+                </DockPanel>
+                <TextBlock x:Name="SearchStatus" Margin="80,3,0,0" FontSize="11"
+                           Foreground="{DynamicResource Theme.TreeMetaFg}"/>
+            </StackPanel>
+
+            <ListBox x:Name="ResultsList" TabIndex="11"
+                     Background="{DynamicResource Theme.TreeBg}"
+                     BorderBrush="{DynamicResource Theme.PanelBorder}" BorderThickness="0,1,0,0"
+                     VirtualizingPanel.IsVirtualizing="True"
+                     VirtualizingPanel.VirtualizationMode="Recycling"
+                     ScrollViewer.CanContentScroll="True"
+                     ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                     HorizontalContentAlignment="Stretch"
+                     SelectionChanged="Results_SelectionChanged"
+                     PreviewMouseLeftButtonUp="Results_MouseUp">
+                <ListBox.ItemContainerStyle>
+                    <Style TargetType="ListBoxItem">
+                        <Setter Property="Padding" Value="4,1"/>
+                        <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+                    </Style>
+                </ListBox.ItemContainerStyle>
+                <ListBox.ItemTemplate>
+                    <DataTemplate>
+                        <DockPanel LastChildFill="True">
+                            <TextBlock Text="{Binding Location}" Width="90" TextAlignment="Right" Margin="0,0,10,0"
+                                       Foreground="{DynamicResource Theme.TreeMetaFg}"/>
+                            <TextBlock Text="{Binding Preview}" TextTrimming="CharacterEllipsis"
+                                       FontFamily="Consolas"
+                                       Foreground="{DynamicResource Theme.TreePreviewFg}"/>
+                        </DockPanel>
+                    </DataTemplate>
+                </ListBox.ItemTemplate>
+            </ListBox>
+        </DockPanel>
+    </Grid>
+</UserControl>

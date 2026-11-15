@@ -115,6 +115,19 @@
                 <MenuItem x:Name="PersistHistoryItem" Header="_Remember edit history between sessions"
                           IsCheckable="True" Click="PersistHistory_Click"/>
                 <Separator/>
+                <!-- Files at least this big open in large-file mode: read from disk as they are shown
+                     rather than loaded (LargeFileView). -->
+                <MenuItem Header="Large _files: open in large-file mode from...">
+                    <MenuItem x:Name="LargeAt4"     Header="4 MB"   IsCheckable="True" Tag="4"   Click="LargeThreshold_Click"/>
+                    <MenuItem x:Name="LargeAt8"     Header="8 MB"   IsCheckable="True" Tag="8"   Click="LargeThreshold_Click"/>
+                    <MenuItem x:Name="LargeAt16"    Header="16 MB"  IsCheckable="True" Tag="16"  Click="LargeThreshold_Click"/>
+                    <MenuItem x:Name="LargeAt32"    Header="32 MB"  IsCheckable="True" Tag="32"  Click="LargeThreshold_Click"/>
+                    <MenuItem x:Name="LargeAt64"    Header="64 MB"  IsCheckable="True" Tag="64"  Click="LargeThreshold_Click"/>
+                    <Separator/>
+                    <MenuItem x:Name="LargeNever"   Header="_Never" IsCheckable="True" Tag="0"   Click="LargeThreshold_Click"
+                              ToolTip="Always use the full editor, however large the file"/>
+                </MenuItem>
+                <Separator/>
                 <MenuItem Header="_Undo grouping">
                     <MenuItem x:Name="UndoBreakEnter" Header="New step on each _line (Enter)"
                               IsCheckable="True" Click="UndoBreakEnter_Click"/>

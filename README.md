@@ -62,6 +62,15 @@ Built with WPF on .NET 8.
 - Both buttons make **one undo step**: a single `Ctrl+Z` takes back an entire Replace All, not one match at a time.
 - `Esc` closes the pane and leaves the caret on the match you were looking at. `Tab` / `Shift+Tab` cycle round the pane's own fields.
 
+### Large files
+- Files of **4 MB or more** open in **large-file mode**, the way a log viewer opens them: the first screen shows at once, the lines are indexed in the background, and only what you look at is read from disk. A 283 MB, 2-million-line log opens instantly, is fully indexed in about a third of a second, and takes under 20 MB of memory. Change the size under **Options → Large files** (or choose *Never*).
+- It is still a full text editor: type, select (with the mouse, the keyboard, or by line numbers in the gutter), cut, copy, paste, undo and redo (undoing even the deletion of the whole file is instant), and save. Saving copies unedited lines byte for byte, so the encoding (UTF-8, UTF-16, with or without a BOM) and each line's own line ending are kept.
+- **Search** (`Ctrl+F`) opens a pane under the text that lists every match in the file with its line number, found in the background in about half a second for 283 MB. `Enter` / `F3` step through them; click one to go to it. **Replace** (`Ctrl+H`) adds *Replace* and *Replace all* (one undo step). Case, whole-word and regular-expression options work as in the search pane.
+- **Go to line** (`Ctrl+G`, or the box at the top right) and **Follow end of file**, which keeps the last line in view as another program appends to the file, like `tail -f`. Without unsaved edits, the document takes in lines appended to the file, and reads it again if it is rewritten.
+- Before the first edit the file is locked against other writers, so the lines you are editing can't change under you. If another program is writing to it (a log in progress), NotepadRedo edits a private copy instead and says so.
+- Unsaved edits are kept for crash recovery like any other document's; the snapshot holds just the edits, and is only offered back if the file hasn't changed since.
+- Not available in this mode: the history tree, word wrap, proximity search, and the diff/merge viewer (a change on disk while you have unsaved edits is shown in the banner, and saving asks before overwriting it). A line longer than 32 KB is shown in segments, marked ↪ in the gutter; it is saved as the one line it is.
+
 ### Autosave, crash recovery & session restore
 - Periodic background autosave (configurable interval, or off) parks in-progress work so an unexpected crash or forced quit doesn't lose unsaved changes.
 - Unsaved/recovered work is offered for restoration on the next launch. If the file was changed elsewhere since the crash, recovering it asks the usual "changed on disk" question (below), as long as watching for changes is on. Previously your next save overwrote that change without a word.
@@ -133,6 +142,7 @@ Choose what the window's **X** button does:
 | `Ctrl+Z` | Undo (walk up the history tree) |
 | `Ctrl+Y` / `Ctrl+Shift+Z` | Redo (walk down the history tree) |
 | `Ctrl+X` / `Ctrl+C` / `Ctrl+V` | Cut / copy / paste |
+| `Ctrl+G` | Go to line (large-file mode) |
 
 ---
 
@@ -176,7 +186,7 @@ That signal reaches only the instances on the computer running `build.bat`. An i
 dotnet run --project tests\ExternalChange -- --share
 ```
 
-Drives the "changed on disk" prompt through a real editor and file watcher while another writer keeps changing the file, and exits non-zero on failure. `--share` repeats every test through `\\localhost\<drive>$` (SMB), the way a network drive is reached; leave it off where admin shares aren't available, since the run fails if it can't reach one. `--filter=<text>` runs only the tests whose name contains the text. It parks windows off-screen and briefly opens dialogs. It keeps its own data in a scratch folder, so it never touches your running editor, settings or recovery files. It also checks which exceptions count as NotepadRedo's own files failing to load, the cue for telling you to restart.
+Drives the "changed on disk" prompt through a real editor and file watcher while another writer keeps changing the file, and exits non-zero on failure. `--share` repeats every test through `\\localhost\<drive>$` (SMB), the way a network drive is reached; leave it off where admin shares aren't available, since the run fails if it can't reach one. `--filter=<text>` runs only the tests whose name contains the text. It parks windows off-screen and briefly opens dialogs. It keeps its own data in a scratch folder, so it never touches your running editor, settings or recovery files. It also checks which exceptions count as NotepadRedo's own files failing to load, the cue for telling you to restart, and large-file mode (`--filter=[large]`): indexing in every encoding, byte-for-byte saves, random edits and undo against the same edits made to a string, search and replace against the full editor's engines, appends, locking, crash recovery, and a 50 MB file opened, edited and saved in a real view. `--bench=<file>` times large-file mode on a file of your own, and `--benchfull=<file>` the full editor.
 
 ```sh
 powershell -File tests\ExeIndependence\Run.ps1
@@ -222,6 +232,10 @@ On first launch, if a `%LOCALAPPDATA%\TreeNotepad\` folder exists (from before t
 | `App.xaml(.cs)` | Application entry point, single-instance startup, command-line handling, global exception logging. |
 | `MainWindow.xaml(.cs)` | Shell window: tab control, menu, toolbar, status bar, tab tear-off/reattach, keyboard shortcuts, tray/close behavior. |
 | `EditorView.xaml(.cs)` | A single document: text editor, history-tree, search and replace panes and their dividers, autosave, external-change watching and file locking. |
+| `IDocumentView.cs` | What a tab holds, as the shell sees it: implemented by `EditorView` and `LargeFileView`. |
+| `LargeFileView.xaml(.cs)` | A file too large for `EditorView`: its text area, search/replace pane, saving, following the file, crash recovery. |
+| `LargeText/` | Large-file mode's parts: `SourceFile` (background line index of a file on disk), `LargeDocument` (piece table of lines, undo, streaming save), `LargeSearch` (block-wise search and replace), `LargeTextArea` (virtualized text view). |
+| `ProgressDialog.cs` | Runs a long job on the thread pool, with a progress window if it takes more than a moment. |
 | `UndoTree.cs` | The branching undo/redo model (`UndoTree` / `UndoNode`). |
 | `Ipc.cs` | Named-pipe IPC for cross-instance coordination. |
 | `SearchEngine.cs` | Pure, testable text-search logic (plain find + proximity clustering). |

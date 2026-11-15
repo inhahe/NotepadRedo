@@ -115,6 +115,16 @@ public sealed class AppSettings
     /// undo step. Consecutive edits closer together than this are folded into one node.</summary>
     public double UndoCoalesceSeconds { get; set; } = 1;
 
+    // ----- Large files -----
+
+    /// <summary>Files at least this many megabytes open in large-file mode (<see cref="LargeFileView"/>),
+    /// which reads lines from disk as they are shown instead of loading the file; 0 never does.</summary>
+    public int LargeFileThresholdMB { get; set; } = DefaultLargeFileThresholdMB;
+    public const int DefaultLargeFileThresholdMB = 4;
+
+    /// <summary>Height of the search pane under a large file, as last dragged.</summary>
+    public double LargeSearchPaneHeight { get; set; } = 220;
+
     /// <summary>Settings this build doesn't know, read from a file a newer build wrote. Kept and
     /// written back, so saving here doesn't delete them.</summary>
     [JsonExtensionData]

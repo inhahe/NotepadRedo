@@ -201,6 +201,8 @@ also told once, in a dialog, to save and restart.
 - **`MainWindow`** — shell: menu, toolbar, status bar and a `TabControl` of documents. Multiple
   windows per process are supported; tabs drag between them, and across processes via the `CLOSE`
   verb (the origin drops its copy after the move).
+- **`LargeFileView`** — a document too large for `EditorView`, read from disk as it is shown (see
+  "Large files"). Both implement `IDocumentView`, which is what the shell holds.
 - **`EditorView`** — one document: text box, undo tree, search pane, replace pane, autosave,
   external-change watching. Raises `StatusChanged` / `TitleChanged` / `SidePaneVisibilityChanged`,
   which the shell reflects into its chrome. (That last one was `SearchVisibilityChanged` until the
@@ -915,6 +917,101 @@ when its last editor window closes. `[undo]` tests type into a real view with re
 keystrokes, some running a Replace All among them, and check the undo steps that result (see "The
 typing pause is measured between keystrokes" and "One undo node per replace").
 
+## Large files
+
+The full editor holds a document as strings: a WPF `TextBox`, the undo tree's texts, the saved
+text it compares against, crash snapshots of the whole text, and a line count over the whole text
+on every keystroke. Measured on generated logs, it took 3 s to open 4 MB and 9.5 s for 16 MB (word
+wrap is most of that: 1.4 s for 8 MB without it, 5.1 s with), and a 270 MB file never finished.
+So a file of at least `AppSettings.LargeFileThresholdMB` (4 MB by default; Options → Large files)
+opens in a different kind of tab, `LargeFileView`, which never holds the file in memory. Both
+kinds implement `IDocumentView`, which is all `MainWindow` knows of a tab; `OpenFileInTab` picks
+one by size. On the same 283 MB, 2-million-line log: the first screen in a few tens of
+milliseconds, the whole file indexed in 0.3 s (17 MB of memory), a search of all of it in 0.55 s,
+a save after an edit in 0.2 s.
+
+Everything for it is in `LargeText/`:
+
+- **`SourceFile`: a file indexed by line.** A background scan records the byte offset where each
+  line starts (a `LongList`: chunks of 64K longs, appended by the scanning thread while the UI
+  reads entries below the published count). Lines are read back with positioned reads and decoded
+  on demand. The encoding is detected as the full editor does (a BOM, else UTF-8, bad bytes as
+  U+FFFD) but kept, BOM included, so lines nobody edited are written back byte for byte. Line ends
+  are found per code unit, so UTF-16 and UTF-32 work. A file with `\r` and no `\n` in its first
+  read is a CR file. A line longer than 32 KB is **cut** into segments at character boundaries,
+  each but the last *joined* to the next (no break between them), so no line is too long to lay
+  out. The gutter shows logical line numbers (an arrow on a continuation); Ln/Col, go-to-line and
+  search count logical lines, and saving writes no break at a cut.
+- **`LargeDocument`: a piece table of whole lines.** A piece is a run of a source's lines or an
+  array of lines typed in, and is immutable. An edit replaces a run of lines with new ones: it
+  splits pieces at the run's ends and swaps the middle, so its cost doesn't depend on the file's
+  size (deleting all 2 million lines and undoing it are both instant). The undo history is linear:
+  each record keeps the pieces it removed and inserted, so undo and redo only swap references.
+  Typing joins the open step while it stays within the lines that step touched and the pause since
+  the last keystroke is within Options → Undo grouping; Enter and paste follow those options too.
+- **`LargeSearch`: search and replace by block.** Lines are taken about a megabyte at a time (a
+  run of unedited lines is decoded in one call), joined with `\n`, and searched with
+  `SearchEngine.Occurrences`, so the options mean what they mean in the full editor. A block ends
+  at a real line break, so only a regex spanning more lines than a block holds can miss. Replace
+  All runs `ReplaceEngine.Find` per block and builds new lines only for lines that change, keeping
+  the rest as the pieces they were, then applies everything as one undo step. Both run on a frozen
+  snapshot of the piece list (`PieceView`) on the thread pool; results are dropped if the document
+  changed meanwhile.
+- **`LargeTextArea`: the view.** Draws only the lines in view with WPF's `TextFormatter`, caching
+  each laid-out line by its string, so a redraw costs nothing for lines that didn't change. It
+  scrolls by whole lines and never wraps: wrapping would need every line's length to know where a
+  scroll position is. The horizontal extent is the widest line drawn so far.
+
+### Its lines must not change underneath it
+
+A piece that refers to a source's lines is only right while the file's bytes are. So:
+
+- **Before the first edit** (`Area_BeforeEdit`) the file is locked against other writers
+  (`SourceFile.TryLock` reopens it sharing read and delete only; delete, so that a save can rename
+  over it). If a program already has it open for writing (a log being written), it can't be
+  locked, and the document switches to a **private copy** of the bytes indexed so far, made in
+  `recovery\large\<id>.src` with a progress window, before the edit happens. A program appending
+  meanwhile doesn't matter: only the indexed bytes are copied, and appends don't change them.
+- **Without unsaved edits the document follows the file.** It is polled by name once a second (a
+  share may send no change notifications, and only a probe by name sees a file replaced by a
+  rename). Bytes appended are indexed from where the scan stopped, after checking the last 4 KB
+  indexed still match (`TryExtend`); anything else is a rewrite and the file is read again.
+  "Follow end of file" keeps the last line in view as lines arrive, like `tail -f`. A check begun
+  before a save or reload is dropped (`_fileGeneration`): it may have seen the file mid-replace.
+- **With unsaved edits**, a change on disk is only noted in the banner, and saving asks before
+  writing over it.
+
+### Saving
+
+`LargeDocument.WriteTo` streams the document to a temporary file beside the target: unedited runs
+are copied as raw bytes, breaks and all (a mixed-ending file stays mixed), and typed lines are
+encoded with the document's line ending. Choosing another ending under Format → Line endings
+rewrites every break. Fix-ups at the edges: the source's last line, which had no break, gets one
+when something now follows it, and the document's last line gets none. The temporary file then
+replaces the target (`File.Replace`, which keeps its attributes and permissions; an overwriting
+rename where that fails). The file written needs no scan: `WriteTo` records each line's offset as
+it writes, and the document switches to reading from it (`AdoptSaved`). The replaced file stays
+readable through the old handle (opened with delete sharing), so the undo history can still reach
+lines from before the save; `ReleaseUnusedSources` closes a source nothing refers to any more.
+Saves run on the thread pool behind `ProgressDialog`, which shows a modal progress window only if
+the job takes more than 300 ms.
+
+### Recovery and moving tabs
+
+A crash snapshot (`recovery\large\<id>.json`, written on the autosave timer from a snapshot of
+the pieces, on the thread pool) records the source's identity (size, write time, file id) and the
+pieces in order, as line ranges of the source or as the lines typed. It is the size of the edits,
+not of the file. Recovering opens the source, refuses if its identity changed (the references
+would point at other text), and replays the pieces as one undoable edit. A tab dragged to another
+process carries only the path, and only without unsaved edits: the edits refer to lines this
+process has open.
+
+### What large-file mode leaves out
+
+The history tree (`TreeToggle` is disabled for such a tab), word wrap, proximity search, the
+merge viewer (a change on disk with unsaved edits is a banner and a question at save, not a
+five-way prompt), and persisted history. Search results stop at a million matches.
+
 ## The merge viewer's two panes are levelled, not merely paired
 
 The two documents are built row for row — a diff op contributes one paragraph to each side, with a
@@ -965,6 +1062,7 @@ set, so a scratch folder can never receive the user's real data.
 | `session.json` | `SessionStore` | Paths of open *saved* files, for session restore. |
 | `recent.json` | `RecentFiles` | Up to 15 most-recently-opened paths for File → Open Recent. Re-read before each write so concurrent instances merge instead of clobbering; raises `Changed` so open windows rebuild their submenu. **`Changed` may be raised on a background thread** — handlers that touch UI must marshal to the dispatcher. |
 | `recovery\` | `EditorView` | Crash-recovery snapshots — this is where *unsaved* and untitled work lives, including for titled documents. |
+| `recovery\large\` | `LargeFileView` | Crash snapshots of large files (pieces referring to the file's lines), and private copies of files being written by another program (`<id>.src`). |
 | `history\` | `HistoryStore` | Optional persisted undo trees, keyed to the file's on-disk content; pruned after 90 days. |
 | `crash.log` | `CrashLog` | Every unhandled exception with a full traceback. |
 

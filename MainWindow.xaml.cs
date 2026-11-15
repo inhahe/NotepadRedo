@@ -15,7 +15,7 @@ using Microsoft.Win32;
 namespace NotepadRedo;
 
 /// <summary>
-/// Shell window: hosts a TabControl of <see cref="EditorView"/> documents, the menu, and a
+/// Shell window: hosts a TabControl of documents (<see cref="IDocumentView"/>), the menu, and a
 /// shared status bar reflecting the active tab. Tabs can be torn off into new windows and
 /// dragged back between windows.
 /// </summary>
@@ -23,6 +23,7 @@ public partial class MainWindow : Window
 {
     private const string TabDragFormat = "NotepadRedoTab";     // marker: this drag is a tab
     private const string DocFormat = "NotepadRedoDoc";         // JSON DocDto for cross-process moves
+    private const string LargeDocFormat = "NotepadRedoLargeDoc"; // JSON LargeFileView.TransferData
     private const string PidFormat = "NotepadRedoPid";         // origin process id
     private const string TokenFormat = "NotepadRedoToken";     // origin document RecoveryId
 
@@ -228,17 +229,19 @@ public partial class MainWindow : Window
     private bool OfferRecovery()
     {
         var snaps = EditorView.ScanRecoveries().ToList();
-        if (snaps.Count == 0)
+        var large = LargeFileView.ScanRecoveries();
+        if (snaps.Count + large.Count == 0)
             return false;
 
         var result = ThemedDialog.Show(this,
-            $"{snaps.Count} unsaved document(s) from a previous session were found.\n\nRecover them?",
+            $"{snaps.Count + large.Count} unsaved document(s) from a previous session were found.\n\nRecover them?",
             "NotepadRedo \u2014 Recover unsaved work",
             MessageBoxButton.YesNo, MessageBoxImage.Question);
 
         if (result != MessageBoxResult.Yes)
         {
             EditorView.ClearAllRecoveries();
+            LargeFileView.ClearAllRecoveries();
             return false;
         }
 
@@ -248,12 +251,25 @@ public partial class MainWindow : Window
             view.LoadRecovered(snap);
             AddView(view, select: true);
         }
+        foreach (var snap in large)
+        {
+            var view = new LargeFileView();
+            try { view.LoadRecovered(snap); }
+            catch (Exception ex)
+            {
+                LargeFileView.DiscardRecovery(snap);
+                ThemedDialog.Show(this, $"Unsaved edits to {snap.Path} could not be recovered.\n\n{ex.Message}",
+                    "NotepadRedo — Recover unsaved work", MessageBoxButton.OK, MessageBoxImage.Warning);
+                continue;
+            }
+            AddView(view, select: true);
+        }
         return true;
     }
 
     // ===================== Active tab helpers =====================
 
-    private EditorView? ActiveView => (Tabs.SelectedItem as TabItem)?.Content as EditorView;
+    private IDocumentView? ActiveView => (Tabs.SelectedItem as TabItem)?.Content as IDocumentView;
 
     /// <summary>
     /// Tabs in most-recently-active-first order. Closing a tab hands focus back to the one you were on
@@ -319,6 +335,8 @@ public partial class MainWindow : Window
         EndingStatus.ToolTip = view.LineEndingTooltip;
         SaveStatus.Text = view.SaveText;
         SaveStatus.Foreground = view.IsDirty ? Brushes.Firebrick : Brushes.ForestGreen;
+        // A large file has no history tree.
+        TreeToggle.IsEnabled = ShowTreeItem.IsEnabled = view is not LargeFileView;
         SyncPaneToggles();
     }
 
@@ -342,7 +360,7 @@ public partial class MainWindow : Window
     /// to the (measurable) title-bar width; the taskbar shows a prefix of the same string, so it will
     /// likewise begin with the ellipsis and the visible tail when space is tight.
     /// </summary>
-    private string ComputeTitle(EditorView view)
+    private string ComputeTitle(IDocumentView view)
     {
         string path = string.IsNullOrEmpty(view.FilePath) ? "Untitled" : view.FilePath!;
         string dirty = view.IsDirty ? " *" : "";
@@ -457,10 +475,23 @@ public partial class MainWindow : Window
             }
         }
 
-        var view = CreateBlankView();
+        IDocumentView view;
         try
         {
-            view.LoadFile(path);
+            // A file too large for the full editor opens in large-file mode, read from disk as it
+            // is shown instead of loaded (see "Large files" in design.md).
+            if (LargeFileView.ShouldOpen(path))
+            {
+                var large = new LargeFileView();
+                large.LoadFile(path);
+                view = large;
+            }
+            else
+            {
+                var full = CreateBlankView();
+                full.LoadFile(path);
+                view = full;
+            }
         }
         catch (Exception ex)
         {
@@ -501,14 +532,14 @@ public partial class MainWindow : Window
         foreach (var mw in ShownWindows())
         {
             var ti = mw.Tabs.Items.OfType<TabItem>().FirstOrDefault(t =>
-                t.Content is EditorView v && v.FilePath is string p &&
+                t.Content is IDocumentView v && v.FilePath is string p &&
                 string.Equals(NormalizePath(p), norm, StringComparison.OrdinalIgnoreCase));
             if (ti is null)
                 continue;
 
             mw.Tabs.SelectedItem = ti;
             mw.ForceForeground();
-            (ti.Content as EditorView)?.FocusEditor();
+            (ti.Content as IDocumentView)?.FocusEditor();
             return true;
         }
         return false;
@@ -542,7 +573,7 @@ public partial class MainWindow : Window
         foreach (var mw in ShownWindows())
         {
             var ti = mw.Tabs.Items.OfType<TabItem>().FirstOrDefault(t =>
-                t.Content is EditorView v && v.RecoveryId == token);
+                t.Content is IDocumentView v && v.RecoveryId == token);
             if (ti is null)
                 continue;
             mw.RemoveTab(ti, dispose: true);
@@ -592,8 +623,8 @@ public partial class MainWindow : Window
     [DllImport("user32.dll")]
     private static extern bool SetForegroundWindow(IntPtr hWnd);
 
-    /// <summary>Wrap a live EditorView in a tab (with a full-path header + close button) and add it.</summary>
-    private void AddView(EditorView view, bool select)
+    /// <summary>Wrap a live document view in a tab (with a full-path header + close button) and add it.</summary>
+    private void AddView(IDocumentView view, bool select)
     {
         view.StatusChanged += View_Changed;
         view.TitleChanged += View_Changed;
@@ -621,7 +652,7 @@ public partial class MainWindow : Window
         SaveSession();
     }
 
-    private FrameworkElement BuildHeader(EditorView view)
+    private FrameworkElement BuildHeader(IDocumentView view)
     {
         var panel = new DockPanel { DataContext = view, LastChildFill = true };
 
@@ -811,13 +842,13 @@ public partial class MainWindow : Window
         LeadingEllipsisText.Refresh(tb);
     }
 
-    private TabItem? FindTab(EditorView view) =>
+    private TabItem? FindTab(IDocumentView view) =>
         Tabs.Items.OfType<TabItem>().FirstOrDefault(t => ReferenceEquals(t.Content, view));
 
     /// <summary>Close a tab, prompting to save first. Closes the window when the last tab goes.</summary>
     private bool CloseTab(TabItem? ti)
     {
-        if (ti?.Content is not EditorView view)
+        if (ti?.Content is not IDocumentView view)
             return true;
         Tabs.SelectedItem = ti;
         if (!view.ConfirmDiscardIfDirty())
@@ -834,7 +865,7 @@ public partial class MainWindow : Window
     /// <summary>Detach a tab from the tab strip without disposing its document.</summary>
     private void RemoveTab(TabItem ti, bool dispose)
     {
-        if (ti.Content is EditorView view)
+        if (ti.Content is IDocumentView view)
         {
             view.StatusChanged -= View_Changed;
             view.TitleChanged -= View_Changed;
@@ -876,8 +907,8 @@ public partial class MainWindow : Window
         SaveSession(allowEmpty: dispose);
     }
 
-    /// <summary>Re-host a live EditorView (moved from another window) in a fresh tab here.</summary>
-    private void AdoptView(EditorView view, bool select)
+    /// <summary>Re-host a live document view (moved from another window) in a fresh tab here.</summary>
+    private void AdoptView(IDocumentView view, bool select)
     {
         AddView(view, select);
         Activate();
@@ -1014,7 +1045,7 @@ public partial class MainWindow : Window
     }
 
     /// <summary>Every open document across every window.</summary>
-    private static IEnumerable<EditorView> AllOpenViews()
+    private static IEnumerable<IDocumentView> AllOpenViews()
     {
         foreach (var mw in ShownWindows())
             foreach (var v in mw.AllViews())
@@ -1120,6 +1151,15 @@ public partial class MainWindow : Window
         if (sender is not MenuItem mi || mi.Tag is not string tag || !int.TryParse(tag, out int seconds))
             return;
         ChangeSettings(s => s.AutosaveSeconds = seconds);
+    }
+
+    /// <summary>Options → Large files: the size from which files open in large-file mode. It applies
+    /// to files opened from now on; open documents stay in the mode they were opened in.</summary>
+    private void LargeThreshold_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not MenuItem mi || mi.Tag is not string tag || !int.TryParse(tag, out int mb))
+            return;
+        ChangeSettings(s => s.LargeFileThresholdMB = mb);
     }
 
     // ----- Undo grouping -----
@@ -1247,6 +1287,9 @@ public partial class MainWindow : Window
         LockFileItem.IsChecked     = s.LockFileWhileOpen;
         PersistHistoryItem.IsChecked = s.PersistHistory;
 
+        foreach (var item in new[] { LargeAt4, LargeAt8, LargeAt16, LargeAt32, LargeAt64, LargeNever })
+            item.IsChecked = item.Tag is string t && int.TryParse(t, out int mb) && mb == s.LargeFileThresholdMB;
+
         foreach (var item in FontSizeMenu.Items.OfType<MenuItem>())
             item.IsChecked = item.Tag is string t && double.TryParse(t, out double pt) && pt == s.FontSize;
 
@@ -1261,13 +1304,13 @@ public partial class MainWindow : Window
     }
 
     /// <summary>This window's open documents.</summary>
-    internal IEnumerable<EditorView> AllViews() =>
+    internal IEnumerable<IDocumentView> AllViews() =>
         // Tabs can be null for a window that's registered in Application.Current.Windows but hasn't
         // finished InitializeComponent (the WPF Window base ctor self-registers before the derived
         // fields are wired up). ShownWindows keeps cross-window code away from such a window; this
         // guard is for anything that reaches one regardless.
-        Tabs is null ? Enumerable.Empty<EditorView>()
-                     : Tabs.Items.OfType<TabItem>().Select(t => t.Content).OfType<EditorView>();
+        Tabs is null ? Enumerable.Empty<IDocumentView>()
+                     : Tabs.Items.OfType<TabItem>().Select(t => t.Content).OfType<IDocumentView>();
 
     private void SetUpKeyBindings()
     {
@@ -1357,7 +1400,7 @@ public partial class MainWindow : Window
 
     private void BeginTabDrag(TabItem ti)
     {
-        if (ti.Content is not EditorView view)
+        if (ti.Content is not IDocumentView view)
             return;
 
         TabDrag.Item = ti;
@@ -1370,7 +1413,12 @@ public partial class MainWindow : Window
         data.SetData(TabDragFormat, "1");
         data.SetData(PidFormat, Environment.ProcessId.ToString());
         data.SetData(TokenFormat, view.RecoveryId);
-        try { data.SetData(DocFormat, JsonSerializer.Serialize(view.SerializeDocument())); }
+        try
+        {
+            // A large file goes by path, and only without unsaved edits (null otherwise).
+            if (view.SerializeForTransfer() is string payload)
+                data.SetData(view is LargeFileView ? LargeDocFormat : DocFormat, payload);
+        }
         catch { /* worst case: cross-process drop is a no-op, local move still works */ }
 
         // WPF's DoDragDrop draws no drag image, so a torn-off tab used to give no visual feedback.
@@ -1521,7 +1569,7 @@ public partial class MainWindow : Window
         if (srcPid == Environment.ProcessId)
         {
             // Same process: move the live control, preserving all in-memory state and UI.
-            if (TabDrag.Item is not TabItem ti || ti.Content is not EditorView view)
+            if (TabDrag.Item is not TabItem ti || ti.Content is not IDocumentView view)
                 return;
             if (ReferenceEquals(TabDrag.Source, this))
                 return;   // dropped back on its own window: keep it where it is
@@ -1533,16 +1581,36 @@ public partial class MainWindow : Window
 
         // Cross process: reconstruct the document from its serialised form, then ask the origin
         // process to drop its now-moved tab.
-        if (e.Data.GetData(DocFormat) is not string json || string.IsNullOrEmpty(json))
-            return;
-        EditorView.DocDto? dto = null;
-        try { dto = JsonSerializer.Deserialize<EditorView.DocDto>(json); }
-        catch { }
-        if (dto is null)
-            return;
-
-        var adopted = CreateBlankView();
-        adopted.LoadTransferred(dto);
+        IDocumentView? adopted = null;
+        if (e.Data.GetData(LargeDocFormat) is string largeJson && !string.IsNullOrEmpty(largeJson))
+        {
+            LargeFileView.TransferData? data = null;
+            try { data = JsonSerializer.Deserialize<LargeFileView.TransferData>(largeJson); }
+            catch { }
+            if (data is null)
+                return;
+            var large = new LargeFileView();
+            try { large.LoadTransferred(data); }
+            catch (Exception ex)
+            {
+                ThemedDialog.Show(this, ex.Message, "Open failed", MessageBoxButton.OK, MessageBoxImage.Error);
+                return;
+            }
+            adopted = large;
+        }
+        else
+        {
+            if (e.Data.GetData(DocFormat) is not string json || string.IsNullOrEmpty(json))
+                return;
+            EditorView.DocDto? dto = null;
+            try { dto = JsonSerializer.Deserialize<EditorView.DocDto>(json); }
+            catch { }
+            if (dto is null)
+                return;
+            var full = CreateBlankView();
+            full.LoadTransferred(dto);
+            adopted = full;
+        }
         AdoptView(adopted, select: true);
         ForceForeground();
 
@@ -1562,7 +1630,7 @@ public partial class MainWindow : Window
 
     private void DetachToNewWindow(TabItem ti)
     {
-        if (ti.Content is not EditorView view)
+        if (ti.Content is not IDocumentView view)
             return;
         // A single tab in a single window has nowhere better to go.
         if (Tabs.Items.Count <= 1)
@@ -1790,13 +1858,13 @@ public partial class MainWindow : Window
 
         // First pass: prompt for every dirty document across every window. Each prompt offers a
         // "Save All" shortcut that saves the remaining ones silently; a single Cancel aborts.
-        var docs = new List<(Action, EditorView)>();
+        var docs = new List<(Action, IDocumentView)>();
         foreach (var mw in windows)
         {
             var win = mw;
             foreach (var ti in mw.Tabs.Items.OfType<TabItem>().ToList())
             {
-                if (ti.Content is not EditorView view)
+                if (ti.Content is not IDocumentView view)
                     continue;
                 var tab = ti;
                 docs.Add((() =>
@@ -1838,7 +1906,7 @@ public partial class MainWindow : Window
     /// so its window/tab is visible and selected first. Returns false if the user cancelled (in which
     /// case the caller should abort the close/quit and leave everything open).
     /// </summary>
-    private static bool PromptSaveEach(IEnumerable<(Action bringForward, EditorView view)> docs)
+    private static bool PromptSaveEach(IEnumerable<(Action bringForward, IDocumentView view)> docs)
     {
         bool saveAll = false;
         foreach (var (bringForward, view) in docs)
@@ -1932,8 +2000,8 @@ public partial class MainWindow : Window
         }
 
         var docs = Tabs.Items.OfType<TabItem>()
-            .Where(ti => ti.Content is EditorView)
-            .Select(ti => ((Action)(() => Tabs.SelectedItem = ti), (EditorView)ti.Content))
+            .Where(ti => ti.Content is IDocumentView)
+            .Select(ti => ((Action)(() => Tabs.SelectedItem = ti), (IDocumentView)ti.Content))
             .ToList();
         if (!PromptSaveEach(docs))
         {

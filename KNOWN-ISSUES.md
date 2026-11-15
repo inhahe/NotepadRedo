@@ -17,6 +17,26 @@
   click-accepts always hit the intended line. Low priority — the dominant workflow is click-accepts
   *or* manual editing, rarely interleaved within one line without a Re-diff.
 
+### The full editor is slow to open files of a few megabytes, mostly because of word wrap
+- **Where:** `EditorView` — the WPF `TextBox` lays out the whole text when it is set, and with
+  `TextWrapping.Wrap` that layout dominates.
+- **Measured (2026-11-15, generated logs):** 2 MB 1.8 s, 4 MB 3.0 s, 8 MB 5.1 s (1.4 s with wrap
+  off), 16 MB 9.5 s; typing 9–34 ms per keystroke over that range. Large-file mode now takes over at
+  4 MB by default (see "Large files" in design.md), so this is the cost below that.
+- **Proper fix (deferred):** replace the `TextBox` with a virtualized text view, as large-file mode
+  has (`LargeTextArea`), extended with wrapping; or open with wrap off and turn it on after the first
+  render. The undo tree, snapshots and per-keystroke counts are whole-text too, and would need the
+  same treatment before the full editor scales.
+
+### Large-file mode: a regex match spanning a block boundary is missed
+- **Where:** `LargeSearch.ReadBlock` — lines are searched about 1 MB at a time, and a block always
+  ends at a real line break.
+- **Consequence:** a pattern that matches across line breaks (`a\nb`) is not found where those lines
+  fall either side of a block boundary, once in each megabyte or so. Single-line matches, which is
+  every literal search, are unaffected.
+- **Proper fix (deferred):** overlap consecutive blocks by a few lines and drop matches starting in
+  the overlap that the previous block already reported.
+
 ### Changes within one timestamp tick of the reconciled version go unseen
 - **Where:** `EditorView` — `HandleExternalChange` and `CheckBeforeOverwrite` treat an equal stamp
   (modified time + size) as "nothing new" and don't read the file.
