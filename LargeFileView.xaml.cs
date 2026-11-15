@@ -174,7 +174,6 @@ public partial class LargeFileView : UserControl, IDocumentView
             ShowNotice($"Reading stopped at byte {src.IndexedLength:N0}: {src.IndexError.Message}");
             return;
         }
-        try { src.RememberTail(); } catch { /* only costs a full re-read when lines are appended */ }
         if (!_doc.HasEdits)
         {
             bool pending = _lineEndingChosen && _lineEnding != _savedLineEnding;
@@ -296,8 +295,8 @@ public partial class LargeFileView : UserControl, IDocumentView
         _changedOnDisk = false;
         Area.IsReadOnly = true;
         Area.Refresh();
-        Area.Select(caret, caret, scroll: false);
-        Area.ScrollTo(top);
+        // Put back once the lines are indexed again: now the document has hardly any.
+        _pendingPlace = (caret, top);
         _indexTimer.Start();
         ShowNotice($"Reloaded at {DateTime.Now:HH:mm:ss}: another program rewrote the file.");
         ClearResults();
@@ -340,9 +339,16 @@ public partial class LargeFileView : UserControl, IDocumentView
     /// </summary>
     private bool EnsureProtected(SourceFile src)
     {
-        switch (src.TryLock())
+        // A document still without edits may take in lines appended since it was indexed.
+        bool mayExtend = !_doc.HasEdits && ReferenceEquals(src, _doc.Source);
+        switch (src.TryLock(mayExtend))
         {
             case LockResult.Locked:
+                if (mayExtend && _doc.SyncWithSource())
+                {
+                    _diskStamp = src.Stamp;
+                    Area.Refresh();
+                }
                 return true;
             case LockResult.Changed:
                 // What is on screen is no longer the file: editing it would mix the two.
@@ -391,7 +397,7 @@ public partial class LargeFileView : UserControl, IDocumentView
     /// </summary>
     private void MoveInHistory(bool undo)
     {
-        if (Area.IsReadOnly || !EnsureProtected(_doc.Source))
+        if (Area.IsReadOnly || !(undo ? _doc.CanUndo : _doc.CanRedo) || !EnsureProtected(_doc.Source))
             return;
         if ((undo ? _doc.Undo() : _doc.Redo()) is not { } sel)
             return;
@@ -422,7 +428,11 @@ public partial class LargeFileView : UserControl, IDocumentView
 
     // ===================== Saving =====================
 
-    public bool Save(bool saveAs, bool interactive = true)
+    // Busy from the start: the dialogs pump messages too, and a check of the file that reloads or
+    // extends the source while one is open would leave a partly indexed document to write.
+    public bool Save(bool saveAs, bool interactive = true) => Busy(() => SaveCore(saveAs, interactive));
+
+    private bool SaveCore(bool saveAs, bool interactive)
     {
         var owner = Window.GetWindow(this);
         if (!_doc.Source.Complete || _doc.Source.IndexError is not null)
@@ -452,7 +462,7 @@ public partial class LargeFileView : UserControl, IDocumentView
         if (samePath && AppSettings.Current.WatchExternalChanges && !ConfirmOverwrite(owner, interactive))
             return false;
 
-        return Busy(() => WriteAndAdopt(path, samePath, owner, interactive));
+        return WriteAndAdopt(path, samePath, owner, interactive);
     }
 
     /// <summary>
@@ -463,6 +473,7 @@ public partial class LargeFileView : UserControl, IDocumentView
     /// </summary>
     private T Busy<T>(Func<T> job)
     {
+        // Bumped on the way in and out: a check begun before, or during, is dropped.
         _busy++;
         Interlocked.Increment(ref _fileGeneration);
         try { return job(); }
@@ -482,7 +493,10 @@ public partial class LargeFileView : UserControl, IDocumentView
         var starts = new LongList();
         var joined = new LongList();
         long length = 0;
-        bool convert = _lineEnding != _savedLineEnding;
+        // Every break is rewritten when the user chose another ending; and a file kept for undo
+        // whose lines came back (undo past a save that converted) is converted to match too.
+        bool convertAll = _lineEnding != _savedLineEnding;
+        Func<SourceFile, bool> convert = s => convertAll || s.DetectedLineEnding != _lineEnding;
         try
         {
             bool done;
@@ -529,7 +543,6 @@ public partial class LargeFileView : UserControl, IDocumentView
             RaiseAll();
             return true;
         }
-        try { saved.RememberTail(); } catch { }
         _doc.AdoptSaved(saved);
         // The files kept only for undo: one this save replaced reads the old file, which nothing
         // can write to any more; one left at another path (Save As) needn't stay locked against
@@ -555,7 +568,7 @@ public partial class LargeFileView : UserControl, IDocumentView
         return true;
     }
 
-    private long WriteTemp(string temp, bool convert, LongList starts, LongList joined, IProgress<double>? p, CancellationToken ct)
+    private long WriteTemp(string temp, Func<SourceFile, bool> convert, LongList starts, LongList joined, IProgress<double>? p, CancellationToken ct)
     {
         using var fs = new FileStream(temp, FileMode.CreateNew, FileAccess.Write, FileShare.None, 1 << 20);
         long n = _doc.WriteTo(fs, _lineEnding, convert, starts, joined, p, ct);
@@ -1001,6 +1014,9 @@ public partial class LargeFileView : UserControl, IDocumentView
 
     private void ClearResults(bool keepStatus = false)
     {
+        // A search still running would go on adding matches found in the old text.
+        _searchCts?.Cancel();
+        _searchCts = null;
         _resultsVersion = -1;
         _results.Clear();
         if (!keepStatus)
@@ -1096,12 +1112,22 @@ public partial class LargeFileView : UserControl, IDocumentView
         Regex? re = null;
         if (opt.Regex)
         {
-            try { re = SearchEngine.BuildRegex(term, opt.CaseSensitive); }
+            // Highlighting runs while the text is drawn, line by line, so a pattern that backtracks
+            // badly gets a short timeout here, and after one, no more tries (the search, in the
+            // background, has the usual one and says so).
+            try
+            {
+                re = new Regex(term, RegexOptions.Multiline | (opt.CaseSensitive ? 0 : RegexOptions.IgnoreCase),
+                    TimeSpan.FromMilliseconds(50));
+            }
             catch (ArgumentException) { return null; }
         }
+        bool gaveUp = false;
         return line =>
         {
             var list = new List<(int, int)>();
+            if (gaveUp)
+                return list;
             try
             {
                 if (re is not null)
@@ -1117,7 +1143,7 @@ public partial class LargeFileView : UserControl, IDocumentView
                         if (list.Count >= 1000) break;
                     }
             }
-            catch (RegexMatchTimeoutException) { }
+            catch (RegexMatchTimeoutException) { gaveUp = true; }
             return list;
         };
     }
@@ -1270,10 +1296,6 @@ public partial class LargeFileView : UserControl, IDocumentView
             ShowNotice("Still reading the file; Replace All works once every line is indexed.");
             return;
         }
-        var ce = new CancelEventArgs();
-        Area_BeforeEdit(this, ce);
-        if (ce.Cancel)
-            return;
         var view = new PieceView(_doc.Snapshot());
         long version = _doc.Version;
         var opt = Options;
@@ -1300,6 +1322,17 @@ public partial class LargeFileView : UserControl, IDocumentView
         if (result.Pieces is null)
         {
             SearchStatus.Text = "Nothing to replace.";
+            return;
+        }
+        // Protected only now that there is something to replace: protecting can lock the file
+        // against its writer, or copy it.
+        var ce = new CancelEventArgs();
+        Area_BeforeEdit(this, ce);
+        if (ce.Cancel)
+            return;
+        if (_doc.Version != version)
+        {
+            SearchStatus.Text = "The file changed meanwhile; run Replace All again.";
             return;
         }
         var sel = (Area.Anchor, Area.Caret);
@@ -1361,7 +1394,7 @@ public partial class LargeFileView : UserControl, IDocumentView
             {
                 var m = _matches[index];
                 string line = owner._doc.GetLine(m.Line);
-                int from = Math.Max(0, m.Col - 40);
+                int from = Math.Clamp(m.Col - 40, 0, line.Length);
                 int len = Math.Min(line.Length - from, 300);
                 string preview = (from > 0 ? "…" : "") + line.Substring(from, Math.Max(0, len)).Replace('\t', ' ');
                 return new ResultRow($"{owner._doc.LogicalLine(m.Line) + 1:N0}", preview) { Index = index };
@@ -1411,7 +1444,16 @@ public partial class LargeFileView : UserControl, IDocumentView
     /// </summary>
     public sealed record RecoveryData(string Id, string Path, string SourcePath, bool SourceIsCopy,
         long SrcLength, DateTime SrcWriteUtc, ulong SrcFileId, LineEndingStyle LineEnding,
-        long CaretLine, int CaretCol, long TopLine, List<PieceDto> Pieces, DateTime SavedAt);
+        long CaretLine, int CaretCol, long TopLine, List<PieceDto> Pieces, DateTime SavedAt,
+        long DiskLength = 0, DateTime DiskWriteUtc = default, ulong DiskFileId = 0, uint DiskVolume = 0);
+    // Disk*: the file as the document last matched it (_diskStamp). For a document on a private
+    // copy that is not the source's stamp, and a recovered one must still ask before overwriting
+    // what was written to the file since.
+
+    /// <summary>Serializes snapshot writes, so a slow one in the background can't collide with the
+    /// final flush, and lets a save or close cancel one still running (<see cref="_recoveryGeneration"/>).</summary>
+    private readonly object _recoveryLock = new();
+    private int _recoveryGeneration;
 
     private void WriteRecovery(bool sync)
     {
@@ -1430,8 +1472,10 @@ public partial class LargeFileView : UserControl, IDocumentView
             var pieces = _doc.Snapshot();
             var data = new RecoveryData(RecoveryId, _path, src.CopyPath ?? src.Path, src.CopyPath is not null,
                 src.Stamp.Length, src.Stamp.LastWriteUtc, src.Stamp.FileId, _lineEnding,
-                Area.Caret.Line, Area.Caret.Col, Area.TopLine, new List<PieceDto>(), DateTime.Now);
-            _lastRecoveryVersion = _doc.Version;
+                Area.Caret.Line, Area.Caret.Col, Area.TopLine, new List<PieceDto>(), DateTime.Now,
+                _diskStamp.Length, _diskStamp.LastWriteUtc, _diskStamp.FileId, _diskStamp.Volume);
+            long version = _doc.Version;
+            int generation = Volatile.Read(ref _recoveryGeneration);
             string path = RecoveryPath;
             void Write()
             {
@@ -1454,11 +1498,18 @@ public partial class LargeFileView : UserControl, IDocumentView
                         data.Pieces.Add(new PieceDto(0, p.Count, lines.ToArray(), joined.Count > 0 ? joined.ToArray() : null));
                     }
                 }
-                Directory.CreateDirectory(RecoveryDir);
-                string temp = path + ".tmp";
-                using (var fs = new FileStream(temp, FileMode.Create, FileAccess.Write, FileShare.None))
-                    JsonSerializer.Serialize(fs, data);
-                File.Move(temp, path, overwrite: true);
+                lock (_recoveryLock)
+                {
+                    // Saved or closed since this was taken: the snapshot must not come back.
+                    if (generation != _recoveryGeneration)
+                        return;
+                    Directory.CreateDirectory(RecoveryDir);
+                    string temp = path + ".tmp";
+                    using (var fs = new FileStream(temp, FileMode.Create, FileAccess.Write, FileShare.None))
+                        JsonSerializer.Serialize(fs, data);
+                    File.Move(temp, path, overwrite: true);
+                    _lastRecoveryVersion = version;   // only once it is written
+                }
             }
             if (sync)
                 Write();
@@ -1476,8 +1527,12 @@ public partial class LargeFileView : UserControl, IDocumentView
 
     private void DeleteRecovery()
     {
-        _lastRecoveryVersion = -1;
-        TryDelete(RecoveryPath);
+        lock (_recoveryLock)
+        {
+            Interlocked.Increment(ref _recoveryGeneration);
+            _lastRecoveryVersion = -1;
+            TryDelete(RecoveryPath);
+        }
     }
 
     public void FlushRecovery() => WriteRecovery(sync: true);
@@ -1503,6 +1558,26 @@ public partial class LargeFileView : UserControl, IDocumentView
         }
         catch { }
         return list;
+    }
+
+    /// <summary>
+    /// Delete private copies of files (each as large as its file) that no recovery snapshot refers
+    /// to: left by a process that died before writing a snapshot, or kept only for an undo history
+    /// that died with it. Only when no other instance is running, whose copies they could be.
+    /// </summary>
+    public static void SweepOrphanCopies()
+    {
+        try
+        {
+            if (!Directory.Exists(RecoveryDir))
+                return;
+            var referenced = new HashSet<string>(ScanRecoveries().Where(d => d.SourceIsCopy)
+                .Select(d => Path.GetFullPath(d.SourcePath)), StringComparer.OrdinalIgnoreCase);
+            foreach (var f in Directory.EnumerateFiles(RecoveryDir, "*.src"))
+                if (!referenced.Contains(Path.GetFullPath(f)))
+                    TryDelete(f);
+        }
+        catch (Exception ex) { CrashLog.Log("Sweeping unused private copies failed", ex); }
     }
 
     public static void ClearAllRecoveries()
@@ -1568,10 +1643,13 @@ public partial class LargeFileView : UserControl, IDocumentView
             doc.ReplaceLines(0, doc.LineCount, pieces, (start, start), (start, start));
             _doc = doc;
             Area.Document = doc;
-            try { src.RememberTail(); } catch { }
             if (!EnsureProtected(src))
                 throw new IOException($"{data.Path} is being written by another program and couldn't be copied.");
-            _diskStamp = data.SourceIsCopy ? SourceFile.Probe(data.Path) ?? default : src.Stamp;
+            // On a copy, the file as it was when the copy was made: what was written to it since must
+            // still be asked about before it is overwritten.
+            _diskStamp = data.SourceIsCopy
+                ? new FileStamp(data.DiskLength, data.DiskWriteUtc, data.DiskFileId, data.DiskVolume)
+                : src.Stamp;
             _savedLineEnding = src.DetectedLineEnding;
             _lineEnding = data.LineEnding;
             Area.IsReadOnly = false;

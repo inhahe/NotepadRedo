@@ -173,22 +173,32 @@ internal static class LargeSearch
         {
             var (piece, offset) = view.PieceAt(line);
             long left = Math.Min(piece.Count - offset, end - line);
-            // Lines on disk with no cut among them: decode the whole run of bytes at once.
-            if (piece.Src is { } src && piece.JoinedCount == 0)
+            // Lines on disk with no cut among them: decode the whole run of bytes at once, up to the
+            // first cut line if there is one.
+            int batch = ReadBatch;
+            if (piece.Src is { } src && builder.Length < maxChars)
             {
+                long runStart = piece.Start + offset;
                 long budget = Math.Max(1, (maxChars - builder.Length) * (long)src.Codec.Unit);
-                int n = src.LinesWithin(piece.Start + offset, (int)Math.Min(left, int.MaxValue), budget);
-                if (AddSourceLines(builder, src, piece.Start + offset, n))
+                int n = src.LinesWithin(runStart, (int)Math.Min(left, int.MaxValue), budget);
+                foreach (long cut in src.JoinedIn(runStart, runStart + n))
+                {
+                    n = (int)(cut - runStart);
+                    break;
+                }
+                if (n > 0 && AddSourceLines(builder, src, runStart, n))
                 {
                     line += n;
                     continue;
                 }
+                // Cut lines are each up to MaxLineBytes: read a few at a time, not a batch's worth.
+                batch = 16;
             }
             // Otherwise line by line, stopping at a real line break once the block is full (a run of
             // joined segments can carry it past, up to four times the size).
             text.Clear();
             joined.Clear();
-            view.ReadLines(line, (int)Math.Min(left, ReadBatch), text, joined);
+            view.ReadLines(line, (int)Math.Min(left, batch), text, joined);
             if (text.Count == 0)
                 break;
             int i = 0;
@@ -347,7 +357,7 @@ internal static class LargeSearch
                         break;
                     if (!wrapped && s >= from)
                         break;
-                    if (wrapped && s <= from)
+                    if (wrapped && s < from)
                         continue;
                     var e = block.PosAt(m.End);
                     best = new LargeMatch(s.Line, s.Col, e.Line, e.Col);

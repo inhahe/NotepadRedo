@@ -135,6 +135,10 @@ public partial class MainWindow : Window
     {
         var list = files.ToList();
 
+        // No other instance is running, so a private copy no snapshot refers to belongs to nobody.
+        if (firstInstance)
+            LargeFileView.SweepOrphanCopies();
+
         if (firstInstance && !blankRequested)
         {
             // RestoreSession de-dupes against anything recovery already reopened, so a file that was

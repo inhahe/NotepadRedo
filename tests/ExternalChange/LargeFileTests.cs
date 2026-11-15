@@ -49,6 +49,8 @@ internal static class LargeFileTests
             failed += Case(filter, "Lines appended to the file are indexed without reading it again", CheckAppend);
             failed += Case(filter, "A file another program is writing can't be locked, and is copied instead", CheckLockAndCopy);
             failed += Case(filter, "Replace All keeps a lone CR inside a line", CheckReplaceKeepsLoneCr);
+            failed += Case(filter, "Undo past a converting save brings back lines that are converted on the next save", CheckUndoPastConvertingSave);
+            failed += Case(filter, "Searching backwards finds the only match, at the caret, by wrapping", CheckFindPrevAtCaret);
             failed += Case(filter, "Changing the line ending rewrites only the breaks, bad bytes and all", CheckConvertKeepsBytes);
             failed += Case(filter, "A job that fails at once throws its own exception", CheckProgressFailsFast);
         }
@@ -159,7 +161,7 @@ internal static class LargeFileTests
         var ms = new MemoryStream();
         var starts = new LongList();
         var joined = new LongList();
-        doc.WriteTo(ms, src.DetectedLineEnding, false, starts, joined, null, CancellationToken.None);
+        doc.WriteTo(ms, src.DetectedLineEnding, _ => false, starts, joined, null, CancellationToken.None);
         var written = ms.ToArray();
         if (!written.AsSpan().SequenceEqual(bytes))
             return $"wrote {written.Length} bytes [{BitConverter.ToString(written.Take(32).ToArray())}], " +
@@ -202,7 +204,7 @@ internal static class LargeFileTests
                 return $"logical line {l} maps to document line {doc.FromLogicalLine(l)}, which is logical {doc.LogicalLine(doc.FromLogicalLine(l))}";
         // And it saves as it was.
         var ms = new MemoryStream();
-        doc.WriteTo(ms, LineEndingStyle.Lf, false, new LongList(), new LongList(), null, CancellationToken.None);
+        doc.WriteTo(ms, LineEndingStyle.Lf, _ => false, new LongList(), new LongList(), null, CancellationToken.None);
         return ms.ToArray().AsSpan().SequenceEqual(bytes) ? null : "saving it changed the bytes";
     }
 
@@ -325,7 +327,7 @@ internal static class LargeFileTests
         var joined = new LongList();
         long length;
         using (var fs = new FileStream(temp, FileMode.Create))
-            length = doc.WriteTo(fs, ending, convert, starts, joined, null, CancellationToken.None);
+            length = doc.WriteTo(fs, ending, _ => convert, starts, joined, null, CancellationToken.None);
         try { File.Replace(temp, path, null, true); }
         catch (Exception ex) { return "replacing the file failed while the old one is open: " + ex.Message; }
         var saved = SourceFile.OpenIndexed(path, true, doc.Source.Codec, starts, joined, length, ending);
@@ -539,7 +541,52 @@ internal static class LargeFileTests
         File.SetLastWriteTimeUtc(same, stamp.AddSeconds(5));
         if (src2.TryExtend())
             return "a rewrite at the same size was taken for no change";
-        return src2.TryLock() == LockResult.Changed ? null : "a file rewritten at the same size was locked as if it were what was indexed";
+        if (src2.TryLock() != LockResult.Changed)
+            return "a file rewritten at the same size was locked as if it were what was indexed";
+
+        // The same, in a file whose last 4 KB (the tail compared) are untouched by the rewrite.
+        string big = Write(Encoding.UTF8.GetBytes(string.Concat(Enumerable.Range(0, 2000).Select(i => $"ERROR {i:D5}\n"))));
+        using var src3 = OpenIndexed(big);
+        stamp = File.GetLastWriteTimeUtc(big);
+        using (var fs = new FileStream(big, FileMode.Open, FileAccess.Write, FileShare.ReadWrite | FileShare.Delete))
+            fs.Write(Encoding.UTF8.GetBytes("Error"));
+        File.SetLastWriteTimeUtc(big, stamp.AddSeconds(5));
+        // As for a document still without edits, which may take in lines appended: this is no append.
+        if (src3.TryLock(mayExtend: true) != LockResult.Changed)
+            return "a file rewritten at the same size, beyond the tail compared, was locked as if it were what was indexed";
+
+        // Appended to before the first edit: locking takes the new lines in, and the stamp moves on.
+        string grown = Write(Encoding.UTF8.GetBytes("a\nb\n"));
+        using var src4 = OpenIndexed(grown);
+        using var doc4 = new LargeDocument(src4);
+        File.AppendAllText(grown, "c\n");
+        if (src4.TryLock(mayExtend: true) != LockResult.Locked)
+            return "a file appended to couldn't be locked for a document without edits";
+        doc4.SyncWithSource();
+        if (Compare(LogicalLines(doc4), new[] { "a", "b", "c", "" }) is string bad3)
+            return "locking didn't take in the lines appended: " + bad3;
+        if (src4.Stamp.Length != new FileInfo(grown).Length)
+            return "locking an appended file left the stamp at the old length";
+        using var src5 = OpenIndexed(Write(Encoding.UTF8.GetBytes("a\nb\n")));
+        File.AppendAllText(src5.Path, "c\n");
+        return src5.TryLock() == LockResult.Changed ? null : "an appended file was locked for a document with edits";
+    }
+
+    /// <summary>Lines of a file kept for undo, with other line breaks than the document now saves
+    /// with, are converted when undo brings them back (each source says whether to convert it).</summary>
+    private static string? CheckUndoPastConvertingSave()
+    {
+        string path = Write(Encoding.UTF8.GetBytes("one\r\ntwo\r\nthree\r\n"));
+        var src = OpenIndexed(path, lockFile: true);
+        using var doc = new LargeDocument(src);
+        doc.Replace(new TextPos(1, 0), new TextPos(1, 3), "TWO", default);
+        if (SaveTo(doc, path, LineEndingStyle.Lf, convert: true) is string bad)
+            return bad;
+        doc.Undo();
+        var ms = new MemoryStream();
+        doc.WriteTo(ms, LineEndingStyle.Lf, s => s.DetectedLineEnding != LineEndingStyle.Lf, new LongList(), new LongList(), null, CancellationToken.None);
+        string written = Encoding.UTF8.GetString(ms.ToArray());
+        return written == "one\ntwo\nthree\n" ? null : $"wrote \"{Escape(written)}\"";
     }
 
     private static string? CheckLockAndCopy()
@@ -561,6 +608,16 @@ internal static class LargeFileTests
         return File.Exists(Path.Combine(Dir, "copy.src")) ? "the copy was left behind" : null;
     }
 
+    private static string? CheckFindPrevAtCaret()
+    {
+        using var src = OpenIndexed(Write(Encoding.UTF8.GetBytes("a\nb needle c\nd\n")));
+        using var doc = new LargeDocument(src);
+        var view = new PieceView(doc.Snapshot());
+        var at = new TextPos(1, 2);
+        var m = LargeSearch.FindNext(view, "needle", new MatchOptions(), at, backwards: true, null, CancellationToken.None);
+        return m?.Start == at ? null : $"found {m?.Start.ToString() ?? "nothing"}, expected {at}";
+    }
+
     private static string? CheckReplaceKeepsLoneCr()
     {
         using var src = OpenIndexed(Write(Encoding.UTF8.GetBytes("progress 10%\rprogress 20% ERROR\nnext\n")));
@@ -577,7 +634,7 @@ internal static class LargeFileTests
         using var src = OpenIndexed(Write(bytes));
         using var doc = new LargeDocument(src);
         var ms = new MemoryStream();
-        doc.WriteTo(ms, LineEndingStyle.Crlf, convertEndings: true, new LongList(), new LongList(), null, CancellationToken.None);
+        doc.WriteTo(ms, LineEndingStyle.Crlf, convertEndings: _ => true, new LongList(), new LongList(), null, CancellationToken.None);
         var expected = new byte[] { (byte)'c', (byte)'a', (byte)'f', 0xE9, 13, 10, (byte)'x', 0xFF, 13, 10 };
         return ms.ToArray().AsSpan().SequenceEqual(expected) ? null
             : $"wrote [{BitConverter.ToString(ms.ToArray())}], expected [{BitConverter.ToString(expected)}]";
@@ -812,12 +869,19 @@ internal static class LargeFileTests
             return "no snapshot of the edits made on a private copy";
         if (!File.Exists(snap.SourcePath))
             return "the private copy the snapshot refers to was deleted";
+        // The program goes on writing before the next launch.
+        writer.Seek(0, SeekOrigin.End);
+        writer.Write(Encoding.UTF8.GetBytes("written after the crash\n"));
+        writer.Flush();
         var back = new LargeFileView();
         views.Add(back);
         try { back.LoadRecovered(snap); }
         catch (Exception ex) { return "edits made on a private copy couldn't be recovered: " + ex.Message; }
         var backArea = (LargeTextArea)back.FindName("Area");
-        return AllText(backArea.Document!) == expected ? null : "the edits recovered from a private copy aren't the ones made";
+        if (AllText(backArea.Document!) != expected)
+            return "the edits recovered from a private copy aren't the ones made";
+        // Saving would write over what the program wrote since the copy: not without asking.
+        return back.Save(saveAs: false, interactive: false) ? "the recovered document saved over lines written since without asking" : null;
     }
 
     /// <summary>Time the large-file operations on a real file (--bench=path): not a pass/fail test.</summary>
@@ -847,7 +911,7 @@ internal static class LargeFileTests
         string temp = path + ".benchsave";
         sw.Restart();
         using (var fs = new FileStream(temp, FileMode.Create, FileAccess.Write, FileShare.None, 1 << 20))
-            doc.WriteTo(fs, LineEndingStyle.Crlf, false, new LongList(), new LongList(), null, CancellationToken.None);
+            doc.WriteTo(fs, LineEndingStyle.Crlf, _ => false, new LongList(), new LongList(), null, CancellationToken.None);
         Console.WriteLine($"save with one edit: {sw.ElapsedMilliseconds} ms");
         File.Delete(temp);
         sw.Restart();

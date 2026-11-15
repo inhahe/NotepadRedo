@@ -493,12 +493,13 @@ internal sealed class LargeDocument : IDisposable
 
     /// <summary>
     /// Write the document to <paramref name="output"/> in its source's encoding. Lines still on disk
-    /// are copied byte for byte, line breaks included, unless <paramref name="convertEndings"/> asks
-    /// for every break to become <paramref name="ending"/>; lines typed in always get it.
+    /// are copied byte for byte, line breaks included, unless <paramref name="convertEndings"/> says
+    /// a source's breaks are to become <paramref name="ending"/> (then only its breaks are rewritten);
+    /// lines typed in always get it.
     /// </summary>
     /// <param name="starts">Receives the byte offset of every line written, and
     /// <paramref name="joined"/> every joined line, so the file just written needs no index scan.</param>
-    public long WriteTo(Stream output, LineEndingStyle ending, bool convertEndings, LongList starts,
+    public long WriteTo(Stream output, LineEndingStyle ending, Func<SourceFile, bool> convertEndings, LongList starts,
                         LongList joined, IProgress<double>? progress, CancellationToken ct)
     {
         var codec = Source.Codec;
@@ -521,7 +522,7 @@ internal sealed class LargeDocument : IDisposable
         foreach (var p in pieces)
         {
             ct.ThrowIfCancellationRequested();
-            if (p.Src is { } src && !convertEndings)
+            if (p.Src is { } src && !convertEndings(src))
             {
                 // Byte offsets of the run's lines in the output follow from the source's by one shift.
                 long first = p.Start, lastSrc = p.Start + p.Count - 1;

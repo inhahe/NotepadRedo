@@ -293,6 +293,7 @@ internal sealed class SourceFile : IDisposable
             src.Dispose();
             throw new IOException($"The file was {src.Stamp.Length:N0} bytes after saving, not the {length:N0} written.");
         }
+        try { src.RememberTail(); } catch (IOException) { }
         src._complete = true;
         return src;
     }
@@ -310,11 +311,14 @@ internal sealed class SourceFile : IDisposable
     /// being written, say); <see cref="LockResult.Changed"/> when the bytes indexed are no longer
     /// what the file holds, so the index must be rebuilt before anything refers to it.
     /// </summary>
-    public LockResult TryLock()
+    /// <param name="mayExtend">Lines appended since the index may be taken in (indexed now, under the
+    /// lock): only for a document that still has no edits, since the last line indexed may grow.
+    /// Otherwise an appended file counts as <see cref="LockResult.Changed"/>.</param>
+    public LockResult TryLock(bool mayExtend = false)
     {
         if (Locked || CopyPath is not null || Replaced)
             return LockResult.Locked;
-        if (!StillIndexed())
+        if (!_complete || !StillIndexed())
             return LockResult.Changed;
         SafeFileHandle locked;
         try { locked = OpenHandle(Path, lockFile: true); }
@@ -323,26 +327,39 @@ internal sealed class SourceFile : IDisposable
         var s = StampOf(locked);
         // The name may now hold another file; and a write could have landed between the check above
         // and the lock, so the check is made again once nobody else can write.
-        if (s.FileId != Stamp.FileId || s.Volume != Stamp.Volume || !StillIndexed(s))
+        bool unchanged = s.Length == Stamp.Length && s.LastWriteUtc == Stamp.LastWriteUtc;
+        if (s.FileId != Stamp.FileId || s.Volume != Stamp.Volume || !StillIndexed(s) || !unchanged && !mayExtend)
         {
             locked.Dispose();
             return LockResult.Changed;
         }
         SwapHandle(locked);
         Locked = true;
+        if (!unchanged)
+        {
+            // Appended to: nobody can write now, so index the rest here, and the stamp (which a
+            // recovery snapshot records) is the file's as it is.
+            _extendFloor = _starts.Count;
+            _complete = false;
+            IndexFrom(_starts[_starts.Count - 1], IndexedLength, CancellationToken.None);
+            Stamp = s;
+            if (IndexError is not null)
+                return LockResult.Changed;
+        }
         return LockResult.Locked;
     }
 
     /// <summary>
     /// Whether the file still holds the bytes indexed: unchanged since its stamp, or only appended
-    /// to (the last bytes indexed are still there). A rewrite in place, even at the same size, is not.
+    /// to (longer, with the last bytes indexed still there). Written to at the same length is a
+    /// rewrite: an append always makes the file longer.
     /// </summary>
     public bool StillIndexed(FileStamp? now = null)
     {
         var s = now ?? StampOf(CurrentHandle());
         if (s.Length == Stamp.Length && s.LastWriteUtc == Stamp.LastWriteUtc)
             return true;
-        return s.Length >= IndexedLength && TailMatches();
+        return s.Length > IndexedLength && TailMatches();
     }
 
     /// <summary>Let other programs write again (the document no longer refers to these lines, or the
@@ -482,9 +499,13 @@ internal sealed class SourceFile : IDisposable
                 char nl = _crMode ? '\r' : '\n';
 
                 int scan = (int)(pos - chunkStart);
+                // The next break at or after scan; searched again only once scanning passes it, so
+                // cutting a long line doesn't search the rest of the chunk again for every cut.
+                int found = -2;
                 while (true)
                 {
-                    int found = FindUnit(data, scan, nl);
+                    if (found != -1 && found < scan)
+                        found = FindUnit(data, scan, nl);
                     long limit = lineStart + MaxLineBytes;
                     if (found >= 0 && chunkStart + found - lineStart <= MaxLineBytes)
                     {
@@ -497,11 +518,18 @@ internal sealed class SourceFile : IDisposable
                     // No break within the limit. Cut the line if the bytes past the limit are here.
                     if (limit + unit < chunkEnd)
                     {
+                        if (ct.IsCancellationRequested)
+                            ct.ThrowIfCancellationRequested();
                         int at = (int)(limit - chunkStart);
                         at -= (int)((chunkStart + at - Codec.BomLength) % unit);
-                        int min = (int)(lineStart - chunkStart) + unit;
-                        while (at > min && !Codec.IsCharBoundary(data, at))
-                            at -= unit;
+                        // A character is at most four bytes, so a boundary is never further back than
+                        // that; bytes that aren't text (no boundary found) are cut where they are.
+                        int min = Math.Max((int)(lineStart - chunkStart) + unit, at - 4);
+                        int back = at;
+                        while (back > min && !Codec.IsCharBoundary(data, back))
+                            back -= unit;
+                        if (Codec.IsCharBoundary(data, back))
+                            at = back;
                         _joined.Add(_starts.Count - 1);
                         lineStart = chunkStart + at;
                         _starts.Add(lineStart);
@@ -523,6 +551,10 @@ internal sealed class SourceFile : IDisposable
                 pos = fileLength;
             }
             Volatile.Write(ref _length, pos);
+            // Before the index is published as complete: a check of the file that sees it complete
+            // must also find the tail that tells an append from a rewrite (TryExtend).
+            try { RememberTail(); }
+            catch (IOException) { _tail = null; }   // costs only a full read when lines are appended
             _complete = true;
         }
         catch (OperationCanceledException) { }

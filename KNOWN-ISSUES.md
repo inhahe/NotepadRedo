@@ -33,9 +33,12 @@
   ends at a real line break.
 - **Consequence:** a pattern that matches across line breaks (`a\nb`) is not found where those lines
   fall either side of a block boundary, once in each megabyte or so. Single-line matches, which is
-  every literal search, are unaffected.
-- **Proper fix (deferred):** overlap consecutive blocks by a few lines and drop matches starting in
-  the overlap that the previous block already reported.
+  every literal search, are unaffected, except in a line longer than about 4 million characters
+  (a minified file), which is itself split between blocks: a match straddling such a split is
+  missed by search, find next and Replace All alike.
+- **Proper fix (deferred):** overlap consecutive blocks by a few lines (for an overlong line, by
+  the longest match allowed) and drop matches starting in the overlap that the previous block
+  already reported.
 
 ### Changes within one timestamp tick of the reconciled version go unseen
 - **Where:** `EditorView` — `HandleExternalChange` and `CheckBeforeOverwrite` treat an equal stamp

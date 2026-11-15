@@ -963,7 +963,10 @@ Everything for it is in `LargeText/`:
 - **`LargeTextArea`: the view.** Draws only the lines in view with WPF's `TextFormatter`, caching
   each laid-out line by its string, so a redraw costs nothing for lines that didn't change. It
   scrolls by whole lines and never wraps: wrapping would need every line's length to know where a
-  scroll position is. The horizontal extent is the widest line drawn so far.
+  scroll position is. The horizontal extent is the widest line drawn so far. Matches of the search
+  are highlighted as lines are drawn, on the UI thread, so a regex gets 50 ms per line there and,
+  after one timeout, highlighting stops for that search (the search itself goes on in the
+  background).
 
 ### Its lines must not change underneath it
 
@@ -977,7 +980,11 @@ A piece that refers to a source's lines is only right while the file's bytes are
   meanwhile doesn't matter: only the indexed bytes are copied, and appends don't change them.
   Either way the file is first checked to still hold what was indexed (`StillIndexed`: the same
   stamp, or longer with the last 4 KB indexed unchanged); one rewritten since, even at the same
-  size, is read again instead, and the edit is dropped with a message.
+  size, is read again instead, and the edit is dropped with a message. A document with no edits
+  yet takes in lines appended since, indexing them under the lock (`TryLock(mayExtend)`), so the
+  stamp a recovery snapshot records is the file's; one with edits counts an append as a change.
+  Nothing is protected for an undo with nothing to undo, nor for a Replace All that matched
+  nothing: protecting can lock a log's writer out, or copy the file.
 - **Undo and redo protect too** (`MoveInHistory`): undoing past a save brings back lines of a file
   that was reopened unlocked, or left at its old path by Save As (which unlocks it). A file a save
   replaced needs nothing: its handle reads the old file, which no name reaches (`Replaced`). If a
@@ -1020,7 +1027,12 @@ copy's. Recovering opens the source, refuses if its identity changed (the refere
 at other text: the snapshot is then deleted), and replays the pieces as one undoable edit. A
 source that can't be opened or protected now (a share offline, a writer that can't be copied
 around) keeps the snapshot for the next launch. A window released without a snapshot (nothing
-unsaved) deletes its private copies. A tab dragged to another
+unsaved) deletes its private copies, and the first instance of a launch deletes any copy no
+snapshot refers to (`SweepOrphanCopies`; a crash before the first snapshot leaves one). The
+snapshot also records the file as the document last matched it, so a recovered document on a
+copy still asks before overwriting what was written to the file since. Snapshot writes are
+serialized and generation-stamped: a slow one in the background can neither collide with the final
+flush nor bring a snapshot back after a save. A tab dragged to another
 process carries only the path, and only without unsaved edits: the edits refer to lines this
 process has open.
 
